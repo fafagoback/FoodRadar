@@ -1,4 +1,4 @@
-name: FoodRadar LITE
+name: FoodRadar single-coordinate crawl
 on:
   workflow_dispatch:
 permissions:

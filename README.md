@@ -1,31 +1,22 @@
-# FoodRadar LITE
+# FoodRadar
 
-參考 fafagoback/UberEat 的 Feed API、菜單 Schema.org 轉換與快照驗證，建立獨立輕量版。
+固定配送座標 `25.123246847935267, 121.52951826298867`，逐頁抓完 Uber Eats Feed 回傳的全部店家與菜單。沒有距離篩選，`max_pages: 0` 表示翻到沒有下一頁。店家會隨時間及配送可用性變動。
 
-參考版本：`6f7ed999c256f1b980b9c9c8478c3319faf8df80`。Windows 若 `python` 指向 Microsoft Store 別名，請將以下命令的 `python` 改成 `py`。
-
-固定配送查詢座標：`25.123246847935267, 121.52951826298867`。預設只保留店家實際位置距中心 **3 公里**內的資料。Uber Eats 回傳的是該配送位置可發現的店家，並非半徑內所有實體餐廳；不建立全台網格，不讀取舊全台資料庫。
-
-## 使用
+前端沿用 UberEat 儀表板、四個情報頁籤、全庫搜尋、分頁及價格走勢。菜單轉換、Schema 驗證、JSON → SQLite、Current/Events、packed DB、快照封存及 Parquet 欄位沿用原專案程式。查詢範圍和歷史來源限定這個座標，HF 路徑使用獨立 `FoodRadar/` 前綴。
 
 ```powershell
-python -m pip install -r requirements.txt
-python src/crawl.py --check-config
-python src/crawl.py
-# 設定環境變數 HF_TOKEN 後，上傳完整批次
-python src/crawl.py --upload
-python -m http.server 8000 --directory web
+py -m pip install -r requirements.txt
+py -m unittest discover -s tests -v
+py src/crawl.py
+# 設定 HF_TOKEN 後上傳完整批次
+py src/crawl.py --upload
+py -m http.server 8000 --directory web
 ```
 
-`config.json` 可設定半徑（最大 10 公里）、並發（最大 5）、Feed 翻頁上限。達到翻頁上限而仍有下一頁、菜單失敗或空結果，流程失敗並保留先前已發布資料。座標缺失的店家先查菜單，仍無有效座標就排除。HF latest 只在完整批次上傳後更新。
+批次使用原專案 14 碼 YYYYMMDDhhmmss。data/<batch>/menus 為原格式 Schema.org Restaurant JSON；archive/taiwan_menus_<batch>.tar.gz 包含 manifest.json 與 Json/<batch>_<SHA256>.json。封存前檢查店家集合、批次和 Schema；packed DB 驗證完整解壓、checksum 和筆數。
 
-- GitHub：`fafagoback/FoodRadar`
-- HF dataset：`hub-google/UberEat`，獨立前綴 `FoodRadar/`
-- 原始菜單、店家 JSON/CSV 與報告：`FoodRadar/snapshots/<batch>/`
-- 最新完整快照：`FoodRadar/latest.json`
-- 本機輸出：`data/<batch>/`（不進 Git）
-- 輕量搜尋網站：`web/`，支援店名、餐點關鍵字與菜單價格。
+ubereats.db 使用原 ETL 時序資料表；serving.db 使用原 Current/Events schema；packed-serving.db 使用原 MessagePack + Zstandard schema。site 保存原格式 Parquet、情報 JSON 和價格歷史。資料庫及完整菜單留在資料目錄，網頁載入前端用 JSON，全庫不截斷。
 
-Actions 只提供手動執行，單一工作節點。需要 repository secret `HF_TOKEN` 並啟用 GitHub Pages 的 GitHub Actions 來源。網站使用本批次靜態 JSON，不需要 Turso 或前端 token；不沿用原專案的資料庫與全台排程。HF 快照不自動清除，日後可另加保留期限。
+HF 使用單一 commit 上傳壓縮快照、完成 manifest、Parquet 和 latest 指標。抓取或驗證失敗不發布新資料。Actions 手動執行，使用 repository secret HF_TOKEN 與 GitHub Pages。
 
-驗證：`python -m unittest discover -s tests -v`。
+網站載入此座標的完整靜態資料，不連原全台 Turso 資料庫。第一批是歷史基準，後續批次才有跨期價差與新品比較。

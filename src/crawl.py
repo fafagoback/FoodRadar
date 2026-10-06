@@ -25,30 +25,15 @@ def distance_km(lat, lon, target_lat, target_lon):
     return 6371.0088 * 2 * math.asin(min(1, math.sqrt(h)))
 
 
-def nearby(store, config, document=None):
-    geo = (document or {}).get('geo', {})
-    lat = geo.get('latitude')
-    lon = geo.get('longitude')
-    if lat is None or lon is None:
-        lat, lon = store.get('store_lat'), store.get('store_lon')
-    try:
-        distance = distance_km(lat, lon, config['latitude'], config['longitude'])
-    except (TypeError, ValueError):
-        return None
-    return distance if distance <= config['radius_km'] else None
-
-
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
 
 
 def crawl(config):
-    if not 0 < config['radius_km'] <= 10:
-        raise ValueError('radius_km must be within (0, 10]')
     distance_km(config['latitude'], config['longitude'], config['latitude'], config['longitude'])
-    if not 1 <= config['workers'] <= 5 or not 1 <= config['max_pages'] <= 100:
-        raise ValueError('workers must be 1..5; max_pages must be 1..100')
-    batch = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%dT%H%M%S%f')
+    if not 1 <= config['workers'] <= 5 or not 0 <= config['max_pages'] <= 100:
+        raise ValueError('workers must be 1..5; max_pages must be 0 (unlimited) or 1..100')
+    batch = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d%H%M%S')
     output = ROOT / 'data' / batch
     menus = output / 'menus'
     menus.mkdir(parents=True)
@@ -63,13 +48,9 @@ def crawl(config):
     for store in discovered:
         key = normalize_store_uuid(store['store_uuid'], store['store_url'])
         store['store_uuid'] = key
-        # Unknown coordinates are resolved from the menu before inclusion.
-        if store.get('store_lat') is not None and store.get('store_lon') is not None and nearby(store, config) is None:
-            excluded += 1
-            continue
         unique.setdefault(key, store)
     stores = list(unique.values())
-    print(f'Fetching {len(stores)} candidate menus; {excluded} outside radius excluded', flush=True)
+    print(f'Fetching all {len(stores)} unique menus from this delivery coordinate', flush=True)
     with ThreadPoolExecutor(max_workers=config['workers']) as pool:
         results = list(pool.map(lambda s: fetch_single_store(s, str(menus), batch+'_'), stores))
     retained, documents, failures = [], [], []
@@ -79,45 +60,30 @@ def crawl(config):
             continue
         path = Path(result['file_path'])
         doc = json.loads(path.read_text(encoding='utf-8'))
-        distance = nearby(store, config, doc)
-        if distance is None:
-            path.unlink()
-            excluded += 1
-            continue
-        store['distance_km'] = round(distance, 3)
-        doc['distance_km'] = store['distance_km']
-        write_json(path, doc)
         retained.append(store)
         documents.append(doc)
-    report = dict(batch_id=batch, center=point, radius_km=config['radius_km'], pages=pages,
+    report = dict(batch_id=batch, center=point, scope='single_delivery_coordinate', pages=pages,
                   discovered=len(discovered), retained=len(retained), excluded=excluded,
                   failed=len(failures), failures=failures)
     write_json(output / 'report.json', report)
     if failures or not retained:
         raise RuntimeError(f'Incomplete snapshot: {len(failures)} failed, {len(retained)} retained; report: {output}')
     write_json(output / 'stores.json', retained)
-    write_json(output / 'snapshot.json', dict(report=report, stores=documents))
     with (output / 'stores.csv').open('w', encoding='utf-8-sig', newline='') as handle:
-        columns = ['store_uuid', 'name', 'store_url', 'store_lat', 'store_lon', 'distance_km']
+        columns = list(retained[0])
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(retained)
-    # Current is updated only after complete discovery, menus and radius checks.
+    from pipeline import build_snapshot
+    build_snapshot(output, config)
     (ROOT / 'data' / 'latest.txt').write_text(batch, encoding='utf-8')
-    write_json(ROOT / 'web' / 'data.json', dict(report=report, stores=documents))
     print(json.dumps({k:v for k,v in report.items() if k != 'failures'}, ensure_ascii=False))
     return output
 
 
 def upload(output, config):
-    from huggingface_hub import HfApi
-    api = HfApi(token=os.environ['HF_TOKEN'])
-    repo, folder = config['hf_repo_id'], config['hf_folder'].strip('/')
-    api.upload_folder(repo_id=repo, repo_type='dataset', folder_path=str(output),
-                      path_in_repo=f'{folder}/snapshots/{output.name}')
-    api.upload_file(repo_id=repo, repo_type='dataset', path_or_fileobj=str(output / 'snapshot.json'),
-                    path_in_repo=f'{folder}/latest.json')
-    print(f'HF uploaded: {repo}/{folder}/snapshots/{output.name}')
+    from pipeline import upload_snapshot
+    upload_snapshot(output, config)
 
 
 if __name__ == '__main__':
@@ -129,6 +95,9 @@ if __name__ == '__main__':
     if args.check_config:
         print(json.dumps(config, ensure_ascii=False, indent=2))
     else:
+        if args.upload:
+            from pipeline import restore_history
+            restore_history(config)
         output = crawl(config)
         if args.upload:
             upload(output, config)
