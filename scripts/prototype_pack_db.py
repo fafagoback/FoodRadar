@@ -25,7 +25,9 @@ PRAGMA synchronous=OFF;
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE store_directory(
   store_id INTEGER PRIMARY KEY,store_uuid TEXT UNIQUE NOT NULL,name TEXT NOT NULL,
-  city TEXT,locality TEXT,rating REAL,review_count INTEGER,chunk_count INTEGER NOT NULL
+  city TEXT,locality TEXT,rating REAL,review_count INTEGER,chunk_count INTEGER NOT NULL,
+  latitude REAL,longitude REAL,address TEXT,order_url TEXT,first_seen TEXT,last_seen TEXT,
+  status TEXT,is_open INTEGER
 );
 CREATE TABLE store_bundles(
   store_id INTEGER NOT NULL,chunk_no INTEGER NOT NULL,codec TEXT NOT NULL,
@@ -110,10 +112,16 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
 
     # Bundles remain lossless archives of normalized current/events data. Only
     # active rows are added to the serving search postings below.
-    stores = list(src.execute("SELECT * FROM stores ORDER BY store_uuid"))
+    # Append-only first_seen order prevents new identities from shifting existing IDs.
+    stores = list(src.execute("SELECT * FROM stores ORDER BY first_seen,store_uuid"))
+    baseline_time = src.execute('SELECT MIN(processed_at) FROM crawl_batches').fetchone()[0]
+    latest_time = src.execute('SELECT MAX(processed_at) FROM crawl_batches').fetchone()[0]
+    from datetime import datetime, timedelta
+    cutoff = (datetime.fromisoformat(latest_time) - timedelta(days=7)).isoformat()
+    active_stores = active_products = 0
     for store_id, store in enumerate(stores):
         sid = store["store_uuid"]
-        products = list(src.execute("SELECT * FROM products WHERE store_uuid=? ORDER BY product_uuid", (sid,)))
+        products = list(src.execute("SELECT * FROM products WHERE store_uuid=? ORDER BY first_seen,product_uuid", (sid,)))
         events = list(src.execute("SELECT * FROM events WHERE store_uuid=? ORDER BY id", (sid,)))
         product_arrays = []
         store_terms = tokens(store["name"]) | tokens(store["city"]) | tokens(store["locality"]) | tokens(store["address"])
@@ -122,7 +130,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                 raise ValueError(f"store {sid} exceeds the packed 20-bit product index capacity")
             product_gid += 1
             arr = row_array(product, pc)
-            product_arrays.append([product_gid, arr])
+            product_arrays.append([(store_id << 20) | local_index, arr])
             searchable = (store["status"] == "active" and int(store["is_open"] or 0) == 1
                           and product["status"] == "active"
                           and int(product["is_open"] or 0) == 1
@@ -130,8 +138,11 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
             terms = (store_terms | tokens(product["product_name"]) | tokens(product["category"]) | tokens(product["promo_type"])) if searchable else set()
             price = float(product["effective_price"] or product["price"] or 0)
             if searchable:
+                active_products += 1
                 terms.add(f"f:price:{int(price // 50)}")
                 terms.add("f:catalog")
+                if product['first_seen'] > store['first_seen'] and product['first_seen'] >= cutoff:
+                    terms.add('f:new')
                 if int(product["quantity"] or 1) > 1 or product["promo_type"] not in (None, "", "無"):
                     terms.add("f:promo")
                 if "discount_pct" in pc and float(product["discount_pct"] or 0) > 0:
@@ -147,8 +158,11 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
         pchunks = [product_arrays[i:i + max_items] for i in range(0, len(product_arrays), max_items)] or [[]]
         echunks = [[row_array(e, ec) for e in events[i:i + max_items]] for i in range(0, len(events), max_items)] or [[]]
         chunk_count = max(len(pchunks), len(echunks))
-        dst.execute("INSERT INTO store_directory VALUES(?,?,?,?,?,?,?,?)", (
-            store_id, sid, store["name"], store["city"], store["locality"], store["rating"], store["review_count"], chunk_count))
+        if store['status'] == 'active' and int(store['is_open'] or 0) == 1:
+            active_stores += 1
+        dst.execute("INSERT INTO store_directory VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+            store_id, sid, store["name"], store["city"], store["locality"], store["rating"], store["review_count"], chunk_count,
+            store['latitude'],store['longitude'],store['address'],store['order_url'],store['first_seen'],store['last_seen'],store['status'],store['is_open']))
         for chunk_no in range(chunk_count):
             value = {
                 "v": 1, "store_columns": sc if chunk_no == 0 else None,
@@ -175,11 +189,17 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     dst.execute("INSERT INTO auxiliary_bundles VALUES(?,?,?,?,?)", ("normalized_auxiliary", "msgpack+zstd", len(raw), digest, blob))
 
     digests = {}
-    for table, order in (("stores", "store_uuid"), ("products", "store_uuid,product_uuid"), ("events", "store_uuid,id"), ("crawl_batches", "batch_id"), ("metadata", "key")):
+    store_order = '(SELECT first_seen FROM stores s WHERE s.store_uuid=products.store_uuid),store_uuid,first_seen,product_uuid'
+    event_order = '(SELECT first_seen FROM stores s WHERE s.store_uuid=events.store_uuid),store_uuid,id'
+    for table, order in (("stores", "first_seen,store_uuid"), ("products", store_order), ("events", event_order), ("crawl_batches", "batch_id"), ("metadata", "key")):
         count, digest = source_digest(src, table, order)
         digests[table] = {"count": count, "sha256": digest}
     source_meta = dict(src.execute("select key,value from metadata"))
     info = {"definition_version": "2026-09-search-v3", "source_revision": source_meta.get("source_revision", "local"),
+            "application": "FoodRadar", "schema_version": 1,
+            "active_stores": active_stores, "active_products": active_products,
+            "baseline_processed_at": baseline_time, "latest_processed_at": latest_time,
+            "source_counts": {k: v['count'] for k,v in digests.items()},
             "latest_batch": source_meta.get("latest_batch", ""),
             "shard_id": source_meta.get("rebuild_shard_id"), "total_shards": source_meta.get("rebuild_total_shards"),
             "format": 1, "source": str(source), "buckets": bucket_count, "chunks": chunks,
@@ -226,6 +246,7 @@ def verify(source, packed_db):
                          "expected": expected[table], "ok": counts[table] == expected[table]["count"] and hashes[table].hexdigest() == expected[table]["sha256"]}
     result["ok"] = all(result[t]["ok"] for t in TABLES)
     result["verify_seconds"] = round(time.perf_counter() - started, 3)
+    src.close(); dst.close()
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["ok"]: raise SystemExit(1)
 

@@ -97,9 +97,7 @@ def build_snapshot(output, config):
     documents=[json.loads(p.read_text(encoding='utf-8')) for p in sorted((output/'menus').glob('*.json'))]
     counts=apply_snapshot(conn, documents, batch)
     conn.close()
-    subprocess.run([sys.executable,str(ROOT/'scripts/prototype_pack_db.py'),'build',
-                    str(serving),str(output/'packed-serving.db')],check=True)
-    subprocess.run([sys.executable,str(ROOT/'scripts/prototype_pack_db.py'),'verify',
+    subprocess.run([sys.executable,str(ROOT/'scripts/build_web_db.py'),
                     str(serving),str(output/'packed-serving.db')],check=True)
     subprocess.run([sys.executable, str(ROOT/'src/package_and_upload_menu_snapshot.py'),
                     '--src-dir', str(output/'menus'), '--stores-file', str(output/'stores.json'),
@@ -137,6 +135,7 @@ def upload_snapshot(output, config):
     manifest['archive_path']=f'{base}/{archive_name}'
     payload=json.dumps(manifest,ensure_ascii=False).encode('utf-8')
     operations=[CommitOperationAdd(path_in_repo=f'{base}/{archive_name}',path_or_fileobj=str(output/'archive'/archive_name)),
+                CommitOperationAdd(path_in_repo=f'{base}/stores.json',path_or_fileobj=str(output/'stores.json')),
                 CommitOperationAdd(path_in_repo=f'{base}/complete.json',path_or_fileobj=payload),
                 CommitOperationAdd(path_in_repo=f'{folder}/latest.json',path_or_fileobj=payload)]
     for path in (output/'site').glob('*.parquet'):

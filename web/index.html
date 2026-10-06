@@ -319,9 +319,9 @@
         <div>
           <h2 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <i data-lucide="sparkles" class="w-5 h-5 text-emerald-500"></i>
-            全新進駐店家情報
+            店家搜尋與新店情報
           </h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400">最新採集批次首度發現之全新餐飲店家（每頁 50 筆）</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">搜尋全部店家，或查看近七日首次出現的新店（每頁 50 筆）</p>
         </div>
         <span class="text-xs px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 font-mono font-bold" id="new-stores-counter">載入中...</span>
       </div>
@@ -333,6 +333,10 @@
           <div class="relative sm:col-span-1">
             <i data-lucide="search" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
             <input type="text" id="store-search-input" placeholder="搜尋店家名稱或地址..." class="w-full pl-10 pr-4 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 dark:text-slate-100">
+            <select id="store-scope-select" aria-label="店家範圍" class="mt-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-sm">
+              <option value="new">近七日新店家</option>
+              <option value="all">全部店家</option>
+            </select>
           </div>
 
           <!-- 縣市選單 -->

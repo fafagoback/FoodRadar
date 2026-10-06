@@ -58,6 +58,7 @@ let APP_STATE = {
 
     // Tab 2
     storeSearch: '',
+    storeScope: 'new',
     storeCity: '全部',
     storeSort: 'rating_desc',
 
@@ -1069,7 +1070,7 @@ async function fetchNewStores(page = 1) {
       const client = await getPackedTursoClient();
       const stores = await client.searchStores({
         keyword: storeSearch,
-        newOnly: true,
+        newOnly: APP_STATE.filters.storeScope !== 'all',
         location: APP_STATE.locationFilter,
         limit: 50000
       });
@@ -2427,6 +2428,11 @@ function initEventListeners() {
 
   document.getElementById('store-sort-select')?.addEventListener('change', e => {
     APP_STATE.filters.storeSort = e.target.value;
+    fetchNewStores(1);
+  });
+
+  document.getElementById('store-scope-select')?.addEventListener('change', e => {
+    APP_STATE.filters.storeScope = e.target.value;
     fetchNewStores(1);
   });
 

@@ -1,17 +1,25 @@
 name: FoodRadar single-coordinate crawl
 on:
+  schedule:
+    # Asia/Taipei 06:30 daily; GitHub schedules use UTC.
+    - cron: '30 22 * * *'
   workflow_dispatch:
+    inputs:
+      publish_existing:
+        description: Initialize/retry Turso from the latest HF Raw (skip a new crawl)
+        type: boolean
+        default: false
 permissions:
   contents: read
   pages: write
   id-token: write
 concurrency:
-  group: foodradar-lite
+  group: foodradar-publish
   cancel-in-progress: false
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -23,14 +31,43 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
       - name: Crawl one location and upload to HF
+        if: ${{ !inputs.publish_existing }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
+      - name: Restore latest verified HF Raw for initialization or retry
+        if: ${{ inputs.publish_existing }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/prepare_hf_release.py
+      - name: Publish only necessary Turso rows and verify before commit
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.FOODRADAR_TURSO_WRITE_TOKEN }}
+        run: |
+          BATCH=$(cat data/latest.txt)
+          python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
+          python scripts/publish_turso_delta.py "data/$BATCH/packed-serving.db" --apply --report delta-report.json
+      - name: Configure verified read-only website connection
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: |
+          python scripts/configure_web.py
+          python scripts/prepare_pages.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: crawl-report
           path: data/**/report.json
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: serving-validation
+          path: |
+            packed-report.json
+            delta-report.json
           retention-days: 3
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
