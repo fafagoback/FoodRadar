@@ -3,7 +3,7 @@
 正式資料只有兩層：HF 每日完整原始快照，以及 FoodRadar 獨立的 Turso 網頁查詢資料庫。
 所有正式抓取、建置、發布由 GitHub Actions 執行；runner 的 SQLite/JSON 是即用即棄中間產物，不依賴使用者電腦。
 
-- 每日台灣時間 06:30 排程，或手動執行 `.github/workflows/crawl.yml`。
+- 每日台灣時間 06:30、18:30 各執行一次，或手動執行 `.github/workflows/crawl.yml`。
 - HF：`hub-google/UberEat/FoodRadar/snapshots/<YYYYMMDDhhmmss>/` 保存完整店家 `stores.json`、菜單 JSON 的 `taiwan_menus_<batch>.tar.gz`、完成 manifest；每日完整快照保留，latest 指向最新成功原始批次。Parquet 是由 Raw 衍生、可重建的歷史分析快取。
 - Turso：`foodradar-packed-v1`，與 UberEat DB 完全分開。沿用 MessagePack + Zstandard store bundles、search buckets、可查詢店家 directory、事件與版本 metadata。
 - 網頁：GitHub Pages，唯讀查詢 Turso；支援特價、近七日新店、全部店家搜尋、全商品搜尋／篩選／分頁、新品、促銷、價格變動歷史。第一批為基準，既有店家不冒充新店。
@@ -36,3 +36,9 @@ runner 的 ubereats.db 使用原 ETL 時序資料表；serving.db 使用原 Curr
 HF 使用單一 commit 上傳壓縮快照、店家清單、完成 manifest、Parquet 和 latest 指標。抓取或驗證失敗不發布新資料。Actions 每日排程與手動執行，使用 repository secrets 與 GitHub Pages。
 
 網站查詢此座標的 FoodRadar Turso DB，不連原全台 UberEat DB。第一批是歷史基準，後續批次才有跨期價差與新品比較。
+
+## 價格與商品生命週期
+
+- 價格只採店家明確 `isOpen=true` 且商品 `price>0` 的觀測，與上一筆有效標價比較；降幅至少 30% 即為大特價，沒有最低省下金額。促銷另列。
+- `first_seen` 永久保留歷史首次出現；`listing_started_at` 表示本輪上架開始。商品連續三次在營業店家菜單缺席才 inactive；inactive 商品距 `last_seen` 滿 60 天回歸時更新上架時間並計入七日新品。短期回歸不算新品，新店首日整份菜單仍不算新品。
+- HF `FoodRadar/state/<batch>/serving-state.db.gz` 永久保留 normalized state（含 inactive 商品身份、首次／最後出現、上架時間及價格基準），`state/latest.json` 以 checksum 指向最新成功備份。備份與完整 Raw 在同一個 HF commit 發布；Actions 先還原永久 state，再套用後續 Raw，Raw 清理不可刪除 state。首次升級會從現存 Raw 建立備份，已被刪除的舊歷史無法追溯還原。

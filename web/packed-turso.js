@@ -217,8 +217,9 @@ function productView(product, store) {
     distance_km: store.distance_km ?? null,
     crawled_time: releaseMeta.latest_processed_at || product.last_seen,
     first_seen: product.first_seen,
+    listing_started_at: product.listing_started_at || product.first_seen,
     original_price: originalPrice,
-    current_price: effective,
+    current_price: price,
     discount_pct: Number(product.discount_pct || 0),
     savings_amount: historicalSaving,
     is_price_deal: Number(product.is_price_deal || 0),
@@ -517,7 +518,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
     (!k || matchesWords(`${p.product_name}${p.store_name}${p.category_name}`, keyword)) &&
     (!c || matchesWords(`${p.city}${p.locality}${p.street_address}`, city)) &&
     (minDiscount === null || Number(p.discount_pct || 0) >= Number(minDiscount)) &&
-    (!newOnly || (String(p.first_seen || '').slice(0,10) > String(meta.baseline_processed_at || '').slice(0,10)));
+    (!newOnly || (String(p.listing_started_at || p.first_seen || '').slice(0,10) > String(meta.baseline_processed_at || '').slice(0,10)));
   return productsFromRefs(intersect(groups), location, limit, accepts);
 
 }

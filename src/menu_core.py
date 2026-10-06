@@ -211,7 +211,7 @@ def convert_api_data_to_schema(api_data: dict, store_url: str, fallback_name: st
     
     # 解析原生營業狀態 (即時布林值)
     is_open_val = api_data.get('isOpen')
-    is_open_bool = bool(is_open_val) if is_open_val is not None else None
+    is_open_bool = is_open_val is True if is_open_val is not None else None
     
     sections = []
     catalog = api_data.get('catalogSectionsMap') or {}

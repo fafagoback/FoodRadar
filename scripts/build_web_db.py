@@ -1,6 +1,6 @@
 """Build a stable web projection; Raw and normalized history remain on HF/runner.
 
-Daily observation timestamps and internal three-observation bookkeeping are not
+Daily observation timestamps and internal price-observation bookkeeping are not
 duplicated inside every web bundle. The web uses the release observation time.
 """
 import argparse

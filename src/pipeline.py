@@ -1,4 +1,6 @@
 """Use UberEat's archive and ETL contracts for a single delivery coordinate."""
+import contextlib
+import gzip
 import hashlib
 import json
 import os
@@ -23,6 +25,22 @@ def restore_history(config):
     previous=ROOT/'data/latest.txt'
     local_batch=previous.read_text(encoding='utf-8').strip() if previous.exists() else ''
     conn=None
+    checkpoint_path=f'{folder}/state/latest.json'
+    if not local_batch and checkpoint_path in files:
+        checkpoint=json.loads(Path(hf_hub_download(config['hf_repo_id'],checkpoint_path,repo_type='dataset')).read_text(encoding='utf-8'))
+        packed=Path(hf_hub_download(config['hf_repo_id'],checkpoint['state_path'],repo_type='dataset')).read_bytes()
+        if hashlib.sha256(packed).hexdigest()!=checkpoint['sha256']:
+            raise ValueError('HF permanent state checksum mismatch')
+        local_batch=checkpoint['batch_id']
+        target=ROOT/'data'/local_batch
+        target.mkdir(parents=True,exist_ok=True)
+        (target/'serving.db').write_bytes(gzip.decompress(packed))
+        with contextlib.closing(sqlite3.connect(target/'serving.db')) as verified:
+            if verified.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
+                raise ValueError('HF permanent state integrity check failed')
+            if verified.execute("SELECT value FROM metadata WHERE key='latest_batch'").fetchone()[0]!=local_batch:
+                raise ValueError('HF permanent state batch mismatch')
+        previous.write_text(local_batch,encoding='utf-8')
     try:
         for manifest_path in manifests:
             meta=json.loads(Path(hf_hub_download(config['hf_repo_id'],manifest_path,repo_type='dataset')).read_text(encoding='utf-8'))
@@ -141,6 +159,18 @@ def upload_snapshot(output, config):
     for path in (output/'site').glob('*.parquet'):
         subfolder='' if path.name.endswith('_latest.parquet') else 'history/'
         operations.append(CommitOperationAdd(path_in_repo=f'{folder}/Parquet/{subfolder}{path.name}',path_or_fileobj=str(path)))
+    # Durable normalized state retains inactive identities independently of Raw
+    # retention. Publish state and its pointer atomically with the complete Raw.
+    state_path=output/'serving-state.db.gz'
+    with (output/'serving.db').open('rb') as source, gzip.open(state_path,'wb') as dest:
+        shutil.copyfileobj(source,dest)
+    state_remote=f'{folder}/state/{batch}/serving-state.db.gz'
+    state_manifest={'schema_version':1,'batch_id':batch,'state_path':state_remote,
+                    'sha256':hashlib.sha256(state_path.read_bytes()).hexdigest()}
+    operations.extend([
+        CommitOperationAdd(path_in_repo=state_remote,path_or_fileobj=str(state_path)),
+        CommitOperationAdd(path_in_repo=f'{folder}/state/latest.json',
+                           path_or_fileobj=json.dumps(state_manifest).encode('utf-8'))])
     api=HfApi(token=os.environ['HF_TOKEN'])
     result=api.create_commit(repo_id=config['hf_repo_id'],repo_type='dataset',operations=operations,
                              commit_message=f'FoodRadar complete snapshot {batch}')

@@ -51,7 +51,7 @@ let APP_STATE = {
   filters: {
     // Tab 1
     discountMinPct: 30,
-    discountMinSavings: 20,
+    discountMinSavings: 0,
     discountSort: 'discount_desc',
     discountCategory: '全部',
     discountSearch: '',
@@ -1742,6 +1742,10 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
       const events = await client.packedHistory(storeUuid, productId);
       if (events.length) {
         history = events
+          .filter(e => {
+            const state = JSON.parse(e.new_state || e.old_state || '{}');
+            return Number(state.is_open) === 1;
+          })
           .map(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
             const p = Number(state.price || 0);

@@ -141,9 +141,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                 active_products += 1
                 terms.add(f"f:price:{int(price // 50)}")
                 terms.add("f:catalog")
-                if (product['first_seen'][:10] > baseline_time[:10]
-                        and product['first_seen'][:10] > store['first_seen'][:10]
-                        and product['first_seen'] >= cutoff):
+                if (product['listing_started_at'][:10] > baseline_time[:10]
+                        and product['listing_started_at'][:10] > store['first_seen'][:10]
+                        and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
                 if int(product["quantity"] or 1) > 1 or product["promo_type"] not in (None, "", "無"):
                     terms.add("f:promo")
