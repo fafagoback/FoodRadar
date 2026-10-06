@@ -446,8 +446,9 @@ async function executeTursoQuery(sql) {
 }
 
 let PACKED_TURSO_CLIENT = null;
+let storeSearchSequence = 0;
 async function getPackedTursoClient() {
-  if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import('./packed-turso.js');
+  if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import(`./packed-turso.js?_t=${Date.now()}`);
   return PACKED_TURSO_CLIENT;
 }
 
@@ -1061,6 +1062,7 @@ function renderDiscounts() {
 // 4. TAB 2: 新進店家速報 (New Stores) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchNewStores(page = 1) {
+  const sequence = ++storeSearchSequence;
   APP_STATE.storesPage = page;
   const { storeSearch, storeCity, storeSort } = APP_STATE.filters;
   let items = applyLocationFilter(APP_STATE.newStores || []);
@@ -1080,6 +1082,7 @@ async function fetchNewStores(page = 1) {
     }
   }
 
+  if (sequence !== storeSearchSequence) return;
   // 地區篩選
   if (storeCity && storeCity !== '全部') {
     items = items.filter(s => matchCityInMemory(s, storeCity));
@@ -1920,7 +1923,7 @@ async function fetchGlobalProducts(page = 1) {
   // 無篩選的首屏不需要掃描 250 萬筆 Parquet。這類查詢會佔住唯一的
   // DuckDB connection，令緊接著輸入的關鍵字查詢只能排隊，看起來像搜尋失效。
   // 本地快照已有足夠的預設瀏覽資料；真正有搜尋/縣市條件時才進湖倉。
-  const requiresLakehouseQuery = Boolean(rawSearch) || (cityFilter && cityFilter !== '全部') || APP_STATE.locationFilter.enabled;
+  const requiresLakehouseQuery = window.UBER_RADAR_CONFIG?.ENABLE_TURSO || Boolean(rawSearch) || (cityFilter && cityFilter !== '全部') || APP_STATE.locationFilter.enabled;
   if (!requiresLakehouseQuery) {
     executeInMemoryGlobalSearch(page);
     return;
@@ -1940,7 +1943,7 @@ async function fetchGlobalProducts(page = 1) {
         limit: requestLimit
       });
       if (sequence === globalSearchSequence) {
-        APP_STATE.globalResultLimit = rows.length >= requestLimit ? requestLimit : null;
+        APP_STATE.globalResultLimit = window.UBER_RADAR_CONFIG?.SINGLE_POINT ? null : (rows.length >= requestLimit ? requestLimit : null);
         APP_STATE.allProducts = rows;
         executeInMemoryGlobalSearch(page);
         return;
