@@ -2,6 +2,7 @@
 import argparse
 import base64
 import json
+import math
 import os
 import sqlite3
 from pathlib import Path
@@ -80,6 +81,23 @@ def fingerprint(row):
     return row['checksum'] if 'checksum' in row else tuple(sorted(row.items()))
 
 
+def same_row(candidate, published):
+    if 'checksum' in candidate:
+        return candidate['checksum'] == published.get('checksum')
+    if set(candidate) != set(published):
+        return False
+    for key,value in candidate.items():
+        other = published[key]
+        # The HTTP server's float formatting can shift a coordinate by one ULP.
+        # This tolerance is far below a cent or any meaningful GPS difference.
+        if isinstance(value,float) and isinstance(other,(int,float)):
+            if not math.isclose(value,other,rel_tol=1e-14,abs_tol=1e-12):
+                return False
+        elif value != other:
+            return False
+    return True
+
+
 def remote_rows(remote, table, exists):
     if table not in exists:
         return {}
@@ -92,7 +110,7 @@ def plan_table(table, local_rows, published):
     keys = TABLE_KEYS[table]
     candidate = {tuple(row[k] for k in keys): row for row in local_rows}
     changed = [row for key, row in candidate.items()
-               if key not in published or fingerprint(row) != fingerprint(published[key])]
+               if key not in published or not same_row(row,published[key])]
     deleted = [key for key in published if key not in candidate]
     return changed, deleted
 

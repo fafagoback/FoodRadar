@@ -78,6 +78,20 @@ class DeltaTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Remote('https://ubereats-packed-v1-eeetchen.aws-ap-northeast-1.turso.io','unused')
 
+    def test_named_directory_comparison_ignores_response_column_order(self):
+        from publish_turso_delta import plan_table
+        row = {'store_id':1,'store_uuid':'uuid','name':'Test','rating':4.5}
+        changed,deleted = plan_table('store_directory',[row],{(1,):dict(reversed(list(row.items())))})
+        self.assertEqual((changed,deleted),([],[]))
+
+    def test_float_transport_rounding_does_not_trigger_daily_writes(self):
+        from publish_turso_delta import plan_table
+        row={'store_id':1,'latitude':25.133664341011666,'rating':4.5}
+        published={(1,):{**row,'latitude':25.133664341011663}}
+        self.assertEqual(plan_table('store_directory',[row],published),([],[]))
+        published[(1,)]['rating']=4.4
+        self.assertEqual(len(plan_table('store_directory',[row],published)[0]),1)
+
 
 if __name__ == '__main__':
     unittest.main()
