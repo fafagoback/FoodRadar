@@ -6,6 +6,19 @@ let locationStoresCache = { key: '', storeIds: new Set(), stores: [] };
 let releaseMeta = {};
 
 function cfg() { return window.UBER_RADAR_CONFIG || {}; }
+function menuCount(storeId) {
+  const chunks = bundleCache.get(Number(storeId));
+  if (!chunks) return null;
+  let cols, count = 0;
+  for (const chunk of chunks) {
+    cols = chunk.product_columns || cols;
+    for (const [,values] of chunk.products || []) {
+      const product = Object.fromEntries(cols.map((key,i) => [key,values[i]]));
+      if (product.status === 'active') count++;
+    }
+  }
+  return count;
+}
 function normalize(value) { return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ''); }
 
 function queryTokens(value) {
@@ -246,7 +259,7 @@ export async function getStoresInLocation(location) {
     rating_value: r.rating === null ? null : Number(r.rating),
     rating: r.rating === null ? null : Number(r.rating),
     review_count: Number(r.review_count || 0),
-    total_menu_items: 0,
+    total_menu_items: menuCount(r.store_id),
     latitude: Number(r.latitude),
     longitude: Number(r.longitude),
     street_address: r.address,
@@ -367,7 +380,7 @@ export async function directory(location, limit = 50000) {
     rating_value: r.rating === null ? null : Number(r.rating),
     rating: r.rating === null ? null : Number(r.rating),
     review_count: Number(r.review_count || 0),
-    total_menu_items: 0,
+    total_menu_items: menuCount(r.store_id),
     latitude: Number(r.latitude),
     longitude: Number(r.longitude),
     street_address: r.address,
@@ -418,7 +431,7 @@ export async function searchStores({ keyword = '', location = null, newOnly = fa
     rating_value: r.rating === null ? null : Number(r.rating),
     rating: r.rating === null ? null : Number(r.rating),
     review_count: Number(r.review_count || 0),
-    total_menu_items: 0,
+    total_menu_items: menuCount(r.store_id),
     latitude: Number(r.latitude),
     longitude: Number(r.longitude),
     street_address: r.address,

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 try:
     from .city_normalization import canonical_city
+    from .json_to_db import extract_promo_info, calculate_effective_price
 except ImportError:
     from city_normalization import canonical_city
+    from json_to_db import extract_promo_info, calculate_effective_price
 
 import argparse
 import hashlib
@@ -410,9 +412,12 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
 
                 price = _num((item.get("offers") or {}).get("price"), float, 0)
                 desc = str(item.get("description") or "")
-                promo = str(item.get("promo_type") or "無")
-                qty = max(1, _num(item.get("quantity"), int, 1))
-                effective = _num(item.get("effective_price"), float, round(price / qty, 2))
+                # Original Restaurant JSON describes offers in section/name/
+                # description; it does not carry ETL-only promo_type fields.
+                inferred_promo, inferred_qty = extract_promo_info(category, name, desc)
+                promo = str(item.get("promo_type") or inferred_promo)
+                qty = max(1, _num(item.get("quantity"), int, inferred_qty))
+                effective = _num(item.get("effective_price"), float, calculate_effective_price(price, promo, qty))
                 state = {
                     "product_name": name, "category": category, "description": desc,
                     "price": price, "quantity": qty, "promo_type": promo,

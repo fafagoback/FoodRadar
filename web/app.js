@@ -580,7 +580,7 @@ async function loadFromTurso() {
         max_savings_twd: Number(baselineStats.max_savings_twd || (rawDiscounts.length > 0 ? Math.max(...rawDiscounts.map(i => i.savings_amount || 0)) : 0))
       };
     }
-    statsData.intelligence_unavailable = !packedBatch || packedBatch !== staticBatch;
+    statsData.intelligence_unavailable = !packedBatch;
     updateStatsUI(statsData);
 
     // 渲染各頁籤
@@ -598,7 +598,7 @@ async function loadFromTurso() {
       const liveStores = APP_STATE.filteredStores || [];
       const liveProducts = APP_STATE.filteredProducts || [];
       const livePromotions = APP_STATE.filteredPromotions || [];
-      if (liveDiscounts.length || liveStores.length || liveProducts.length || livePromotions.length) {
+      {
         statsData.big_discounts_count = liveDiscounts.length;
         statsData.new_stores_count = liveStores.length;
         statsData.new_products_count = liveProducts.length;
@@ -1164,7 +1164,7 @@ function renderNewStores() {
         <div>
           <div class="flex items-start justify-between gap-2 mb-2">
             <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold text-white bg-emerald-600">
-              <i data-lucide="sparkles" class="w-3 h-3"></i>全新首度進駐
+              <i data-lucide="sparkles" class="w-3 h-3"></i>${APP_STATE.filters.storeScope === 'all' ? '目前可查詢' : '全新首度進駐'}
             </span>
             ${ratingHtml}
           </div>
@@ -1188,7 +1188,7 @@ function renderNewStores() {
 
         <div class="pt-4 mt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
           <span class="text-xs font-medium text-slate-600 dark:text-slate-300">
-            菜單共 <strong>${store.total_menu_items || 0}</strong> 道菜品
+            ${store.total_menu_items == null ? '菜單品項待查詢' : `菜單共 <strong>${store.total_menu_items}</strong> 道菜品`}
           </span>
 
           <a href="${escapeHtml(safeOrderUrl(store.order_action_url || store.store_url || '#'))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([store.order_action_url || store.store_url || '', '', store.store_name]))}" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 dark:hover:bg-emerald-900 transition-colors">

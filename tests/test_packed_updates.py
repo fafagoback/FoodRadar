@@ -24,6 +24,15 @@ def document(sid,pids):
 
 
 class PackedUpdateTests(unittest.TestCase):
+    def test_original_menu_text_supports_promotion_queries(self):
+        with contextlib.closing(sqlite3.connect(':memory:')) as conn:
+            conn.row_factory=sqlite3.Row
+            doc=document('ffffffff-ffff-4fff-8fff-ffffffffffff',['ffffffff-ffff-4fff-8fff-ffffffffffff'])
+            doc['hasMenu']['hasMenuSection'][0]['name']='買1送1'
+            apply_snapshot(conn,[doc],'20261006063000')
+            product=conn.execute('SELECT promo_type,quantity,effective_price FROM products').fetchone()
+            self.assertEqual(tuple(product),('買1送1',2,50))
+
     def test_daily_observation_does_not_rewrite_current_bundles_or_indexes(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), contextlib.ExitStack() as stack:
             root = Path(tmp)
