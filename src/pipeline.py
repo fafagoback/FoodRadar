@@ -118,6 +118,7 @@ def build_snapshot(output, config):
                     source_sha=os.environ.get('GITHUB_SHA','local'),
                     archive_path=f"{config['hf_folder']}/snapshots/{batch}/{archive.name}")
     (output/'complete.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    subprocess.run([sys.executable,str(ROOT/'scripts/verify_snapshot.py'),str(output)],check=True)
     # Publish only after archive validation and successful ETL. Never ship the build DB.
     target=ROOT/'web/data'
     target.mkdir(exist_ok=True)
