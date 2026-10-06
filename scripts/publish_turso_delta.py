@@ -77,7 +77,7 @@ class Remote:
 
 def fingerprint(row):
     # Never download remote blobs merely to decide whether to upload them.
-    return row['checksum'] if 'checksum' in row else tuple(row.items())
+    return row['checksum'] if 'checksum' in row else tuple(sorted(row.items()))
 
 
 def remote_rows(remote, table, exists):
@@ -172,7 +172,12 @@ def publish(database, remote, apply=False):
                 local = [dict(row) for row in conn.execute(f'SELECT * FROM {table}')]
                 changed, deleted = plan_table(table, local, remote_rows(remote,table,set(TABLE_KEYS)))
                 if changed or deleted:
-                    raise ValueError(f'Remote verification failed: {table}')
+                    details = ''
+                    if changed and table == 'store_directory':
+                        row = changed[0]
+                        old = remote_rows(remote,table,set(TABLE_KEYS)).get(tuple(row[k] for k in TABLE_KEYS[table]),{})
+                        details = str({key: {'expected':value,'received':old.get(key)} for key,value in row.items() if value != old.get(key)})
+                    raise ValueError(f'Remote verification failed: {table}; {details}')
             remote.query('COMMIT')
             report['applied'] = True
             return report
