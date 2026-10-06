@@ -18,6 +18,6 @@ try:
         raise ValueError('Browser database is not FoodRadar')
 finally:
     remote.close()
-config = dict(API_BASE_URL='./data', ENABLE_TURSO=True, ENABLE_DUCKDB=False,
+config = dict(ENABLE_TURSO=True, ENABLE_DUCKDB=False,
               SINGLE_POINT=True, TURSO_DATABASE_URL=url, TURSO_READONLY_TOKEN=token)
 (root/'web/config.js').write_text('window.UBER_RADAR_CONFIG = '+json.dumps(config,indent=2)+';\n',encoding='utf-8')

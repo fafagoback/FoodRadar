@@ -1,6 +1,6 @@
 /**
  * UberEats Radar - 前端分析儀表板核心互動邏輯
- * 方案 C: 邊緣靜態快照與 Jamstack CDN 極速架構 (0ms 本地記憶體即時檢索 + DuckDB-WASM 邊緣湖倉)
+ * FoodRadar：所有業務資料只讀取獨立 Turso 資料庫
  * 完整全資料集分頁展示 (每頁 50 筆，無截斷限制)
  * [Live Sync Support]
  */
@@ -77,83 +77,6 @@ let APP_STATE = {
   }
 };
 
-// DuckDB-WASM 邊緣 SQL 湖倉實例
-let DUCKDB_INSTANCE = null;
-let DUCKDB_CONN = null;
-let DUCKDB_INITIALIZING = false;
-let DUCKDB_READY = false;
-const REGISTERED_PARQUET_TABLES = new Set();
-
-async function ensureParquetRegistered(tableName) {
-  if (!DUCKDB_INSTANCE || !DUCKDB_CONN) return false;
-  if (REGISTERED_PARQUET_TABLES.has(tableName)) return true;
-
-  const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/+esm');
-
-  let localUrl = '';
-  let remoteUrl = '';
-
-  if (tableName === 'taiwan_catalog.parquet') {
-    localUrl = new URL('./data/taiwan_catalog_latest.parquet', window.location.href).href;
-    remoteUrl = (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.PARQUET_CATALOG_URL) 
-      || 'https://huggingface.co/datasets/hub-google/UberEat/resolve/main/Parquet/taiwan_catalog_latest.parquet';
-  } else {
-    // 縣市分區切片檔 (例如 catalog_taipei.parquet)
-    localUrl = new URL(`./data/partitions/${tableName}`, window.location.href).href;
-    const partitionsBase = (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.PARQUET_PARTITIONS_BASE_URL)
-      || 'https://huggingface.co/datasets/hub-google/UberEat/resolve/main/Parquet/partitions';
-    remoteUrl = `${partitionsBase.replace(/\/+$/, '')}/${tableName}`;
-  }
-
-  // 1. 先檢測本地是否存在切片 (快速 HEAD 探測，避免把 404 HTML 註冊到 DuckDB)
-  let targetUrl = '';
-  if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
-    try {
-      const headRes = await Promise.race([
-        fetch(localUrl, { method: 'HEAD', cache: 'no-store' }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1200))
-      ]);
-      if (headRes && headRes.ok) {
-        targetUrl = localUrl;
-        console.log(`🎯 [DuckDB-WASM] 命中本地切片: ${tableName}`);
-      }
-    } catch (e) {
-      // 本地無此切片，切換遠端
-    }
-  }
-
-  if (!targetUrl) {
-    targetUrl = remoteUrl;
-    console.log(`🌐 [DuckDB-WASM] 使用遠端 Hugging Face 湖倉: ${tableName}`);
-  }
-
-  // 2. 註冊至 DuckDB (先 dropFile 避免重名註冊錯誤)
-  try {
-    await DUCKDB_INSTANCE.dropFile(tableName).catch(() => {});
-    await DUCKDB_INSTANCE.registerFileURL(tableName, targetUrl, duckdb.DuckDBDataProtocol.HTTP, false);
-    await DUCKDB_CONN.query(`SELECT COUNT(*) FROM '${tableName}' LIMIT 1`);
-    REGISTERED_PARQUET_TABLES.add(tableName);
-    console.log(`✅ [DuckDB-WASM] 成功連線切片: ${tableName}`);
-    return true;
-  } catch (err) {
-    console.warn(`⚠️ [DuckDB-WASM] 切片連線失敗: ${tableName}`, err);
-    // 若原 targetUrl 失敗且原本嘗試本地，嘗試遠端
-    if (targetUrl === localUrl && remoteUrl) {
-      try {
-        await DUCKDB_INSTANCE.dropFile(tableName).catch(() => {});
-        await DUCKDB_INSTANCE.registerFileURL(tableName, remoteUrl, duckdb.DuckDBDataProtocol.HTTP, false);
-        await DUCKDB_CONN.query(`SELECT COUNT(*) FROM '${tableName}' LIMIT 1`);
-        REGISTERED_PARQUET_TABLES.add(tableName);
-        console.log(`✅ [DuckDB-WASM] 遠端切片備援成功: ${tableName}`);
-        return true;
-      } catch (err2) {
-        console.error(`❌ [DuckDB-WASM] 遠端切片備援亦失敗: ${tableName}`, err2);
-      }
-    }
-    return false;
-  }
-}
-
 // -----------------------------------------------------------------------------
 // 0. 版本追蹤與即時發佈自動偵測
 // -----------------------------------------------------------------------------
@@ -174,7 +97,7 @@ async function checkVersionUpdate(isInitial = false) {
 
     if (CURRENT_VERSION && info.version !== CURRENT_VERSION) {
       console.log(`[UberEats Radar] 發現新版本發佈: ${info.version} (目前: ${CURRENT_VERSION})，準備自動更新...`);
-      showToast('發現新版本發佈', '系統正在為您載入最新快照資料...', 'external', 2500);
+      showToast('發現新版本發佈', '系統正在為您載入最新版本...', 'external', 2500);
       setTimeout(() => {
         window.location.reload();
       }, 1200);
@@ -199,75 +122,7 @@ function startVersionWatcher() {
 }
 
 // -----------------------------------------------------------------------------
-// DuckDB-WASM 邊緣 SQL 查詢引擎 (v7.0 Hugging Face 百萬大數據湖倉)
-// -----------------------------------------------------------------------------
-async function initDuckDBEngine() {
-  if (DUCKDB_READY || DUCKDB_INITIALIZING) return;
-  if (!window.UBER_RADAR_CONFIG || window.UBER_RADAR_CONFIG.ENABLE_DUCKDB === false) return;
-
-  DUCKDB_INITIALIZING = true;
-  const badgeEl = document.getElementById('lakehouse-badge');
-  if (badgeEl) {
-    badgeEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span><span>連線湖倉中...</span>`;
-    badgeEl.className = "px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-200 dark:border-amber-800 flex items-center gap-1";
-  }
-
-  try {
-    const initPromise = (async () => {
-      const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/+esm');
-      const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-      const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
-
-      const worker = await duckdb.createWorker(bundle.mainWorker);
-      const logger = new duckdb.ConsoleLogger();
-      const db = new duckdb.AsyncDuckDB(logger, worker);
-      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-
-      const conn = await db.connect();
-      DUCKDB_INSTANCE = db;
-      DUCKDB_CONN = conn;
-
-      // 嘗試預先快取台北市切片 (最常用分區，20MB，非阻塞)
-      ensureParquetRegistered('catalog_taipei.parquet').catch(() => null);
-      return true;
-    })();
-
-    // 8 秒逾時防護，若逾時則無縫維持本地快照模式
-    await Promise.race([
-      initPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DuckDB 連線超時')), 8000))
-    ]);
-
-    DUCKDB_READY = true;
-    console.log('✅ [DuckDB-WASM] 湖倉 SQL 查詢引擎已就緒');
-
-    if (badgeEl) {
-      badgeEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span><span>DuckDB 湖倉在線</span>`;
-      badgeEl.className = "px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1";
-    }
-
-    // 若使用者當前正停留在全庫檢索分頁，無縫升級為湖倉深度檢索
-    if (APP_STATE.currentTab === 'tab-global-search') {
-      fetchGlobalProducts(APP_STATE.globalPage || 1);
-    }
-  } catch (err) {
-    console.warn('⚠️ [DuckDB-WASM] 湖倉連線未啟動 (維持本地極速快照檢索模式):', err);
-    DUCKDB_READY = false;
-    if (badgeEl) {
-      badgeEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span><span>本地快照搜尋</span>`;
-      badgeEl.className = "px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 flex items-center gap-1";
-    }
-    if (APP_STATE.currentTab === 'tab-global-search') {
-      executeInMemoryGlobalSearch(APP_STATE.globalPage || 1);
-    }
-  } finally {
-    DUCKDB_INITIALIZING = false;
-  }
-}
-
-// -----------------------------------------------------------------------------
 // 初始化啟動
-// -----------------------------------------------------------------------------
 async function bootstrap() {
   initTheme();
   loadLocationFilter();
@@ -278,7 +133,6 @@ async function bootstrap() {
     lucide.createIcons();
   }
   startVersionWatcher();
-  initDuckDBEngine().catch(e => console.warn('DuckDB init background error:', e));
 }
 
 function validateLocationFilter(latitude, longitude, radiusKm) {
@@ -452,299 +306,46 @@ async function getPackedTursoClient() {
   return PACKED_TURSO_CLIENT;
 }
 
+function showDatabaseUnavailable(error, gridId) {
+  console.error('FoodRadar Turso query failed:', error);
+  for (const id of gridId ? [gridId] : ['discounts-grid','new-stores-grid','new-products-grid','promos-grid','global-products-grid']) {
+    const el = document.getElementById(id);
+    if (el) { el.style.opacity = '1'; el.innerHTML = '<p class="col-span-full py-12 text-center">資料庫暫時無法連線，請稍後重新查詢。</p>'; }
+  }
+  if (!gridId) {
+    updateStatsUI({latest_batch_formatted:'資料庫載入失敗',intelligence_unavailable:true});
+    for (const id of ['stat-total-stores','stat-total-products']) document.getElementById(id).textContent = '資料暫時無法取得';
+  }
+  return false;
+}
 async function loadFromTurso() {
-  console.log('⚡ [Turso] 正在載入 packed serving database...');
   try {
     const client = await getPackedTursoClient();
     const packed = await client.loadPackedDashboard(APP_STATE.locationFilter);
     const counts = packed.meta.source_counts || {};
-    const isLoc = Boolean(APP_STATE.locationFilter?.enabled);
-
-    // 建立範圍內店家經緯度與距離快速查找索引
     APP_STATE.storeLocationMap = new Map();
-    for (const s of (packed.stores || [])) {
-      const info = {
-        latitude: Number(s.latitude),
-        longitude: Number(s.longitude),
-        distance_km: Number(s.distance_km)
-      };
-      if (s.store_uuid) APP_STATE.storeLocationMap.set(String(s.store_uuid), info);
-      if (s.store_id) APP_STATE.storeLocationMap.set(String(s.store_id), info);
-      if (s.store_name) APP_STATE.storeLocationMap.set(String(s.store_name), info);
-      if (s.name) APP_STATE.storeLocationMap.set(String(s.name), info);
+    for (const store of packed.stores || []) {
+      const info = {latitude:Number(store.latitude),longitude:Number(store.longitude),distance_km:Number(store.distance_km)};
+      for (const key of [store.store_uuid,store.store_id,store.store_name,store.name]) if (key) APP_STATE.storeLocationMap.set(String(key),info);
     }
-
-    let baselineStats = {};
-    try {
-      const sRes = await fetch(getApiUrl('/api/stats')).catch(() => null);
-      if (sRes && sRes.ok) baselineStats = await sRes.json();
-    } catch (_) {}
-
-    // 取得爬蟲抓取資料的真實批次時間
-    const latestBatchTime = packed.meta?.latest_processed_at
-      || (packed.meta?.latest_batch ? formatBatchDate(packed.meta.latest_batch) : '')
-      || '資料版本待更新';
-
-    // 載入全量特價/新進店家/新品/促銷完整資料集
-    let rawDiscounts = [];
-    let newStores = [];
-    let newProducts = [];
-    let promotions = [];
-
-    try {
-      const [discRes, storesRes, prodsRes, promosRes] = await Promise.all([
-        fetch(getApiUrl('/api/discounts')).catch(() => null),
-        fetch(getApiUrl('/api/new-stores')).catch(() => null),
-        fetch(getApiUrl('/api/new-products')).catch(() => null),
-        fetch(getApiUrl('/api/promotions')).catch(() => null)
-      ]);
-      if (discRes && discRes.ok) {
-        const d = await discRes.json();
-        rawDiscounts = d.items || d || [];
-      }
-      if (storesRes && storesRes.ok) {
-        const d = await storesRes.json();
-        newStores = d.items || d || [];
-      }
-      if (prodsRes && prodsRes.ok) {
-        const d = await prodsRes.json();
-        newProducts = d.items || d || [];
-      }
-      if (promosRes && promosRes.ok) {
-        const d = await promosRes.json();
-        promotions = d.items || d || [];
-      }
-    } catch (snapErr) {
-      console.warn('快照資料預載警告:', snapErr);
-    }
-
-    // Never blend intelligence lists from a different release with current
-    // packed search data. Empty is safer than confidently showing stale or
-    // semantically incompatible results when the remote query later fails.
-    const packedBatch = String(packed.meta?.latest_batch || '');
-    const staticBatch = String(baselineStats.latest_batch || '');
-    if (!packedBatch || packedBatch !== staticBatch) {
-      console.warn(`靜態情報批次 ${staticBatch} 與 packed ${packedBatch} 不一致，已停用舊備援清單`);
-      baselineStats = {};
-      rawDiscounts = [];
-      newStores = [];
-      newProducts = [];
-      promotions = [];
-    }
-
-    APP_STATE.rawDiscounts = rawDiscounts;
-    APP_STATE.newStores = newStores;
-    APP_STATE.newProducts = newProducts;
-    APP_STATE.promotions = promotions;
     APP_STATE.allProducts = packed.products;
-
-    let statsData;
-    if (isLoc) {
-      // 範圍過濾模式：根據指定經緯度與半徑，真實計算周圍符合條件的各項數據
-      const filteredDiscounts = applyLocationFilter(rawDiscounts);
-      const filteredNewStores = applyLocationFilter(newStores);
-      const filteredNewProducts = applyLocationFilter(newProducts);
-      const filteredPromos = applyLocationFilter(promotions);
-
-      const maxSavings = filteredDiscounts.length > 0
-        ? Math.max(0, ...filteredDiscounts.map(i => Number(i.savings_amount || 0)))
-        : 0;
-
-      statsData = {
-        status: 'success',
-        latest_batch: packed.meta?.latest_batch || baselineStats.latest_batch || 'packed-v1',
-        latest_batch_formatted: latestBatchTime,
-        total_stores: packed.stores.length,
-        total_monitored_stores: packed.stores.length,
-        total_products: packed.products.length,
-        total_monitored_products: packed.products.length,
-        big_discounts_count: filteredDiscounts.length,
-        new_stores_count: filteredNewStores.length,
-        new_products_count: filteredNewProducts.length,
-        promotions_count: filteredPromos.length,
-        max_savings_twd: Math.round(maxSavings)
-      };
-    } else {
-      // 全台模式：呈現全台大盤真實爬蟲統計
-      statsData = {
-        status: 'success',
-        latest_batch: packed.meta?.latest_batch || baselineStats.latest_batch || 'packed-v1',
-        latest_batch_formatted: latestBatchTime,
-        total_stores: Number(packed.meta.active_stores || packed.stores.length || 0),
-        total_monitored_stores: Number(counts.stores || packed.meta.active_stores || 0),
-        total_products: Number(packed.meta.active_products || packed.products.length || 0),
-        total_monitored_products: Number(counts.products || packed.meta.products || 0),
-        big_discounts_count: Number(baselineStats.big_discounts_count ?? rawDiscounts.length),
-        new_stores_count: Number(newStores.length),
-        new_products_count: Number(baselineStats.new_products_count ?? newProducts.length),
-        promotions_count: Number(baselineStats.promotions_count ?? promotions.length),
-        max_savings_twd: Number(baselineStats.max_savings_twd || (rawDiscounts.length > 0 ? Math.max(...rawDiscounts.map(i => i.savings_amount || 0)) : 0))
-      };
-    }
-    statsData.intelligence_unavailable = !packedBatch;
-    updateStatsUI(statsData);
-
-    // 渲染各頁籤
-    await fetchNewStores(1);
-    await fetchGlobalProducts(1);
-    await fetchDiscounts(1);
-    await fetchNewProducts(1);
-    await fetchPromotions(1);
-
-    // The checked-in JSON is only an offline fallback. Once all four live
-    // queries have completed, derive the cards from the same packed release
-    // that supplies the visible lists instead of the older fallback batch.
-    if (packed.meta?.latest_batch && packed.meta?.definition_version) {
-      const liveDiscounts = APP_STATE.discounts || [];
-      const liveStores = APP_STATE.filteredStores || [];
-      const liveProducts = APP_STATE.filteredProducts || [];
-      const livePromotions = APP_STATE.filteredPromotions || [];
-      {
-        statsData.big_discounts_count = liveDiscounts.length;
-        statsData.new_stores_count = liveStores.length;
-        statsData.new_products_count = liveProducts.length;
-        statsData.promotions_count = livePromotions.length;
-        statsData.max_savings_twd = liveDiscounts.reduce((best, item) => Math.max(best, Number(item.savings_amount) || 0), 0);
-        statsData.intelligence_unavailable = false;
-        updateStatsUI(statsData);
-      }
-    }
-
-    const badgeEl = document.getElementById('lakehouse-badge');
-    if (badgeEl) {
-      badgeEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span><span>Turso 邊緣連線</span>`;
-      badgeEl.className = "px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1";
-    }
-
-    console.log('✅ [Turso] 資料庫載入成功！');
+    const results = await Promise.all([fetchNewStores(1),fetchGlobalProducts(1),fetchDiscounts(1),fetchNewProducts(1),fetchPromotions(1)]);
+    if (results.some(result => result === false)) throw new Error('Dashboard query failed');
+    const discounts = APP_STATE.discounts || [];
+    updateStatsUI({latest_batch:packed.meta.latest_batch,
+      latest_batch_formatted:packed.meta.latest_processed_at || formatBatchDate(packed.meta.latest_batch),
+      total_monitored_stores:Number(counts.stores || packed.stores.length),
+      total_monitored_products:Number(counts.products || packed.products.length),
+      big_discounts_count:discounts.length,new_stores_count:(APP_STATE.filteredStores || []).length,
+      new_products_count:(APP_STATE.filteredProducts || []).length,promotions_count:(APP_STATE.filteredPromotions || []).length,
+      max_savings_twd:discounts.reduce((best,item)=>Math.max(best,Number(item.savings_amount)||0),0)});
     return true;
-  } catch (err) {
-    console.warn('⚠️ [Turso] 連線失敗，切換為靜態快照:', err);
-    return false;
-  }
+  } catch (error) { return showDatabaseUnavailable(error); }
 }
-
-// -----------------------------------------------------------------------------
-// 1. 靜態 API 網址映射與資料載入
-// -----------------------------------------------------------------------------
-function getApiUrl(endpoint) {
-  const base = (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.API_BASE_URL) || './data';
-  const cleanBase = base.replace(/\/+$/, '');
-  const path = endpoint.split('?')[0];
-
-  const map = {
-    '/api/stats': '/stats.json',
-    '/api/discounts': '/discounts.json',
-    '/api/new-stores': '/new_stores.json',
-    '/api/new-products': '/new_products.json',
-    '/api/promotions': '/promotions.json',
-    '/api/products': '/products.json',
-    '/api/history': '/history.json'
-  };
-
-  const mapped = map[path] || (path.endsWith('.json') ? path : `${path}.json`);
-  return `${cleanBase}${mapped}?_t=${Date.now()}`;
-}
-
 async function loadDashboardData() {
-  let loadedFromServer = false;
-
-  // 優先嘗試從 Turso 直連讀取即時大數據
-  if (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_TURSO) {
-    loadedFromServer = await loadFromTurso();
-  }
-
-  // 舊的靜態快照沒有座標。範圍模式下不可回退後假裝它是附近資料。
-  if (!loadedFromServer && APP_STATE.locationFilter.enabled && !window.UBER_RADAR_CONFIG?.SINGLE_POINT) {
-    APP_STATE.rawDiscounts = [];
-    APP_STATE.newStores = [];
-    APP_STATE.newProducts = [];
-    APP_STATE.promotions = [];
-    APP_STATE.allProducts = [];
-    updateStatsUI({ latest_batch_formatted: 'Turso 暫時無法連線' });
-    await Promise.all([fetchDiscounts(1), fetchNewStores(1), fetchNewProducts(1), fetchPromotions(1)]);
-    executeInMemoryGlobalSearch(1);
-    showToast('附近資料載入失敗', 'Turso 暫時無法連線，未使用不含座標的舊快照。', 'alert-triangle', 5000);
-    return;
-  }
-
-  // 若 Turso 未啟用或連線失敗，自動無縫回退至靜態 JSON 快照
-  if (!loadedFromServer) {
-    try {
-      const [statsRes, discRes, storesRes, prodsRes, promosRes, catalogRes, histRes] = await Promise.all([
-        fetch(getApiUrl('/api/stats')),
-        fetch(getApiUrl('/api/discounts')),
-        fetch(getApiUrl('/api/new-stores')),
-        fetch(getApiUrl('/api/new-products')),
-        fetch(getApiUrl('/api/promotions')),
-        fetch(getApiUrl('/api/products')),
-        fetch(getApiUrl('/api/history')).catch(() => null)
-      ]);
-
-      if (statsRes && statsRes.ok) {
-        APP_STATE.isServerMode = true;
-        const statsData = await statsRes.json();
-        updateStatsUI(statsData);
-
-        if (discRes && discRes.ok) {
-          const d = await discRes.json();
-          APP_STATE.rawDiscounts = d.items || d || [];
-        }
-        if (storesRes && storesRes.ok) {
-          const d = await storesRes.json();
-          APP_STATE.newStores = d.items || d || [];
-        }
-        if (prodsRes && prodsRes.ok) {
-          const d = await prodsRes.json();
-          APP_STATE.newProducts = d.items || d || [];
-        }
-        if (promosRes && promosRes.ok) {
-          const d = await promosRes.json();
-          APP_STATE.promotions = d.items || d || [];
-        }
-        if (catalogRes && catalogRes.ok) {
-          const d = await catalogRes.json();
-          APP_STATE.allProducts = d.items || d || [];
-        }
-        if (histRes && histRes.ok) {
-          const d = await histRes.json();
-          APP_STATE.historyMap = d.history || {};
-        }
-
-        await fetchDiscounts(1);
-        await fetchNewStores(1);
-        await fetchNewProducts(1);
-        await fetchPromotions(1);
-        await fetchGlobalProducts(1);
-        loadedFromServer = true;
-      }
-    } catch (err) {
-      console.warn('無法連線靜態 API，切換為離線備援資料:', err);
-    }
-  }
-
-  if (!loadedFromServer) {
-    APP_STATE.isServerMode = false;
-    if (window.UBER_RADAR_DATA) {
-      const data = window.UBER_RADAR_DATA;
-      updateStatsUI(data.stats || {});
-      APP_STATE.rawDiscounts = data.big_discounts || [];
-      APP_STATE.newStores = data.new_stores || [];
-      APP_STATE.newProducts = data.new_products || [];
-      APP_STATE.promotions = data.promotions || [];
-      APP_STATE.allProducts = data.all_products || [];
-      APP_STATE.historyMap = data.history || {};
-      await fetchDiscounts(1);
-      await fetchNewStores(1);
-      await fetchNewProducts(1);
-      await fetchPromotions(1);
-      await fetchGlobalProducts(1);
-    } else {
-      console.warn('未偵測到備援資料。');
-    }
-  }
+  if (!window.UBER_RADAR_CONFIG?.ENABLE_TURSO) return showDatabaseUnavailable(new Error('FoodRadar database is not configured'));
+  return loadFromTurso();
 }
-
 // -----------------------------------------------------------------------------
 // 2. 更新統計指標 UI
 // -----------------------------------------------------------------------------
@@ -896,7 +497,7 @@ async function fetchDiscounts(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
-      console.warn('Turso 即時大特價搜尋異常，降級使用本地快照:', err);
+      return showDatabaseUnavailable(err, 'discounts-grid');
     }
   }
 
@@ -1078,7 +679,7 @@ async function fetchNewStores(page = 1) {
       });
       items = stores || [];
     } catch (e) {
-      console.warn('Turso store search error:', e);
+      return showDatabaseUnavailable(e, 'new-stores-grid');
     }
   }
 
@@ -1238,7 +839,7 @@ async function fetchNewProducts(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
-      console.warn('Turso 新品搜尋異常，降級使用本地快照:', err);
+      return showDatabaseUnavailable(err, 'new-products-grid');
     }
   }
 
@@ -1514,7 +1115,7 @@ async function fetchPromotions(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
-      console.warn('Turso 促銷活動搜尋異常，降級使用本地快照:', err);
+      return showDatabaseUnavailable(err, 'promos-grid');
     }
   }
 
@@ -1949,28 +1550,11 @@ async function fetchGlobalProducts(page = 1) {
         return;
       }
     } catch (err) {
-      console.warn('Packed Turso 搜尋失敗，切換後續搜尋引擎:', err);
+      return showDatabaseUnavailable(err, 'global-products-grid');
     }
   }
 
-  // 2. DuckDB WASM 搜尋
-  if (APP_STATE.isDuckDBReady && window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_DUCKDB) {
-    try {
-      const ok = await executeDuckDBGlobalSearch(page, controller.signal);
-      if (!ok || controller.signal.aborted || sequence !== globalSearchSequence) {
-        return;
-      }
-      return;
-    } catch (e) {
-      if (controller.signal.aborted) return;
-      console.warn('DuckDB WASM 查詢失敗，退回記憶體快照比對:', e);
-    }
-  }
-
-  // 3. Fallback: 記憶體快照比對
-  if (sequence === globalSearchSequence) {
-    executeInMemoryGlobalSearch(page);
-  }
+  return showDatabaseUnavailable(new Error('Database query unavailable'), 'global-products-grid');
 }
 
 function changeGlobalPage(page) {
@@ -2142,7 +1726,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   modal.classList.add('flex');
 
   const historyKey = `${storeUuid}::${productId}`;
-  let history = (APP_STATE.historyMap && APP_STATE.historyMap[historyKey]) ? [...APP_STATE.historyMap[historyKey]] : [];
+  let history = [];
 
   // Packed DB: events live inside the selected store bundle.
   if (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_TURSO && (storeUuid || productId)) {
@@ -2166,35 +1750,11 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
           .filter(h => h.price > 0 && h.eff_price > 0);
       }
     } catch (err) {
-      console.warn('Packed Turso 歷史記錄查詢失敗:', err);
+      showToast('歷史資料載入失敗', '資料庫暫時無法連線，請稍後重試。', 'alert-triangle', 5000); modal.classList.add('hidden'); modal.classList.remove('flex'); return;
     }
   }
 
-  if (window.UBER_RADAR_SERVING_API && storeUuid && history.length === 0) {
-    try {
-      const base = String(window.UBER_RADAR_CONFIG.WORKER_API_BASE_URL).replace(/\/$/, '');
-      const response = await fetch(`${base}/product/${encodeURIComponent(storeUuid)}/${encodeURIComponent(productId)}/history?days=60`);
-      if (response.ok) {
-        const payload = await response.json();
-        history = (payload.items || [])
-          .map(event => {
-            const state = JSON.parse(event.new_state || '{}');
-            const p = Number(state.price || 0);
-            const eff = Number(state.effective_price || p);
-            return {
-              crawled_time: event.event_time,
-              price: p,
-              eff_price: eff,
-              quantity: Number(state.quantity || 1),
-              promo_type: state.promo_type || '無'
-            };
-          })
-          .filter(h => h.price > 0 && h.eff_price > 0);
-      }
-    } catch (error) { console.warn('Serving history unavailable', error); }
-  }
-  
-  // 若 history.json 未命中，嘗試從當前已載入之各資料集中尋找該商品的真實即時資訊
+  // Current product values also originate from Turso.
   if (history.length === 0) {
     const found = (APP_STATE.rawDiscounts || []).find(x => String(x.product_id) === String(productId))
       || (APP_STATE.promotions || []).find(x => String(x.product_id) === String(productId))

@@ -31,7 +31,7 @@ py -m http.server 8000 --directory web
 
 批次使用原專案 14 碼 YYYYMMDDhhmmss。data/<batch>/menus 為原格式 Schema.org Restaurant JSON；archive/taiwan_menus_<batch>.tar.gz 包含 manifest.json 與 Json/<batch>_<SHA256>.json。封存前檢查店家集合、批次和 Schema；packed DB 驗證完整解壓、checksum 和筆數。
 
-runner 的 ubereats.db 使用原 ETL 時序資料表；serving.db 使用原 Current/Events schema；packed-serving.db 使用原 MessagePack + Zstandard schema。site 是建置中間產物；Pages 發布前移除完整商品／歷史 JSON，只保留小型統計與空備援。正式網頁查詢 Turso，全庫不截斷。
+runner 的 ubereats.db 使用原 ETL 時序資料表；serving.db 使用原 Current/Events schema；packed-serving.db 使用原 MessagePack + Zstandard schema。site 是建置中間產物；Pages 發布前移除完整商品／歷史 JSON，不發布任何業務 JSON／Parquet，也不保留靜態備援。正式網頁查詢 Turso，全庫不截斷。
 
 HF 使用單一 commit 上傳壓縮快照、店家清單、完成 manifest、Parquet 和 latest 指標。抓取或驗證失敗不發布新資料。Actions 每日排程與手動執行，使用 repository secrets 與 GitHub Pages。
 
