@@ -1,0 +1,9 @@
+{
+  "latitude": 25.123246847935267,
+  "longitude": 121.52951826298867,
+  "radius_km": 3.0,
+  "max_pages": 30,
+  "workers": 3,
+  "hf_repo_id": "hub-google/UberEat",
+  "hf_folder": "FoodRadar"
+}

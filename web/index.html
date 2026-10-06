@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FoodRadar LITE</title>
+<style>body{font:16px system-ui;background:#f5f6f1;color:#20352b;max-width:960px;margin:auto;padding:24px}h1{font-size:40px}input{box-sizing:border-box;width:100%;padding:14px;border:1px solid #bcc8bc;border-radius:12px}article{background:white;padding:20px;border-radius:16px;margin-top:16px}a{color:#176746}summary{cursor:pointer}li{padding:6px}small{color:#617166}</style>
+<h1>FoodRadar <small>LITE</small></h1><p>指定位置附近的 Uber Eats 店家與菜單</p><p id="status">載入資料中…</p>
+<input id="search" type="search" aria-label="搜尋店家或餐點" placeholder="搜尋店家或餐點"><main id="stores"></main>
+<script>
+let snapshot;
+const node=(tag,text)=>{const el=document.createElement(tag);el.textContent=text;return el};
+function render(){const q=document.querySelector('#search').value.trim().toLowerCase(), root=document.querySelector('#stores');root.replaceChildren();for(const s of snapshot.stores){const sections=s.hasMenu?.hasMenuSection||[];const items=sections.flatMap(x=>x.hasMenuItem||[]);const nameMatch=s.name.toLowerCase().includes(q);const matches=items.filter(x=>nameMatch||x.name.toLowerCase().includes(q));if(!nameMatch&&!matches.length)continue;const card=node('article',''),link=node('a',s.name);if(/^https:\/\/(www\.)?ubereats\.com\//.test(s['@id'])){link.href=s['@id'];link.target='_blank';link.rel='noopener'}card.append(link,node('p',`${s.distance_km} 公里 · ${items.length} 道餐點`));const details=node('details','');details.append(node('summary','查看菜單'));const list=node('ul','');for(const item of matches){const price=item.offers?.price;const value=price!=null&&price!==''&&Number.isFinite(Number(price))&&Number(price)>=0?`NT$${price}`:'價格未提供';list.append(node('li',`${item.name} — ${value}`))}details.append(list);card.append(details);root.append(card)}if(!root.children.length)root.append(node('p','沒有符合搜尋的店家或餐點。'))}
+fetch('data.json').then(r=>{if(!r.ok)throw Error('尚未完成首次抓取');return r.json()}).then(s=>{snapshot=s;document.querySelector('#status').textContent=`${s.report.retained} 間店家 · 半徑 ${s.report.radius_km} 公里 · 批次 ${s.report.batch_id}`;render()}).catch(()=>{document.querySelector('#status').textContent='尚無資料，請先執行抓取流程。'});document.querySelector('#search').addEventListener('input',()=>{if(snapshot)render()});
+</script></html>
