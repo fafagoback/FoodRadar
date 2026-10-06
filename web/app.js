@@ -1710,7 +1710,10 @@ function changeGlobalPage(page) {
 // -----------------------------------------------------------------------------
 // 8. 價格走勢圖彈窗 (Price Trend Modal with Chart.js & DuckDB Edge SQL)
 // -----------------------------------------------------------------------------
+let priceHistorySequence = 0;
+
 async function showPriceHistoryModal(storeUuid, productId, productName, storeName, orderUrl) {
+  const sequence = ++priceHistorySequence;
   const modal = document.getElementById('price-history-modal');
   document.getElementById('modal-store-name').textContent = storeName;
   document.getElementById('modal-product-name').textContent = productName;
@@ -1725,7 +1728,11 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   modal.classList.remove('hidden');
   modal.classList.add('flex');
 
-  const historyKey = `${storeUuid}::${productId}`;
+  document.getElementById('modal-history-tbody').innerHTML = '<tr><td colspan="4" class="px-3 py-4 text-center">載入價格歷史中...</td></tr>';
+  if (APP_STATE.chartInstance) {
+    APP_STATE.chartInstance.destroy();
+    APP_STATE.chartInstance = null;
+  }
   let history = [];
 
   // Packed DB: events live inside the selected store bundle.
@@ -1750,17 +1757,19 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
           .filter(h => h.price > 0 && h.eff_price > 0);
       }
     } catch (err) {
+      if (sequence !== priceHistorySequence) return;
       showToast('歷史資料載入失敗', '資料庫暫時無法連線，請稍後重試。', 'alert-triangle', 5000); modal.classList.add('hidden'); modal.classList.remove('flex'); return;
     }
   }
 
+  if (sequence !== priceHistorySequence) return;
+
   // Current product values also originate from Turso.
   if (history.length === 0) {
-    const found = (APP_STATE.rawDiscounts || []).find(x => String(x.product_id) === String(productId))
-      || (APP_STATE.promotions || []).find(x => String(x.product_id) === String(productId))
-      || (APP_STATE.newProducts || []).find(x => String(x.product_id) === String(productId))
-      || (APP_STATE.allProducts || []).find(x => String(x.product_id) === String(productId))
-      || (APP_STATE.globalProducts || []).find(x => String(x.product_id) === String(productId));
+    const found = [APP_STATE.rawDiscounts, APP_STATE.promotions, APP_STATE.newProducts,
+      APP_STATE.allProducts, APP_STATE.globalProducts].flat().find(x => x
+        && String(x.product_uuid || x.product_id) === String(productId)
+        && String(x.store_uuid || x.store_id || '') === String(storeUuid));
 
     if (found && Number(found.price || 0) > 0) {
       const eff = found.eff_price || (found.quantity > 1 ? Math.round((found.price / found.quantity) * 10) / 10 : found.price);
@@ -1798,7 +1807,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
 
     tbody.innerHTML = rowsHtml + hintHtml;
   } else {
-    tbody.innerHTML = `<tr><td colspan="4" class="px-3 py-4 text-center text-slate-400 text-xs">目前批次為最新快照記錄</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="px-3 py-4 text-center text-slate-400 text-xs">目前沒有可用的價格歷史</td></tr>`;
   }
 
   const ctx = document.getElementById('priceHistoryChart').getContext('2d');
@@ -1810,8 +1819,8 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   const gridColor = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)';
   const textColor = isDark ? '#94a3b8' : '#64748b';
 
-  const labels = history.length > 0 ? history.map(h => formatBatchDate(h.crawled_time)) : ['當前批次'];
-  const prices = history.length > 0 ? history.map(h => Number(h.eff_price)) : [0];
+  const labels = history.length > 0 ? history.map(h => formatBatchDate(h.crawled_time)) : [];
+  const prices = history.length > 0 ? history.map(h => Number(h.eff_price)) : [];
 
   APP_STATE.chartInstance = new Chart(ctx, {
     type: 'line',
@@ -1854,8 +1863,8 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
             font: { size: 11 },
             callback: (v) => `$${v}`
           },
-          suggestedMin: Math.max(0, Math.min(...prices) * 0.85),
-          suggestedMax: Math.max(...prices) * 1.15
+          suggestedMin: prices.length ? Math.max(0, Math.min(...prices) * 0.85) : 0,
+          suggestedMax: prices.length ? Math.max(...prices) * 1.15 : 1
         }
       }
     }
@@ -1865,6 +1874,11 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
 }
 
 function hidePriceHistoryModal() {
+  ++priceHistorySequence;
+  if (APP_STATE.chartInstance) {
+    APP_STATE.chartInstance.destroy();
+    APP_STATE.chartInstance = null;
+  }
   const modal = document.getElementById('price-history-modal');
   modal.classList.add('hidden');
   modal.classList.remove('flex');
@@ -2051,6 +2065,9 @@ function initEventListeners() {
   });
 
   // 彈窗關閉
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') hidePriceHistoryModal();
+  });
   document.getElementById('modal-close-btn')?.addEventListener('click', hidePriceHistoryModal);
   document.getElementById('price-history-modal')?.addEventListener('click', e => {
     if (e.target.id === 'price-history-modal') hidePriceHistoryModal();
@@ -2079,12 +2096,12 @@ function initTheme() {
     const dark = document.documentElement.classList.toggle('dark');
     localStorage.setItem('uber_radar_theme', dark ? 'dark' : 'light');
     if (APP_STATE.chartInstance) {
-      showPriceHistoryModal(
-        document.getElementById('modal-product-id').textContent.replace('Product ID: ', ''),
-        document.getElementById('modal-product-name').textContent,
-        document.getElementById('modal-store-name').textContent,
-        document.getElementById('modal-order-btn').href
-      );
+      const chart = APP_STATE.chartInstance;
+      for (const axis of Object.values(chart.options.scales)) {
+        axis.grid.color = dark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)';
+        axis.ticks.color = dark ? '#94a3b8' : '#64748b';
+      }
+      chart.update('none');
     }
   });
 }
@@ -2132,6 +2149,9 @@ async function openUberEatsOrder(event, url, productName = '', storeName = '') {
     }
   }
 
+  // Open during the click gesture, before asynchronous clipboard access.
+  window.open(targetUrl, '_blank', 'noopener,noreferrer');
+
   if (productName && productName.trim()) {
     const cleanName = productName.trim();
     try {
@@ -2166,7 +2186,6 @@ async function openUberEatsOrder(event, url, productName = '', storeName = '') {
     showToast('前往 Uber Eats', '已為您在新分頁開啟 Uber Eats 店家網頁！', 'external', 3000);
   }
 
-  window.open(targetUrl, '_blank', 'noopener,noreferrer');
 }
 
 function showToast(title, message, iconType = 'copy', duration = 4000) {

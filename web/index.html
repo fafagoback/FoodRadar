@@ -579,7 +579,7 @@
   <!-- ================================================================= -->
   <!-- 價格走勢圖彈窗 (Price Trend Modal) -->
   <!-- ================================================================= -->
-  <div id="price-history-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+  <div id="price-history-modal" role="dialog" aria-modal="true" aria-labelledby="modal-product-name" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
     <div class="modal-content bg-white dark:bg-slate-900 rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
 
       <!-- 彈窗頂部 -->
@@ -588,7 +588,7 @@
           <span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider" id="modal-store-name">店家名稱</span>
           <h3 class="text-lg font-bold text-slate-900 dark:text-white mt-0.5" id="modal-product-name">商品名稱</h3>
         </div>
-        <button id="modal-close-btn" class="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+        <button id="modal-close-btn" aria-label="關閉價格歷史" class="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
           <i data-lucide="x" class="w-5 h-5"></i>
         </button>
       </div>
@@ -618,7 +618,7 @@
       <!-- 彈窗底部操作 -->
       <div class="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800">
         <span class="text-xs text-slate-400 font-mono" id="modal-product-id">ID: ...</span>
-        <a id="modal-order-btn" href="#" target="_blank" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 transition-all">
+        <a id="modal-order-btn" href="#" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 transition-all">
           <span>🛒 前往 Uber Eats 下單</span>
           <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
         </a>
