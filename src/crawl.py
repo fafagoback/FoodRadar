@@ -53,7 +53,9 @@ def crawl(config):
     menus = output / 'menus'
     menus.mkdir(parents=True)
     point = dict(id='foodradar', latitude=config['latitude'], longitude=config['longitude'], county='台北市')
+    print(f'Scanning only {point["latitude"]}, {point["longitude"]}', flush=True)
     _, discovered, pages = scan_single_point(point, max_pages=config['max_pages'])
+    print(f'Discovered {len(discovered)} stores across {pages} pages', flush=True)
     if not discovered:
         raise RuntimeError('Empty feed; keep the previous published snapshot')
     unique = {}
@@ -67,6 +69,7 @@ def crawl(config):
             continue
         unique.setdefault(key, store)
     stores = list(unique.values())
+    print(f'Fetching {len(stores)} candidate menus; {excluded} outside radius excluded', flush=True)
     with ThreadPoolExecutor(max_workers=config['workers']) as pool:
         results = list(pool.map(lambda s: fetch_single_store(s, str(menus), batch+'_'), stores))
     retained, documents, failures = [], [], []

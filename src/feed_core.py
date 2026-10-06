@@ -233,6 +233,7 @@ def scan_single_point(point: dict, max_pages: int = 10) -> tuple:
                 page_success = True
                 break
             except Exception as e:
+                print(f'Feed page {page}, attempt {attempt}: {type(e).__name__}: {e}', flush=True)
                 time.sleep(1.0 * attempt)
 
         if not page_success:
