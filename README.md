@@ -9,6 +9,7 @@
 - 網頁：GitHub Pages，唯讀查詢 Turso；支援特價、近七日新店、全部店家搜尋、全商品搜尋／篩選／分頁、新品、促銷、價格變動歷史。第一批為基準，既有店家不冒充新店。
 - 更新：固定店家／商品 ID 與搜尋引用，先讀遠端 checksum；只 upsert 新增／變動的 bundles、directory、索引桶及必要 metadata，刪除已不需要的 chunk。每日不走整庫上傳或 reset；單次差異最多 250 MiB，超出就停止。
 - 不把每日 last_seen 和內部價格觀察窗口複製進每個網頁 bundle，避免無變化資料每天重寫；網頁顯示發布批次的觀察時間，完整每日事實以 HF Raw 為準。
+- 第一個台灣日期為基準日；當天所有批次的店家／商品都不列為新店或新品。之後依首次出現的台灣日期判定新增；老店新品還必須晚於店家首次出現日期，避免同日補抓冒充新品。
 - 所有差異在一個交易內套用，逐表核對後 commit；失敗 rollback，重跑相同版本為零寫入。HF Raw 與 Turso 各自標記版本，Raw 成功但 Turso 失敗可重試已存 Raw。
 - GitHub secrets：`HF_TOKEN`、`FOODRADAR_TURSO_DATABASE_URL`、`FOODRADAR_TURSO_WRITE_TOKEN`、`FOODRADAR_TURSO_READONLY_TOKEN`。前端 config 只由 Actions 注入資料庫專屬 read-only token。
 - 初次建立／重試：手動執行工作流程並勾選 `publish_existing`，從 HF 重建，不重新抓取。平台建庫工具 `scripts/provision_foodradar.py` 只建立 FoodRadar DB，不修改 UberEat。

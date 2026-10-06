@@ -24,6 +24,27 @@ def document(sid,pids):
 
 
 class PackedUpdateTests(unittest.TestCase):
+    def test_same_day_recollection_is_baseline_not_new_store_or_product(self):
+        import msgpack
+        import zstandard
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), contextlib.ExitStack() as stack:
+            root=Path(tmp)
+            conn=sqlite3.connect(root/'state.db')
+            conn.row_factory=sqlite3.Row
+            stack.callback(conn.close)
+            sid='ffffffff-ffff-4fff-8fff-ffffffffffff'
+            pid='ffffffff-ffff-4fff-8fff-ffffffffffff'
+            nid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            apply_snapshot(conn,[document(sid,[pid])],'20261006091947')
+            apply_snapshot(conn,[document(sid,[pid,nid]),document(nid,[pid])],'20261006094852')
+            build_web_db(root/'state.db',root/'a.db')
+            with contextlib.closing(sqlite3.connect(root/'a.db')) as packed:
+                refs=[]
+                for payload, in packed.execute('SELECT payload FROM search_buckets'):
+                    refs.extend(msgpack.unpackb(zstandard.ZstdDecompressor().decompress(payload),raw=False).get('f:new',[]))
+                self.assertEqual(refs,[])
+                self.assertEqual(packed.execute("SELECT COUNT(*) FROM store_directory WHERE substr(first_seen,1,10) > '2026-10-06'").fetchone()[0],0)
+
     def test_original_menu_text_supports_promotion_queries(self):
         with contextlib.closing(sqlite3.connect(':memory:')) as conn:
             conn.row_factory=sqlite3.Row

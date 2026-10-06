@@ -141,7 +141,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                 active_products += 1
                 terms.add(f"f:price:{int(price // 50)}")
                 terms.add("f:catalog")
-                if product['first_seen'] > store['first_seen'] and product['first_seen'] >= cutoff:
+                if (product['first_seen'][:10] > baseline_time[:10]
+                        and product['first_seen'][:10] > store['first_seen'][:10]
+                        and product['first_seen'] >= cutoff):
                     terms.add('f:new')
                 if int(product["quantity"] or 1) > 1 or product["promo_type"] not in (None, "", "無"):
                     terms.add("f:promo")
@@ -195,7 +197,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
         count, digest = source_digest(src, table, order)
         digests[table] = {"count": count, "sha256": digest}
     source_meta = dict(src.execute("select key,value from metadata"))
-    info = {"definition_version": "2026-09-search-v3", "source_revision": source_meta.get("source_revision", "local"),
+    info = {"definition_version": "foodradar-daily-v1", "source_revision": source_meta.get("source_revision", "local"),
             "application": "FoodRadar", "schema_version": 1,
             "active_stores": active_stores, "active_products": active_products,
             "baseline_processed_at": baseline_time, "latest_processed_at": latest_time,

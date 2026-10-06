@@ -418,7 +418,7 @@ export async function searchStores({ keyword = '', location = null, newOnly = fa
     anchor.setDate(anchor.getDate() - 7);
     const cutoff = anchor.toISOString().replace(/'/g, "''");
     const baseline = String(meta.baseline_processed_at || '').replace(/'/g, "''");
-    where += ` and datetime(first_seen) >= datetime('${cutoff}') and datetime(first_seen) > datetime('${baseline}')`;
+    where += ` and datetime(first_seen) >= datetime('${cutoff}') and substr(first_seen,1,10) > substr('${baseline}',1,10)`;
   }
   const rows = await sql(`select * from store_directory where ${where} order by rating desc nulls last, review_count desc limit ${limit}`);
   const stores = rows.map(r => ({
@@ -516,7 +516,8 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
     p.status === 'active' && Number(p.is_open) === 1 &&
     (!k || matchesWords(`${p.product_name}${p.store_name}${p.category_name}`, keyword)) &&
     (!c || matchesWords(`${p.city}${p.locality}${p.street_address}`, city)) &&
-    (minDiscount === null || Number(p.discount_pct || 0) >= Number(minDiscount));
+    (minDiscount === null || Number(p.discount_pct || 0) >= Number(minDiscount)) &&
+    (!newOnly || (String(p.first_seen || '').slice(0,10) > String(meta.baseline_processed_at || '').slice(0,10)));
   return productsFromRefs(intersect(groups), location, limit, accepts);
 
 }
