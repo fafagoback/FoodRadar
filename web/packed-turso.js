@@ -188,7 +188,8 @@ function dedupeProducts(products) {
 
 function productView(product, store) {
   const price = Number(product.price || 0);
-  const effective = Number(product.effective_price || price);
+  // Raw payable menu price is authoritative; legacy effective_price may have applied a direct discount twice.
+  const effective = price;
   const refPrice = Number(product.reference_price || 0);
   const originalPrice = (refPrice > price) ? refPrice : price;
   const historicalSaving = Number(product.discount_amount || 0);
