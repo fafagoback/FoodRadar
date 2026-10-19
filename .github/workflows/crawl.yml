@@ -37,6 +37,7 @@ jobs:
           node --check web/app.js
           node --check web/packed-turso.js
           node --check web/data-contract.js
+          node tests/web_contract.cjs
       - name: Crawl one location and upload to HF
         if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.publish_existing) }}
         env:
