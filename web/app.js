@@ -1093,6 +1093,13 @@ function calculateEffectivePromo(price, promoType, quantity) {
 }
 
 // -----------------------------------------------------------------------------
+function isPlatformPromotion(p) {
+  return Number(p.quantity || 1) > 1 || Boolean(p.promo_type && p.promo_type !== '無');
+}
+function isVerifiedPriceDeal(p) {
+  return Number(p.discount_pct || 0) >= 30 && (Number(p.is_price_deal || 0) === 1 || Number(p.discount_pct || 0) >= 30);
+}
+
 // 6. TAB 4: 折扣活動專區 (Promotions) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchPromotions(page = 1) {
@@ -1123,11 +1130,15 @@ async function fetchPromotions(page = 1) {
     items = applyLocationFilter(APP_STATE.promotions || []);
   }
 
-  items = items.filter(p => p.price > 0 && (p.quantity > 1 || (p.promo_type && p.promo_type !== '無' && p.promo_type !== '')));
+  items = items.filter(p => p.price > 0 && (isPlatformPromotion(p) || isVerifiedPriceDeal(p)));
 
   // 活動類型篩選
   if (promoType && promoType !== '全部') {
-    if (promoType === '買一送一') {
+    if (promoType === '平台優惠') {
+      items = items.filter(isPlatformPromotion);
+    } else if (promoType === '實質降價30') {
+      items = items.filter(isVerifiedPriceDeal);
+    } else if (promoType === '買一送一') {
       items = items.filter(p => /買.*送/.test(p.promo_type));
     } else if (promoType === '半價') {
       items = items.filter(p => /半價/.test(p.promo_type));
@@ -1212,7 +1223,7 @@ function renderPromotions() {
           <div class="flex items-center justify-between gap-2 mb-2">
             <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold text-white badge-promo">
               <i data-lucide="gift" class="w-3 h-3"></i>
-              ${escapeHtml(p.promo_type)}
+              ${escapeHtml(isPlatformPromotion(p) ? p.promo_type : `FoodRadar 實質降價 ${Number(p.discount_pct).toFixed(1)}%`)}
             </span>
             <span class="text-xs text-slate-400 truncate max-w-[120px]">${escapeHtml(p.category_name || '')}</span>
           </div>
