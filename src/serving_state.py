@@ -420,7 +420,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 inferred_promo, inferred_qty = extract_promo_info(category, name, desc)
                 promo = str(item.get("promo_type") or inferred_promo)
                 qty = max(1, _num(item.get("quantity"), int, inferred_qty))
-                effective = _num(item.get("effective_price"), float, calculate_effective_price(price, promo, qty))
+                effective = calculate_effective_price(price, promo, qty)  # Recompute from raw paid price; never trust stale derived input
                 state = {
                     "product_name": name, "category": category, "description": desc,
                     "price": price, "quantity": qty, "promo_type": promo,
