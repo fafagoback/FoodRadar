@@ -1048,10 +1048,11 @@ function calculateEffectivePromo(price, promoType, quantity) {
   }
 
   // 4. 匹配「N折」/「N折特惠」
-  const mDisc = type.match(/([1-9](?:\.[1-9])?)\s*折/);
+  const mDisc = type.match(/(?:^|[^\d])(\d{1,2}(?:\.\d+)?)\s*折/);
   if (mDisc) {
     const discNum = parseFloat(mDisc[1]);
     const ratio = discNum < 10 ? (discNum / 10) : (discNum / 100);
+    // Platform price is already discounted: never apply ratio again.
     return {
       effPrice: p,
       totalQty: qty,
