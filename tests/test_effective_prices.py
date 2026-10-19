@@ -1,0 +1,32 @@
+"""Regression tests: platform prices are already the payable discounted price."""
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from json_to_db import calculate_effective_price, extract_promo_info
+
+
+class EffectivePriceTests(unittest.TestCase):
+    def test_discount_labels_do_not_apply_twice(self):
+        for label in ("66折特惠", "6折特惠", "85折特惠", "限時特惠"):
+            with self.subTest(label=label):
+                self.assertEqual(calculate_effective_price(168.30, label, 1), 168.30)
+
+    def test_two_digit_sale_label_is_not_six_discount(self):
+        promo, qty = extract_promo_info("優惠方案", "66折黑醬烤雞堡超值餐", "")
+        self.assertEqual((promo, qty), ("66折特惠", 1))
+        self.assertEqual(calculate_effective_price(168.30, promo, qty), 168.30)
+
+    def test_quantity_offers_still_compute_actual_cost_per_item(self):
+        self.assertEqual(calculate_effective_price(200, "買1送1", 2), 100)
+        self.assertEqual(calculate_effective_price(90, "買2送1", 3), 60)
+        self.assertEqual(calculate_effective_price(100, "第2件半價", 1), 75)
+        self.assertEqual(calculate_effective_price(100, "加1元多1件", 2), 50.50)
+
+    def test_regular_product_is_unchanged(self):
+        self.assertEqual(calculate_effective_price(168.30, "無", 1), 168.30)
+
+
+if __name__ == "__main__":
+    unittest.main()
