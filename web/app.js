@@ -506,7 +506,7 @@ async function fetchDiscounts(page = 1) {
   }
 
   items = items.filter(item => {
-    if (!item.current_price || item.current_price <= 0) return false;
+    if (!item.current_price || item.current_price <= 0 || !isVerifiedPriceDeal(item)) return false;
     if (item.discount_pct < discountMinPct) return false;
     if (item.savings_amount < discountMinSavings) return false;
     if (discountCategory !== '全部' && !item.category_name?.includes(discountCategory)) return false;
@@ -548,8 +548,9 @@ function renderDiscounts() {
 
   const statMaxSavingsEl = document.getElementById('stat-max-savings');
   if (statMaxSavingsEl && items.length > 0) {
-    const maxSavings = Math.max(...items.map(i => i.savings_amount || 0));
-    statMaxSavingsEl.textContent = `現省最高 $${Math.round(maxSavings)}`;
+    // Keep the headline statistic tied to the dashboard's unfiltered default query.
+    const maxSavings = Number(APP_STATE.stats?.max_savings_twd || 0);
+    statMaxSavingsEl.textContent = maxSavings > 0 ? `現省最高 ${Math.round(maxSavings)}` : '尚無同批次統計';
   }
 
   if (total === 0) {
@@ -1065,7 +1066,7 @@ function calculateEffectivePromo(price, promoType, quantity) {
     };
   }
 
-  // 5. 若 quantity > 1 (組合多入包裝)
+  // 5. A multi-unit package is not itself a platform promotion.
   if (qty > 1) {
     const eff = p / qty;
     const ratio = 1 / qty;
@@ -1077,7 +1078,7 @@ function calculateEffectivePromo(price, promoType, quantity) {
       ratio: ratio,
       discountText: formatTaiwanDiscount(ratio),
       rawPrice: p,
-      isPromo: true
+      isPromo: false
     };
   }
 
@@ -1095,11 +1096,14 @@ function calculateEffectivePromo(price, promoType, quantity) {
 
 // -----------------------------------------------------------------------------
 function isPlatformPromotion(p) {
-  return Number(p.quantity || 1) > 1 || Boolean(p.promo_type && p.promo_type !== '無');
+  return Boolean(String(p.promo_type || '').trim() && String(p.promo_type).trim() !== '無');
 }
 function isVerifiedPriceDeal(p) {
-  return Number(p.discount_pct || 0) >= 30 && Number(p.current_price ?? p.price ?? 0) > 0;
+  return Number(p.discount_pct || 0) >= 30 && Number(p.current_price ?? p.price ?? 0) > 0 && Number(p.savings_amount || 0) > 0;
 }
+function isAnyPromotion(p) { return isPlatformPromotion(p) || isVerifiedPriceDeal(p); }
+function displayUnitPrice(p) { return calculateEffectivePromo(p.price, p.promo_type, p.quantity).effPrice ?? Number(p.price || 0); }
+function productIdentity(p) { return `${p.store_uuid || p.store_id}\u001f${p.product_uuid || p.product_id}`; }
 
 // 6. TAB 4: 折扣活動專區 (Promotions) (每頁 50 筆)
 // -----------------------------------------------------------------------------
@@ -1133,7 +1137,7 @@ async function fetchPromotions(page = 1) {
     items = applyLocationFilter(APP_STATE.promotions || []);
   }
 
-  items = items.filter(p => p.price > 0 && (isPlatformPromotion(p) || isVerifiedPriceDeal(p)));
+  items = items.filter(p => p.price > 0 && isAnyPromotion(p));
 
   // 活動類型篩選
   if (promoType && promoType !== '全部') {
@@ -1166,9 +1170,9 @@ async function fetchPromotions(page = 1) {
 
   // 排序
   if (promoSort === 'price_asc') {
-    items.sort((a, b) => (a.eff_price || a.price || 0) - (b.eff_price || b.price || 0));
+    items.sort((a, b) => displayUnitPrice(a) - displayUnitPrice(b));
   } else if (promoSort === 'price_desc') {
-    items.sort((a, b) => (b.eff_price || b.price || 0) - (a.eff_price || a.price || 0));
+    items.sort((a, b) => displayUnitPrice(b) - displayUnitPrice(a));
   } else if (promoSort === 'rating_desc') {
     items.sort((a, b) => (b.rating_value || 0) - (a.rating_value || 0) || (a.eff_price || 0) - (b.eff_price || 0));
   } else if (promoSort === 'name_asc') {
@@ -1479,22 +1483,22 @@ function executeInMemoryGlobalSearch(page = 1) {
 
   // 4. 促銷活動過濾
   if (sortMode === 'promo_only') {
-    items = items.filter(p => Number(p.quantity || 1) > 1 || (p.promo_type && p.promo_type !== '無' && p.promo_type !== ''));
+    items = items.filter(isAnyPromotion);
   }
 
   // 5. 排序演算法
   if (sortMode === 'price_asc') {
-    items.sort((a, b) => (Number(a.eff_price || a.price) || 0) - (Number(b.eff_price || b.price) || 0) || (b.rating_value || 0) - (a.rating_value || 0));
+    items.sort((a, b) => displayUnitPrice(a) - displayUnitPrice(b) || (b.rating_value || 0) - (a.rating_value || 0));
   } else if (sortMode === 'price_desc') {
-    items.sort((a, b) => (Number(b.eff_price || b.price) || 0) - (Number(a.eff_price || a.price) || 0) || (b.rating_value || 0) - (a.rating_value || 0));
+    items.sort((a, b) => displayUnitPrice(b) - displayUnitPrice(a) || (b.rating_value || 0) - (a.rating_value || 0));
   } else if (sortMode === 'name_asc') {
     items.sort((a, b) => String(a.product_name || '').localeCompare(String(b.product_name || '')));
   } else if (sortMode === 'promo_first') {
     items.sort((a, b) => {
-      const aPromo = (a.promo_type && a.promo_type !== '無' && a.promo_type !== '') ? 0 : 1;
-      const bPromo = (b.promo_type && b.promo_type !== '無' && b.promo_type !== '') ? 0 : 1;
+      const aPromo = isAnyPromotion(a) ? 0 : 1;
+      const bPromo = isAnyPromotion(b) ? 0 : 1;
       if (aPromo !== bPromo) return aPromo - bPromo;
-      return (b.rating_value || 0) - (a.rating_value || 0) || (Number(a.eff_price || a.price) || 0) - (Number(b.eff_price || b.price) || 0);
+      return (b.rating_value || 0) - (a.rating_value || 0) || displayUnitPrice(a) - displayUnitPrice(b);
     });
   } else {
     // 預設: 店家評分最高優先 (rating_desc)；若啟用定位篩選，評分相同時距離近者優先
@@ -1502,10 +1506,10 @@ function executeInMemoryGlobalSearch(page = 1) {
       items.sort((a, b) => 
         (b.rating_value || 0) - (a.rating_value || 0) ||
         (Number(a.distance_km || 9999) - Number(b.distance_km || 9999)) ||
-        (Number(a.eff_price || a.price) || 0) - (Number(b.eff_price || b.price) || 0)
+        displayUnitPrice(a) - displayUnitPrice(b)
       );
     } else {
-      items.sort((a, b) => (b.rating_value || 0) - (a.rating_value || 0) || (Number(a.eff_price || a.price) || 0) - (Number(b.eff_price || b.price) || 0));
+      items.sort((a, b) => (b.rating_value || 0) - (a.rating_value || 0) || displayUnitPrice(a) - displayUnitPrice(b));
     }
   }
 
@@ -1550,11 +1554,13 @@ async function fetchGlobalProducts(page = 1) {
     try {
       const client = await getPackedTursoClient();
       renderGlobalLoadingState(rawSearch || cityFilter);
-      const requestLimit = Math.min(50000, Math.max(200, page * PAGE_SIZE + 1));
+      // Fetch the entire eligible set before sorting or counting. Packed single-point search has no truncation.
+      const requestLimit = 50000;
       const rows = await client.searchPacked({
         keyword: rawSearch,
         city: cityFilter && cityFilter !== '全部' ? cityFilter : '',
-        promo: sortMode === 'promo_only',
+        // Product-wide filter is applied after all product records are loaded to avoid different promotion definitions.
+        promo: false,
         location: APP_STATE.locationFilter,
         limit: requestLimit
       });
