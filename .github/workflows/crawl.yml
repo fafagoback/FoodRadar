@@ -50,6 +50,8 @@ jobs:
           BATCH=$(cat data/latest.txt)
           python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
           python scripts/publish_turso_delta.py "data/$BATCH/packed-serving.db" --apply --report delta-report.json
+      - name: Verify Burger King discounted price in published web dataset
+        run: python scripts/verify_burger_king_price.py
       - name: Configure verified read-only website connection
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
