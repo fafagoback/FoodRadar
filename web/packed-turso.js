@@ -482,6 +482,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
   if (newOnly && !meta.definition_version) return [];
   const count = Number(meta.buckets || 8192);
   const terms = [...queryTokens(keyword), ...queryTokens(city)];
+  // The promotions view includes platform-labelled offers AND verified historical drops >=30%.
   if (promo) terms.push('f:promo');
   if (newOnly) terms.push('f:new');
   const bIds = await Promise.all(terms.map(t => bucketId(t, count)));
