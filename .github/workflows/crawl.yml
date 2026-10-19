@@ -85,3 +85,8 @@ jobs:
           path: web
       - uses: actions/deploy-pages@v4
         id: deployment
+      - name: Live site browser acceptance (30-percent deals)
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node tests/live_site.cjs
