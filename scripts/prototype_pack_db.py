@@ -145,7 +145,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'][:10] > store['first_seen'][:10]
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
-                if int(product["quantity"] or 1) > 1 or product["promo_type"] not in (None, "", "無"):
+                if (int(product["quantity"] or 1) > 1 or product["promo_type"] not in (None, "", "無")
+                        or int(product["is_price_deal"] or 0) == 1 or float(product["discount_pct"] or 0) >= 30):
                     terms.add("f:promo")
                 if "discount_pct" in pc and float(product["discount_pct"] or 0) > 0:
                     terms.add(f"f:discount:{int(float(product['discount_pct']) // 5)}")
