@@ -1066,17 +1066,15 @@ function calculateEffectivePromo(price, promoType, quantity) {
     };
   }
 
-  // 5. A multi-unit package is not itself a platform promotion.
+  // 5. Normal multi-unit packs have a unit cost but no promotional discount.
   if (qty > 1) {
-    const eff = p / qty;
-    const ratio = 1 / qty;
     return {
-      effPrice: eff,
+      effPrice: p / qty,
       totalQty: qty,
       buyQty: qty,
       freeQty: 0,
-      ratio: ratio,
-      discountText: formatTaiwanDiscount(ratio),
+      ratio: 1,
+      discountText: '',
       rawPrice: p,
       isPromo: false
     };
