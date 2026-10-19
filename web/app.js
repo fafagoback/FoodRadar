@@ -983,7 +983,7 @@ function productPromo(row) {
   const p = window.UBER_DATA_CONTRACT.product(row);
   const promo = calculateEffectivePromo(p.price, p.promo_type, p.quantity);
   if (!p.valid_price) return {...promo, effPrice: null, isPromo: false, totalQty: 1, discountText: ''};
-  if (p.effective_price !== null) promo.effPrice = p.effective_price;
+  // Always derive display unit cost from the raw payable price. Older DB rows may contain double-discounted effective_price.
   return promo;
 }
 
@@ -1216,7 +1216,8 @@ function renderPromotions() {
   container.innerHTML = pageItems.map(p => {
     const promoInfo = productPromo(p);
     const eff = promoInfo.effPrice;
-    const discountLabel = promoInfo.discountText ? `折合 ${promoInfo.discountText}` : '';
+    const discountLabel = promoInfo.totalQty > 1 && promoInfo.discountText ? `折合 ${promoInfo.discountText}` : '';
+    const multiUnit = promoInfo.totalQty > 1;
     
     return `
       <div class="radar-card bg-white dark:bg-slate-900 rounded-2xl p-5 border border-purple-100 dark:border-purple-950/60 shadow-sm flex flex-col justify-between group">
@@ -1245,9 +1246,9 @@ function renderPromotions() {
         <div class="pt-3 mt-3 border-t border-slate-100 dark:border-slate-800">
           <div class="flex items-baseline justify-between mb-3">
             <div>
-              <div class="text-xs text-slate-400">標價 ${window.UBER_DATA_CONTRACT.money(p.price)}${promoInfo.totalQty > 1 ? ` (共 ${promoInfo.totalQty} 份)` : (p.quantity > 1 ? ` (共 ${p.quantity} 份)` : '')}</div>
+              <div class="text-xs text-slate-400">平台售價 ${window.UBER_DATA_CONTRACT.money(p.price)}${multiUnit ? `（活動共 ${promoInfo.totalQty} 件）` : ''}</div>
               <div class="text-xl font-black text-purple-600 dark:text-purple-400 font-mono">
-                實質單價 $${Math.round(eff)}
+                ${multiUnit ? '平均單件成本' : '優惠售價'} ${window.UBER_DATA_CONTRACT.money(multiUnit ? eff : p.price)}
               </div>
             </div>
             ${discountLabel ? `
