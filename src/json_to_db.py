@@ -134,7 +134,7 @@ def extract_promo_info(sec_name: Optional[str], product_name: Optional[str], des
 
     # 7. 匹配特定折扣與限時特惠 (quantity 為 1，但標註 promo_type)
     for text in [sec, pname]:
-        m_disc = re.search(r"([1-9](?:\.[1-9])?)\s*折", text)
+        m_disc = re.search(r"(?<!\d)(\d{1,2}(?:\.\d+)?)\s*折", text)
         if m_disc:
             return f"{m_disc.group(1)}折特惠", 1
         if any(k.lower() in text.lower() for k in ["限時優惠", "限時特惠", "活動優惠", "特惠專區", "優惠專區", "優惠活動", "特價", "特惠價", "折扣價", "促銷價", "現折", "會員特價", "Special Offer", "Special Deals", "Sale Price", "On Sale"]):
@@ -159,8 +159,7 @@ def calculate_effective_price(price: float, promo_type: Optional[str], quantity:
        實質單價 = (標價 + 1.0) / 2
     4. 第2件半價 / 第2杯半價:
        實質單價 = (標價 * 1.5) / 2 = 標價 * 0.75
-    5. N折特惠 (如 8折):
-       實質單價 = 標價 * (N / 10.0)
+    5. 平台標示 N 折：平台 price 已為折後售價，不得再次乘上折數
     6. 一般無促銷:
        若 quantity > 1 則 標價 / quantity，否則即為標價
     """
@@ -190,11 +189,8 @@ def calculate_effective_price(price: float, promo_type: Optional[str], quantity:
     if any(k in p_type for k in ["第2件半價", "第二件半價", "第2杯半價", "第二杯半價"]):
         return round((p_float * 1.5) / 2.0, 2)
 
-    # 5. N折特惠
-    m_disc = re.search(r"([1-9](?:\.[1-9])?)\s*折", p_type)
-    if m_disc:
-        factor = float(m_disc.group(1)) / 10.0
-        return round(p_float * factor, 2)
+    # 5. 平台顯示之幾折售價已經是結帳售價；絕不再乘折數。
+    #    66折 / 6折都只是促銷標籤，不是第二次的價格折扣。
 
     # 6. 一般無促銷商品 (若 quantity > 1 進行多件拆分)
     if quantity and quantity > 1:
