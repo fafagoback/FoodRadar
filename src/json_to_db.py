@@ -137,7 +137,7 @@ def extract_promo_info(sec_name: Optional[str], product_name: Optional[str], des
         m_disc = re.search(r"([1-9](?:\.[1-9])?)\s*折", text)
         if m_disc:
             return f"{m_disc.group(1)}折特惠", 1
-        if any(k in text for k in ["限時優惠", "限時特惠", "活動優惠", "特惠專區", "優惠專區", "優惠活動", "Special Offer", "Special Deals"]):
+        if any(k.lower() in text.lower() for k in ["限時優惠", "限時特惠", "活動優惠", "特惠專區", "優惠專區", "優惠活動", "特價", "特惠價", "折扣價", "促銷價", "現折", "會員特價", "Special Offer", "Special Deals", "Sale Price", "On Sale"]):
             return "限時特惠", 1
             
     return "無", 1
