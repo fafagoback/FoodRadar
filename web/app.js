@@ -1098,7 +1098,7 @@ function isPlatformPromotion(p) {
   return Number(p.quantity || 1) > 1 || Boolean(p.promo_type && p.promo_type !== '無');
 }
 function isVerifiedPriceDeal(p) {
-  return Number(p.is_price_deal || 0) === 1 && Number(p.discount_pct || 0) >= 30;
+  return Number(p.discount_pct || 0) >= 30 && Number(p.current_price ?? p.price ?? 0) > 0;
 }
 
 // 6. TAB 4: 折扣活動專區 (Promotions) (每頁 50 筆)
@@ -1114,7 +1114,9 @@ async function fetchPromotions(page = 1) {
       const client = await getPackedTursoClient();
       const remote = await client.searchPacked({
         keyword: promoSearch.trim(),
-        promo: true,
+        // The verified price-drop view must use the same discount index as the home card.
+        promo: promoType !== '實質降價30',
+        minDiscount: promoType === '實質降價30' ? 30 : null,
         location: APP_STATE.locationFilter,
         limit: 50000
       });
