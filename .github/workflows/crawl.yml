@@ -1,5 +1,7 @@
 name: FoodRadar single-coordinate crawl
 on:
+  push:
+    branches: [main]
   schedule:
     # Asia/Taipei 06:30 and 18:30 daily; GitHub schedules use UTC.
     - cron: '30 10,22 * * *'
