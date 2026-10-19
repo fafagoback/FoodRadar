@@ -33,12 +33,12 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
       - name: Crawl one location and upload to HF
-        if: ${{ !inputs.publish_existing }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.publish_existing) }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
       - name: Restore latest verified HF Raw for initialization or retry
-        if: ${{ inputs.publish_existing }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_existing) }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/prepare_hf_release.py
