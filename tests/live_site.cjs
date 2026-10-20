@@ -13,11 +13,11 @@ const fs = require('node:fs');
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
     await page.waitForFunction(() => {
       const value = document.querySelector('#stat-big-discounts')?.textContent?.trim();
-      return value && /^\\d[\\d,]*$/.test(value);
+      return value && /^\d[\d,]*$/.test(value);
     }, null, { timeout: 90000 });
 
     const homeText = (await page.locator('#stat-big-discounts').innerText()).trim();
-    assert.match(homeText, /^\\d[\\d,]*$/, 'dashboard must display a numeric count');
+    assert.match(homeText, /^\d[\d,]*$/, 'dashboard must display a numeric count');
     const home = Number(homeText.replace(/,/g, ''));
 
     // The promotions filter belongs to a hidden tab; activate it as a real user does.
@@ -34,11 +34,11 @@ const fs = require('node:fs');
       const filter = document.querySelector('#promo-type-select');
       const count = document.querySelector('#promos-counter')?.textContent?.trim();
       return section && !section.classList.contains('hidden') &&
-        filter?.value === '實質降價30' && /^\\d[\\d,]* 筆特惠$/.test(count || '');
+        filter?.value === '實質降價30' && /^\d[\d,]* 筆特惠$/.test(count || '');
     }, null, { timeout: 90000 });
 
     const promoText = (await page.locator('#promos-counter').innerText()).trim();
-    const promo = Number(promoText.match(/^[\\d,]+/)[0].replace(/,/g, ''));
+    const promo = Number(promoText.match(/^[\d,]+/)[0].replace(/,/g, ''));
     assert.equal(promo, home, '30% deal count must match between homepage and promotions');
     assert.deepEqual(errors, [], 'browser must have no uncaught errors');
     console.log('LIVE PAGE PASS: 30%-discounts homepage=' + home + ', promotions=' + promo);
