@@ -1773,7 +1773,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         history = events
           .filter(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
-            return Number(state.is_open) === 1;
+            return state.is_open === 1 || state.is_open === true;
           })
           .map(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
@@ -1804,7 +1804,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         && String(x.product_uuid || x.product_id) === String(productId)
         && String(x.store_uuid || x.store_id || '') === String(storeUuid));
 
-    if (found && Number(found.price || 0) > 0) {
+    if (found && (found.is_open === 1 || found.is_open === true) && Number(found.price || 0) > 0) {
       const eff = found.eff_price || (found.quantity > 1 ? Math.round((found.price / found.quantity) * 10) / 10 : found.price);
       if (Number(eff) > 0) {
         history = [{
