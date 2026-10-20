@@ -1,12 +1,13 @@
 // Live GitHub Pages browser acceptance test. Never against local fixtures.
 const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  const errors = [];
   try {
-    const page = await browser.newPage();
-    const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
     const url = process.env.FOODRADAR_SITE || 'https://fafagoback.github.io/FoodRadar/';
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
@@ -41,6 +42,11 @@ const assert = require('node:assert/strict');
     assert.equal(promo, home, '30% deal count must match between homepage and promotions');
     assert.deepEqual(errors, [], 'browser must have no uncaught errors');
     console.log('LIVE PAGE PASS: 30%-discounts homepage=' + home + ', promotions=' + promo);
+  } catch (error) {
+    fs.mkdirSync('test-results', { recursive: true });
+    await page.screenshot({ path: 'test-results/live-site-failure.png', fullPage: true }).catch(() => {});
+    fs.writeFileSync('test-results/error.txt', String(error?.stack || error) + '\nBrowser errors:\n' + errors.join('\n'));
+    throw error;
   } finally {
     await browser.close();
   }
