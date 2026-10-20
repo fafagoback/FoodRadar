@@ -85,8 +85,24 @@ jobs:
           path: web
       - uses: actions/deploy-pages@v4
         id: deployment
-      - name: Live site browser acceptance (30-percent deals)
+  live-site-acceptance:
+    name: Verify deployed website
+    needs: crawl
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install browser testing dependencies
         run: |
           npm install --no-save playwright@1.56.1
           npx playwright install --with-deps chromium
-          node tests/live_site.cjs
+      - name: Verify live site (30-percent deals)
+        run: node tests/live_site.cjs
+      - name: Save browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-site-diagnostics
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 7
