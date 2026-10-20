@@ -37,4 +37,8 @@ const packed = fs.readFileSync('scripts/prototype_pack_db.py', 'utf8');
 assert.ok(!packed.includes('int(product["quantity"] or 1) > 1 or product["promo_type"]'), 'bundled products must not be indexed as platform promotions');
 const reader = fs.readFileSync('web/packed-turso.js', 'utf8');
 assert.ok(reader.includes('const effective = price;'), 'packed reader must not use double-discounted historical effective_price');
+
+assert.ok(reader.includes('Number(product.is_open) === 1 && Number(store.is_open) === 1'), 'both product and store must explicitly be open');
+assert.ok(source.includes('state.is_open === 1 || state.is_open === true'), 'price-history events require explicit open status');
+assert.ok(source.includes('(found.is_open === 1 || found.is_open === true)'), 'fallback price must not bypass open-state validation');
 console.log('FoodRadar pricing and cross-page promotion contract: PASS');
