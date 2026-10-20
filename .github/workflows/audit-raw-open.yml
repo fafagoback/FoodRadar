@@ -1,0 +1,55 @@
+name: Inspect archived raw isOpen (read-only)
+on:
+  push:
+    paths: ['.github/workflows/audit-raw-open.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install huggingface_hub
+      - name: Inspect October 20 raw archive without mutating data
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json, tarfile
+          from pathlib import Path
+          from huggingface_hub import HfApi, hf_hub_download
+          repo='hub-google/UberEat'
+          prefix='FoodRadar/snapshots/'
+          sid='34f9b599-c1f4-5e89-9434-84a433989755'
+          pid='98fe837b-3c5a-508a-9070-364d457c2e74'
+          batch='20261020010344'
+          api=HfApi()
+          files=api.list_repo_files(repo_id=repo,repo_type='dataset')
+          options=sorted(p for p in files if p.startswith(prefix) and p.endswith('/complete.json'))
+          matches=[x for x in options if batch in x]
+          print('CANDIDATE_MANIFESTS',json.dumps(matches))
+          if not matches:
+              print('NEARBY_MANIFESTS',json.dumps([x for x in options if '/20261020' in x]))
+              raise RuntimeError('Exact raw batch manifest not found')
+          for manifest_path in matches:
+              m=json.loads(Path(hf_hub_download(repo_id=repo,filename=manifest_path,repo_type='dataset')).read_text())
+              print('MANIFEST',json.dumps(m,ensure_ascii=False))
+              archive=hf_hub_download(repo_id=repo,filename=m['archive_path'],repo_type='dataset')
+              found=0
+              with tarfile.open(archive,'r:gz') as tar:
+                  for member in tar:
+                      if not member.isfile() or not member.name.startswith('Json/') or not member.name.endswith('.json'): continue
+                      stream=tar.extractfile(member)
+                      if stream is None: continue
+                      doc=json.load(stream)
+                      if doc.get('store_uuid')!=sid: continue
+                      products=[{'id':p.get('identifier'),'name':p.get('name'),'price':(p.get('offers') or {}).get('price')} for sec in ((doc.get('hasMenu') or {}).get('hasMenuSection') or []) for p in (sec.get('hasMenuItem') or []) if p.get('identifier')==pid]
+                      result={'raw_file':member.name,'store_uuid':doc.get('store_uuid'),'isOpen_present':'isOpen' in doc,'isOpen':doc.get('isOpen'),'openingHoursSpecification':doc.get('openingHoursSpecification'),'product':products}
+                      print('ORIGINAL_RAW_JSON_RESULT',json.dumps(result,ensure_ascii=False))
+                      found+=1
+              if found!=1: raise RuntimeError(f'Expected exactly one store snapshot, found {found}')
+          PY
