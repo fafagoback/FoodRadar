@@ -264,7 +264,7 @@ def extract_curated_catalog(conn: sqlite3.Connection, latest_batch: str, max_ite
         s.region,
         s.locality,
         s.street_address,
-        COALESCE(p.is_open, s.is_open, 1) as is_open
+        COALESCE(p.is_open, s.is_open, 0) as is_open
     FROM products p
     LEFT JOIN stores s ON p.store_id = s.store_id AND p.crawled_time = s.crawled_time
     WHERE p.crawled_time = ?
@@ -300,7 +300,7 @@ def extract_curated_catalog(conn: sqlite3.Connection, latest_batch: str, max_ite
             "review_count": int(r["review_count"]) if r["review_count"] is not None else None,
             "locality": loc,
             "city": city,
-            "is_open": int(r["is_open"] or 1)
+            "is_open": (1 if r["is_open"] == 1 else 0)
         })
     return catalog
 
@@ -334,7 +334,7 @@ def export_parquet_catalog(conn: sqlite3.Connection, latest_batch: str, output_p
         COALESCE(s.region, '') as region,
         COALESCE(s.locality, '') as locality,
         COALESCE(s.street_address, '') as street_address,
-        COALESCE(p.is_open, s.is_open, 1) as is_open,
+        COALESCE(p.is_open, s.is_open, 0) as is_open,
         p.crawled_time
     FROM products p
     LEFT JOIN stores s ON p.store_id = s.store_id AND p.crawled_time = s.crawled_time
@@ -389,7 +389,7 @@ def export_parquet_catalog(conn: sqlite3.Connection, latest_batch: str, output_p
         data["locality"].append(loc)
         data["street_address"].append(addr)
         data["city"].append(city)
-        data["is_open"].append(int(r["is_open"] or 1))
+        data["is_open"].append((1 if r["is_open"] == 1 else 0))
         data["crawled_time"].append(str(r["crawled_time"]))
 
     schema = pa.schema([
@@ -500,7 +500,7 @@ def export_partitioned_parquet(conn: sqlite3.Connection, latest_batch: str, part
         COALESCE(s.region, '') as region,
         COALESCE(s.locality, '') as locality,
         COALESCE(s.street_address, '') as street_address,
-        COALESCE(p.is_open, s.is_open, 1) as is_open,
+        COALESCE(p.is_open, s.is_open, 0) as is_open,
         p.crawled_time
     FROM products p
     LEFT JOIN stores s ON p.store_id = s.store_id AND p.crawled_time = s.crawled_time
@@ -548,7 +548,7 @@ def export_partitioned_parquet(conn: sqlite3.Connection, latest_batch: str, part
         b["locality"].append(loc)
         b["street_address"].append(addr)
         b["city"].append(city)
-        b["is_open"].append(int(r["is_open"] or 1))
+        b["is_open"].append((1 if r["is_open"] == 1 else 0))
         b["crawled_time"].append(str(r["crawled_time"]))
 
     schema = pa.schema([
@@ -625,7 +625,7 @@ def extract_price_history_map(conn: sqlite3.Connection, target_product_ids: Opti
             promo_type,
             COALESCE(eff_price, ROUND(price * 1.0 / quantity, 2)) as eff_price
         FROM products
-        WHERE product_id IN ({placeholders})
+        WHERE product_id IN ({placeholders}) AND is_open = 1
         ORDER BY product_id, crawled_time ASC;
         """
         cursor.execute(query, list(target_product_ids))
@@ -641,7 +641,7 @@ def extract_price_history_map(conn: sqlite3.Connection, target_product_ids: Opti
             promo_type,
             COALESCE(eff_price, ROUND(price * 1.0 / quantity, 2)) as eff_price
         FROM products
-        WHERE (promo_type != '無' AND promo_type != '') OR quantity > 1
+        WHERE is_open = 1 AND ((promo_type != '無' AND promo_type != '') OR quantity > 1)
         ORDER BY store_id, product_id, crawled_time ASC
         LIMIT 5000;
         """
@@ -875,7 +875,7 @@ def compute_cross_snapshot_intelligence(
     history_map = {}
     if target_products:
         all_parquet_paths = [p for _, p in all_downloaded_history_paths] + [p_curr]
-        union_hist_query = " UNION ALL ".join([f"SELECT store_id, product_id, crawled_time, store_name, product_name, price, quantity, promo_type, eff_price FROM '{p}'" for p in all_parquet_paths])
+        union_hist_query = " UNION ALL ".join([f"SELECT store_id, product_id, crawled_time, store_name, product_name, price, quantity, promo_type, eff_price, is_open FROM '{p}'" for p in all_parquet_paths])
         
         target_list = list(target_products)
         chunk_size = 2000
@@ -885,7 +885,7 @@ def compute_cross_snapshot_intelligence(
             q_hist = f"""
             SELECT store_id, product_id, crawled_time, store_name, product_name, price, quantity, promo_type, eff_price
             FROM ({union_hist_query})
-            WHERE (store_id,product_id) IN ({pairs_sql})
+            WHERE (store_id,product_id) IN ({pairs_sql}) AND is_open = 1
             ORDER BY store_id, product_id, crawled_time ASC;
             """
             try:
@@ -1086,7 +1086,7 @@ def export_all_static_snapshots(
                 order_action_url = html.unescape(target["urlTemplate"]).replace("&amp;", "&")
 
         is_open_val = doc.get("isOpen")
-        is_open = 1 if (is_open_val is True or is_open_val == 1 or is_open_val is None) else 0
+        is_open = 1 if is_open_val is True else 0
 
         if doc.get("menu_status") == "inactive_account":
             inactive_stores.append(store_name)
