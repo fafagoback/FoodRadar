@@ -554,7 +554,7 @@ class UberEatsDBImporter:
 
             # 營業狀態解析 (is_open: 1=營業中, 0=打烊)
             is_open_val = data.get("isOpen")
-            is_open = 1 if (is_open_val is True or is_open_val == 1 or is_open_val is None) else 0
+            is_open = 1 if is_open_val is True else 0
 
             # 營業時間解析 (store_business_hours)
             hours_list = data.get("openingHoursSpecification", [])
