@@ -225,7 +225,7 @@ function productView(product, store) {
     savings_amount: historicalSaving,
     is_price_deal: Number(product.is_price_deal || 0),
     status: product.status,
-    is_open: Number(product.is_open ?? store.is_open ?? 0)
+    is_open: (Number(product.is_open) === 1 && Number(store.is_open) === 1) ? 1 : 0
   };
 }
 
