@@ -525,51 +525,8 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
 
 }
 
-let storeOpeningHoursPromise;
-async function loadStoreOpeningHours() {
-  if (!storeOpeningHoursPromise) {
-    storeOpeningHoursPromise = fetch(new URL('./data/store-hours.json', import.meta.url), {cache:'no-store'})
-      .then(response => {
-        if (!response.ok) throw new Error('Opening hours lookup unavailable: ' + response.status);
-        return response.json();
-      });
-  }
-  return storeOpeningHoursPromise;
-}
-
-export function withinOpeningHours(isoTime, specs) {
-  // No known hours: cannot infer closed, so original explicit is_open still decides.
-  if (!Array.isArray(specs) || specs.length === 0) return true;
-  const match = String(isoTime).match(/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})/);
-  if (!match) return false;
-  const [, y, m, d, hh, mm] = match;
-  const weekday = new Date(Date.UTC(Number(y), Number(m)-1, Number(d))).getUTCDay();
-  const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  const minute = Number(hh)*60+Number(mm);
-  const parseMinute = time => {
-    const parts = String(time).match(/^(\\d{1,2}):(\\d{2})/);
-    return parts ? Number(parts[1])*60+Number(parts[2]) : NaN;
-  };
-  const hasDay = (days, day) => (Array.isArray(days) ? days : [days]).some(value =>
-    String(value).split('/').pop() === names[day]);
-  for (const spec of specs) {
-    const opening = parseMinute(spec.opens), closing = parseMinute(spec.closes);
-    if (!Number.isFinite(opening) || !Number.isFinite(closing)) continue;
-    if (opening <= closing && hasDay(spec.days, weekday) && minute >= opening && minute < closing) return true;
-    if (opening > closing &&
-        ((hasDay(spec.days, weekday) && minute >= opening) ||
-         (hasDay(spec.days, (weekday+6)%7) && minute < closing))) return true;
-  }
-  return false;
-}
-
 export async function packedHistory(storeUuid, productUuid) {
-  const [hoursLookup, rows] = await Promise.all([
-    loadStoreOpeningHours(),
-    sql(`select store_id from store_directory where store_uuid='${String(storeUuid).replace(/'/g, "''")}' limit 1`)
-  ]);
-  const row = rows[0];
-  const specs = hoursLookup.hours?.[String(storeUuid).toLowerCase()] || [];
+  const row = (await sql(`select store_id from store_directory where store_uuid='${String(storeUuid).replace(/'/g, "''")}' limit 1`))[0];
   if (!row) return [];
   await bundlesForStores([Number(row.store_id)]);
   const out = [];
@@ -584,7 +541,6 @@ export async function packedHistory(storeUuid, productUuid) {
       try { state = JSON.parse(e.new_state || e.old_state || '{}'); }
       catch { continue; }
       if (state.is_open !== true && state.is_open !== 1) continue;
-      if (!withinOpeningHours(e.event_time, specs)) continue;
       out.push(e);
     }
   }
