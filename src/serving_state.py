@@ -447,10 +447,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 else:
                     old_state = dict(old)
                     old_state["recent_prices"] = json_dumps(old["recent_prices"])
-                    if old["recent_prices"]:
-                        old_state["is_open"] = 1
-                        old_state["price"] = old["recent_prices"][-1]
-                        old_state["effective_price"] = old["recent_prices"][-1]
+                    # Preserve actual previous observation; reference price stays in recent_prices.
                     if is_open == 1 and price > 0:
                         previous_prices = old["recent_prices"][-1:]
                         reference_price = previous_prices[-1] if previous_prices else None
