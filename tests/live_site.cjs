@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
     await page.waitForFunction(() => {const v = document.querySelector('#stat-big-discounts')?.textContent?.trim();return v && v !== '載入中...' && v !== '待同步';}, null, {timeout:90000});
     const home = Number((await page.locator('#stat-big-discounts').innerText()).replace(/,/g,''));
     assert.ok(Number.isFinite(home),'dashboard must return a real discount count');
-    await page.locator('#promo-type-select').selectOption('實質降價30');
+    // Promotions is a hidden tab on initial page load; activate it before interacting.\n    await page.locator('.nav-tab[data-target="tab-promos"]').click();\n    await page.locator('#promo-type-select').waitFor({state:'visible',timeout:30000});\n    await page.locator('#promo-type-select').selectOption('實質降價30');
     await page.waitForFunction(() => document.querySelector('#promos-counter')?.textContent?.includes('筆特惠'), {timeout:30000});
     await page.waitForTimeout(2000);
     const promo = Number((await page.locator('#promos-counter').innerText()).match(/[\d,]+/)?.[0].replace(/,/g,''));
