@@ -62,9 +62,11 @@ jobs:
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python scripts/configure_web.py
           python scripts/prepare_pages.py
+          python scripts/build_store_hours.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
