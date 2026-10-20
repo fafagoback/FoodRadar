@@ -301,6 +301,7 @@ async function executeTursoQuery(sql) {
 
 let PACKED_TURSO_CLIENT = null;
 let storeSearchSequence = 0;
+let promotionsRequestSequence = 0;
 async function getPackedTursoClient() {
   if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import(`./packed-turso.js?_t=${Date.now()}`);
   return PACKED_TURSO_CLIENT;
@@ -1106,6 +1107,9 @@ function productIdentity(p) { return `${p.store_uuid || p.store_id}\u001f${p.pro
 // 6. TAB 4: 折扣活動專區 (Promotions) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchPromotions(page = 1) {
+  const requestId = ++promotionsRequestSequence;
+  const counter = document.getElementById('promos-counter');
+  if (counter) { counter.textContent = '載入中...'; counter.dataset.filterReady = 'false'; }
   APP_STATE.promosPage = page;
   const { promoSearch, promoType, promoSort } = APP_STATE.filters;
   let items = [];
@@ -1127,10 +1131,14 @@ async function fetchPromotions(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
-      return showDatabaseUnavailable(err, 'promos-grid');
+      if (requestId !== promotionsRequestSequence) return;
+      showDatabaseUnavailable(err, 'promos-grid');
+      if (counter) counter.textContent = '資料庫連線失敗';
+      return false;
     }
   }
 
+  if (requestId !== promotionsRequestSequence) return;
   if (!fetchedRemote) {
     items = applyLocationFilter(APP_STATE.promotions || []);
   }
@@ -1177,8 +1185,10 @@ async function fetchPromotions(page = 1) {
     items.sort((a, b) => String(a.product_name || '').localeCompare(String(b.product_name || ''), 'zh-TW'));
   }
 
+  if (requestId !== promotionsRequestSequence) return;
   APP_STATE.filteredPromotions = items;
   renderPromotions();
+  if (counter) { counter.dataset.filterReady = 'true'; counter.dataset.filterType = promoType || '全部'; }
 }
 
 function changePromosPage(page) {
