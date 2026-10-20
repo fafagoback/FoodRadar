@@ -44,6 +44,15 @@ const fs = require('node:fs');
     const promoText = (await page.locator('#promos-counter').innerText()).trim();
     const promo = Number(promoText.match(/^[\d,]+/)[0].replace(/,/g, ''));
     assert.equal(promo, home, '30% deal count must match between homepage and promotions');
+    const diagnosis = await page.evaluate(async () => {
+      const m = await import('./packed-turso.js');
+      const matches = await m.searchPacked({keyword:'麥香燻雞起司',limit:100});
+      const product = matches.find(x => x.product_uuid === '98fe837b-3c5a-508a-9070-364d457c2e74');
+      if (!product) return {matches: matches.slice(0,5).map(x=>({id:x.product_uuid,name:x.product_name,store:x.store_name}))};
+      const events = await m.packedHistory(product.store_uuid,product.product_uuid);
+      return {product:{id:product.product_uuid,store:product.store_uuid,name:product.product_name},events:events.map(e=>({time:e.event_time,type:e.event_type,old:e.old_state?JSON.parse(e.old_state):null,new:e.new_state?JSON.parse(e.new_state):null}))};
+    });
+    console.log('LOUISA_HISTORY_DIAGNOSTIC '+JSON.stringify(diagnosis));
     assert.deepEqual(errors, [], 'browser must have no uncaught errors');
     console.log('LIVE PAGE PASS: 30%-discounts homepage=' + home + ', promotions=' + promo);
   } catch (error) {
