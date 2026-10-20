@@ -33,8 +33,12 @@ const fs = require('node:fs');
       const section = document.querySelector('#tab-promos');
       const filter = document.querySelector('#promo-type-select');
       const count = document.querySelector('#promos-counter')?.textContent?.trim();
+      const counter = document.querySelector('#promos-counter');
       return section && !section.classList.contains('hidden') &&
-        filter?.value === '實質降價30' && /^\d[\d,]* 筆特惠$/.test(count || '');
+        filter?.value === '實質降價30' &&
+        counter?.dataset.filterReady === 'true' &&
+        counter?.dataset.filterType === '實質降價30' &&
+        /^\d[\d,]* 筆特惠$/.test(count || '');
     }, null, { timeout: 90000 });
 
     const promoText = (await page.locator('#promos-counter').innerText()).trim();
