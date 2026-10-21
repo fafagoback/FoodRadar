@@ -70,6 +70,7 @@ for store,p,hits in targets:
                     if file is None:continue
                     doc=json.load(file)
                     if str(doc.get('store_uuid'))!=str(store['store_uuid']):continue
+                    print('RAW_HOURS',batch,'isOpen',doc.get('isOpen'),'workingHoursTagline',doc.get('workingHoursTagline'),'closedMessage',doc.get('closedMessage'),'openingHoursSpecification',json.dumps(doc.get('openingHoursSpecification',[]),ensure_ascii=False),flush=True)
                     for sec in (doc.get('hasMenu') or {}).get('hasMenuSection',[]):
                         for item in sec.get('hasMenuItem',[]):
                             if str(item.get('identifier'))==str(p['product_uuid']) or str(item.get('name'))==str(p['product_name']):
