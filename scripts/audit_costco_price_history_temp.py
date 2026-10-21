@@ -40,3 +40,39 @@ for store in directory:
                                      'valid':new.get('price_valid'),'is_open':new.get('is_open'),
                                      'old_valid':old.get('price_valid'),'category':new.get('category')},
                                      ensure_ascii=False),flush=True)
+
+from huggingface_hub import HfApi,hf_hub_download
+from pathlib import Path
+import tarfile,hashlib
+api=HfApi(token=os.environ['HF_TOKEN'])
+repo='hub-google/UberEat'
+filelist=api.list_repo_files(repo_id=repo,repo_type='dataset')
+manifests=sorted(x for x in filelist if x.startswith('FoodRadar/snapshots/') and x.endswith('/complete.json'))
+latest=manifests[-1]
+selected=['20261008100547','20261014091759','20261020090813',latest.split('/')[2]]
+selected=list(dict.fromkeys(selected))
+print('MANIFEST_COUNT',len(manifests),'LAST_MANIFESTS',manifests[-5:],flush=True)
+for batch in selected:
+    manifest_path=f'FoodRadar/snapshots/{batch}/complete.json'
+    if manifest_path not in manifests:
+        print('SNAPSHOT_NOT_PRESENT',batch,flush=True)
+        continue
+    try:
+        manifest=json.loads(Path(hf_hub_download(repo,manifest_path,repo_type='dataset',token=os.environ['HF_TOKEN'])).read_text())
+        archive=hf_hub_download(repo,manifest['archive_path'],repo_type='dataset',token=os.environ['HF_TOKEN'])
+        key='https://www.ubereats.com/tw/store/costco-%E5%A5%BD%E5%B8%82%E5%A4%9A-%E5%8C%97%E6%8A%95%E5%BA%97/pOIgHV_HWhCkGt_liXWnpw'
+        canonical='https://www.ubereats.com'+__import__('urllib.parse',fromlist=['urlsplit']).urlsplit(key).path
+        exact='Json/'+batch+'_'+hashlib.sha256(canonical.encode()).hexdigest()+'.json'
+        with tarfile.open(archive,'r:gz') as tar:
+            if exact not in tar.getnames():
+                print('RAW_MISSING',batch,exact,flush=True)
+                continue
+            doc=json.load(tar.extractfile(exact))
+        items=[]
+        for section in (doc.get('hasMenu') or {}).get('hasMenuSection',[]):
+            for it in section.get('hasMenuItem',[]):
+                if str(it.get('identifier'))==target:
+                    items.append({'price':it.get('offers',{}).get('price'),'name':it.get('name'),'category':section.get('name')})
+        print('RAW_SAMPLE',json.dumps({'batch':batch,'store':doc.get('name'),'isOpen':doc.get('isOpen'),'hours':doc.get('openingHoursSpecification'),'workingHoursTagline':doc.get('workingHoursTagline'),'captured_at':doc.get('captured_at'),'status':doc.get('menu_status'),'items':items},ensure_ascii=False),flush=True)
+    except Exception as exc:
+        print('RAW_ERROR',batch,type(exc).__name__,str(exc)[:250],flush=True)
