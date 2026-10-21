@@ -10,7 +10,7 @@ async function main() {
   assert.equal(typeof normalize, 'function');
 
   const state = (price, more = {}) => JSON.stringify({
-    price, effective_price: price, is_open: 1, promo_type: '無', quantity: 1, ...more
+    price, effective_price: price, is_open: 1, price_valid: true, promo_type: '無', quantity: 1, ...more
   });
   const event = (id, event_type, event_time, price, old_state = null) => ({
     id, event_type, event_time, old_state, new_state: state(price)
@@ -22,7 +22,7 @@ async function main() {
   const t2 = '2026-10-17T21:49:28+08:00';
   const t3 = '2026-10-20T01:03:44+08:00';
   const t4 = '2026-10-20T23:13:43+08:00';
-  const old = (price, last_seen) => state(price, { last_seen });
+  const old = (price, last_seen) => state(price, { last_seen, first_seen: t0 });
   const events = [
     event(13148, 'NEW', t0, 250),
     event(88908, 'PRICE_CHANGED', t1, 175, old(250,t0)),
@@ -50,6 +50,10 @@ async function main() {
   assert.equal(duplicatePrice.length, 4, 'same-second duplicate price events are collapsed');
   assert.equal(normalize([...events, event(143333,'PRICE_CHANGED','2026-10-21T00:00:00+08:00',0)]).length,4,
     'zero-price events do not create observations');
+  assert.equal(normalize([...events, event(143334,'PRICE_CHANGED','2026-10-21T01:00:00+08:00',300)]).length, 5);
+  const closed = event(143335,'PRICE_CHANGED','2026-10-21T01:01:00+08:00',300);
+  closed.new_state = state(300, {price_valid:false});
+  assert.equal(normalize([...events,closed]).length,4, 'closed-hours events never enter price graph');
 
   const app = fs.readFileSync('web/app.js', 'utf8');
   const start = app.indexOf('function formatBatchDate(');
