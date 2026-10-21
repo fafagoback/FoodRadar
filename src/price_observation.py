@@ -3,6 +3,7 @@
 The API's isOpen=True is insufficient: it can be true at 01:00 for a store
 whose workingHoursTagline says "Opens 9:00 AM". Do not confuse listing status
 with whether a *price observation* can be used as a price/discount baseline.
+Replaying archived snapshots repairs historical false discounts.
 """
 from __future__ import annotations
 
