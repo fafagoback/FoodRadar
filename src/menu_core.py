@@ -490,6 +490,8 @@ def fetch_single_store(store_item: dict, output_dir: str, time_prefix: str = "",
                     api_data = res_json.get("data", {})
                     if api_data and (api_data.get("title") or api_data.get("catalogSectionsMap")):
                         schema_doc = convert_api_data_to_schema(api_data, store_url, store_item.get("name", ""))
+                        # Per-store API response timestamp; the batch start may be hours earlier.
+                        schema_doc['captured_at'] = datetime.now(TW_TZ).isoformat()
                         schema_doc.update(store_id=store_id, store_uuid=store_uuid, batch_id=time_prefix.rstrip("_"))
                         validate_document(schema_doc)
                         
