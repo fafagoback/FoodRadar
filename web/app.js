@@ -1773,7 +1773,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         history = events
           .filter(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
-            return state.is_open === 1 || state.is_open === true;
+            return state.price_valid === true && (state.is_open === 1 || state.is_open === true);
           })
           .map(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
