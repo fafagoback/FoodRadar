@@ -1818,14 +1818,19 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     }
   }
 
-  // 圖表按時間升冪顯示；下方表格另外以降冪顯示最新採集紀錄
-  if (history.length > 1) {
-    history.sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
+  // One product and one crawl timestamp represent one price observation.
+  // Guard both the table and chart even if a future event type slips through.
+  const uniqueHistory = new Map();
+  for (const observation of history) {
+    const timestamp = String(observation.crawled_time || '');
+    if (!uniqueHistory.has(timestamp)) uniqueHistory.set(timestamp, observation);
   }
+  history = [...uniqueHistory.values()]
+    .sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
 
   const tbody = document.getElementById('modal-history-tbody');
   if (history.length > 0) {
-    const rowsHtml = [...history].sort((a, b) => new Date(b.crawled_time) - new Date(a.crawled_time)).map(h => `
+    const rowsHtml = [...history].reverse().map(h => `
       <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
         <td class="px-3 py-2 font-mono text-slate-600 dark:text-slate-300 text-xs">${formatBatchDate(h.crawled_time)}</td>
         <td class="px-3 py-2 font-mono font-medium text-xs">$${Math.round(h.price)}</td>
@@ -1853,15 +1858,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   const textColor = isDark ? '#94a3b8' : '#64748b';
 
   // 保留每次採集資料點，X 軸只顯示精簡日期；同一天兩次採集位於同一日網格區段。
-  const dayKey = value => {
-    const raw = String(value || '');
-    const match = raw.match(/^(\\d{4}-\\d{2}-\\d{2})/);
-    if (match) return match[1];
-    const d = new Date(raw);
-    return Number.isNaN(d.getTime()) ? raw : new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
-    }).format(d);
-  };
+  const dayKey = value => formatBatchDate(value).slice(0, 10).replaceAll('/', '-');
   const dayKeys = history.map(h => dayKey(h.crawled_time));
   const uniqueDays = [...new Set(dayKeys)];
   const labelInterval = Math.max(1, Math.ceil(uniqueDays.length / 9));
@@ -2205,8 +2202,19 @@ function debounce(func, delay = 100) {
 }
 
 function formatBatchDate(batchStr) {
-  if (!batchStr || batchStr.length !== 14) return batchStr || '';
-  return `${batchStr.slice(0, 4)}/${batchStr.slice(4, 6)}/${batchStr.slice(6, 8)} ${batchStr.slice(8, 10)}:${batchStr.slice(10, 12)}`;
+  const text = String(batchStr || '');
+  if (/^\d{14}$/.test(text)) {
+    return `${text.slice(0, 4)}/${text.slice(4, 6)}/${text.slice(6, 8)} ${text.slice(8, 10)}:${text.slice(10, 12)}`;
+  }
+  const date = new Date(text);
+  if (!text || Number.isNaN(date.getTime())) return text;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(date).map(part => [part.type, part.value])
+  );
+  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
 function escapeHtml(str) {
