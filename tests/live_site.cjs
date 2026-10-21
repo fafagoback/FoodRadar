@@ -53,6 +53,24 @@ const fs = require('node:fs');
       return {product:{id:product.product_uuid,store:product.store_uuid,name:product.product_name},events:events.map(e=>({time:e.event_time,type:e.event_type,old:e.old_state?JSON.parse(e.old_state):null,new:e.new_state?JSON.parse(e.new_state):null}))};
     });
     console.log('LOUISA_HISTORY_DIAGNOSTIC '+JSON.stringify(diagnosis));
+    // Open-hour pricing regression from real archived Uber menus:
+    // 麵線陳 at 01:03 had a closed-menu 300, at 09:08 an in-hours 210.
+    const noodle = await page.evaluate(async () => {
+      const client = await import('./packed-turso.js');
+      const products = await client.searchPacked({keyword:'大苑子飲品果汁', limit:50000});
+      const product = products.find(p => p.product_uuid === '7e3d2e5b-b210-5ea4-b66d-1accfcb79d1e');
+      if (!product) return {found:false, candidates:products.length};
+      const events = await client.packedHistory(product.store_uuid, product.product_uuid);
+      return {found:true, events:events.map(e=>({time:e.event_time,type:e.event_type,
+        price:JSON.parse(e.new_state || e.old_state || '{}').price,
+        valid:JSON.parse(e.new_state || e.old_state || '{}').price_valid}))};
+    });
+    console.log('NOODLE_VALID_HISTORY '+JSON.stringify(noodle));
+    assert.equal(noodle.found, true, 'Target noodle product must be searchable on deployed site');
+    assert.ok(noodle.events.length > 0, 'Target noodle product has in-hours history');
+    assert.ok(noodle.events.every(e => e.valid === true && Number(e.price) !== 300),
+      'Closed-hours 300 must not show up as a price observation');
+
     assert.deepEqual(errors, [], 'browser must have no uncaught errors');
     console.log('LIVE PAGE PASS: 30%-discounts homepage=' + home + ', promotions=' + promo);
   } catch (error) {
