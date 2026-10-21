@@ -454,6 +454,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     # A first valid in-hours observation must survive even when
                     # this snapshot initializes the whole dataset. Otherwise a
                     # permanently stable-priced product has no chart history.
+                    # Replay archived verified observations for this case.
                     if price_valid or not baseline:
                         events_batch.append((now, sid, pid, "NEW", None, json_dumps(event_state)))
                     state_cache.put_product(key, {
