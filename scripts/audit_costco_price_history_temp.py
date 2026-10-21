@@ -49,7 +49,7 @@ repo='hub-google/UberEat'
 filelist=api.list_repo_files(repo_id=repo,repo_type='dataset')
 manifests=sorted(x for x in filelist if x.startswith('FoodRadar/snapshots/') and x.endswith('/complete.json'))
 latest=manifests[-1]
-selected=['20261008100547','20261014091759','20261020090813',latest.split('/')[2]]
+selected=['20261008100547','20261013110540','20261014091759','20261020090813','20261020231343',latest.split('/')[2]]
 selected=list(dict.fromkeys(selected))
 print('MANIFEST_COUNT',len(manifests),'LAST_MANIFESTS',manifests[-5:],flush=True)
 for batch in selected:
