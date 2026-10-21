@@ -1,0 +1,25 @@
+name: FoodRadar live price history verification
+on:
+  push:
+    branches: [fix-price-history-display-20261021]
+permissions:
+  contents: read
+jobs:
+  verify-live-modal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install headless Chromium
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Check actual online modal against Turso product
+        run: node tests/live_price_history.cjs
+      - name: Upload failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: price-history-live-diagnostic
+          path: test-results/
+          if-no-files-found: ignore
