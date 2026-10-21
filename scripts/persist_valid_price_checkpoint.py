@@ -20,11 +20,11 @@ batch = (ROOT/'data/latest.txt').read_text(encoding='utf-8').strip()
 source = ROOT/'data'/batch/'serving.db'
 if not source.is_file():
     raise RuntimeError('Rebuilt serving state missing; refuse to update HF pointer')
-gzip_path = ROOT/'data'/batch/'serving-valid-hours.db.gz'
+gzip_path = ROOT/'data'/batch/'serving-valid-hours-v2.db.gz'
 with source.open('rb') as orig, gzip.open(gzip_path,'wb') as archive:
     shutil.copyfileobj(orig,archive)
 compressed = gzip_path.read_bytes()
-remote = f'{folder}/state/{batch}/serving-valid-hours.db.gz'
+remote = f'{folder}/state/{batch}/serving-valid-hours-v2.db.gz'
 manifest = {
     'schema_version':1,
     'batch_id':batch,
