@@ -10,9 +10,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: python -m pip install -q zstandard msgpack
+      - run: python -m pip install -q zstandard msgpack huggingface_hub
       - name: Inspect current Costco price state and change events
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/audit_costco_price_history_temp.py
