@@ -80,4 +80,34 @@ jobs:
                   keys=["product_uuid","product_name","category","price","effective_price","reference_price","discount_amount","discount_pct","promo_type","quantity","is_price_deal","is_open","status","_promotion_only_in_frontend","_promo_index","_brand_index"]
                   print("COSTCO_ROW",json.dumps({k:p.get(k) for k in keys},ensure_ascii=False))
 
+          for s in stores:
+              sid=s["store_id"]
+              chunks=sql("select chunk_no,payload from store_bundles where store_id="+str(sid)+" order by chunk_no")
+              cols=None; allp=[]
+              for ch in chunks:
+                  data=msgpack.unpackb(decomp.decompress(ch["payload"]),raw=False)
+                  cols=data.get("product_columns") or cols
+                  for _,vals in data["products"]: allp.append(dict(zip(cols,vals)))
+              names=["紅豆牛乳銅鑼燒","Magic Waffles","巧克力鬆餅"]
+              found=[{k:p.get(k) for k in ["product_name","price","promo_type","is_open","status","discount_pct"]} for p in allp if any(n.lower() in str(p.get("product_name") or "").lower() for n in names)]
+              print("DB_EXACT_PROMO_PRODUCTS",json.dumps({"stored_total":len(allp),"matches":found},ensure_ascii=False))
+              try:
+                  payload={"storeUuid":s["store_uuid"],"sfNuggetCount":24}
+                  headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36","Accept":"*/*","Accept-Language":"zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7","x-csrf-token":"x","Content-Type":"application/json"}
+                  resp=requests.post("https://www.ubereats.com/api/getStoreV1",json=payload,headers=headers,timeout=22)
+                  print("UBER_API_STATUS",resp.status_code)
+                  if resp.status_code==200:
+                      body=resp.json(); data=body.get("data") or {}; matches=[]; n=0; sec_names=[]
+                      for groups in (data.get("catalogSectionsMap") or {}).values():
+                          if not isinstance(groups,list):continue
+                          for sec in groups:
+                              pl=(sec.get("payload") or {}).get("standardItemsPayload") or {}
+                              sec_names.append(str((pl.get("title") or {}).get("text") or ""))
+                              for p in pl.get("catalogItems") or []:
+                                  n+=1
+                                  if any(q.lower() in str(p.get("title") or "").lower() for q in names):
+                                      matches.append({"title":p.get("title"),"price":p.get("price"),"keys":list(p.keys()),"fields":{k:v for k,v in p.items() if any(kword in k.lower() for kword in ["price","promo","discount","offer"])}})
+                      print("UBER_API_SUMMARY",json.dumps({"status":body.get("status"),"item_count":n,"matched_items":matches,"section_names":sec_names[:100]},ensure_ascii=False))
+              except Exception as e:
+                  print("UBER_API_ERROR",type(e).__name__,str(e)[:300])
           PY
