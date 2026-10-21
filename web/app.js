@@ -1833,9 +1833,9 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     const rowsHtml = [...history].reverse().map(h => `
       <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
         <td class="px-3 py-2 font-mono text-slate-600 dark:text-slate-300 text-xs">${formatBatchDate(h.crawled_time)}</td>
-        <td class="px-3 py-2 font-mono font-medium text-xs">$${Math.round(h.price)}</td>
+        <td class="px-3 py-2 font-mono font-medium text-xs">${window.UBER_DATA_CONTRACT.money(h.price)}</td>
         <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-[11px] font-medium ${h.promo_type && h.promo_type !== '無' ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}">${escapeHtml(h.promo_type || '無')}</span></td>
-        <td class="px-3 py-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">$${Number(h.eff_price).toFixed(h.eff_price % 1 === 0 ? 0 : 1)}</td>
+        <td class="px-3 py-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">${window.UBER_DATA_CONTRACT.money(h.eff_price)}</td>
       </tr>
     `).join('');
 
@@ -1863,7 +1863,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   const uniqueDays = [...new Set(dayKeys)];
   const labelInterval = Math.max(1, Math.ceil(uniqueDays.length / 9));
   const labels = history.map(h => h.crawled_time);
-  const prices = history.map(h => Number(h.eff_price));
+  const prices = history.map(h => Math.round(Number(h.eff_price)));
 
   // 在兩個日期交界的資料點中間畫淡灰色直線，形成每日區隔的網格。
   const daySeparatorPlugin = {
@@ -1918,8 +1918,8 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
             label: item => {
               const h = history[item.dataIndex];
               return [
-                `實質單價：$${Number(h.eff_price).toFixed(1)} TWD`,
-                `標價：$${Number(h.price).toFixed(1)} TWD`,
+                `實質單價：${window.UBER_DATA_CONTRACT.money(h.eff_price)} TWD`,
+                `標價：${window.UBER_DATA_CONTRACT.money(h.price)} TWD`,
                 `促銷：${h.promo_type || '無'}`
               ];
             }
@@ -1948,7 +1948,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
           ticks: {
             color: textColor,
             font: { size: 11 },
-            callback: v => `$${v}`
+            callback: v => window.UBER_DATA_CONTRACT.money(v)
           },
           suggestedMin: prices.length ? Math.max(0, Math.min(...prices) * 0.85) : 0,
           suggestedMax: prices.length ? Math.max(...prices) * 1.15 : 1

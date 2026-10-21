@@ -30,7 +30,7 @@
   }
   function money(value) {
     const n = positive(value);
-    return n === null ? '價格未提供' : '$' + n.toLocaleString('zh-TW', {maximumFractionDigits: 2});
+    return n === null ? '價格未提供' : '$' + n.toLocaleString('zh-TW', {minimumFractionDigits: 0, maximumFractionDigits: 0});
   }
   root.UBER_DATA_CONTRACT = {city, positive, product, money};
 })(typeof window === 'undefined' ? globalThis : window);

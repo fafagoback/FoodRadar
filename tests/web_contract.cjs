@@ -41,4 +41,26 @@ assert.ok(reader.includes('const effective = price;'), 'packed reader must not u
 assert.ok(reader.includes('Number(product.is_open) === 1 && Number(store.is_open) === 1'), 'both product and store must explicitly be open');
 assert.ok(source.includes('state.is_open === 1 || state.is_open === true'), 'price-history events require explicit open status');
 assert.ok(source.includes('(found.is_open === 1 || found.is_open === true)'), 'fallback price must not bypass open-state validation');
+
+const moneyContext = vm.createContext({});
+vm.runInContext(fs.readFileSync('web/data-contract.js', 'utf8'), moneyContext);
+const money = moneyContext.UBER_DATA_CONTRACT.money;
+for (const [input, expected] of [
+  [10.3, '$10'],
+  [75.99, '$76'],
+  [88.87, '$89'],
+  [114.63, '$115'],
+  [140.39, '$140'],
+  [191.91, '$192'],
+  [1000.5, '$1,001'],
+  [168, '$168'],
+]) {
+  assert.equal(money(input), expected, 'Taiwan-facing price must match Uber integer display');
+}
+assert.equal(run('displayUnitPrice', {price: 114.63, promo_type: '', quantity: 1}), 114.63,
+  'the source price must be preserved for sorting and historical comparisons');
+assert.ok(source.includes('const prices = history.map(h => Math.round(Number(h.eff_price)))'),
+  'history graph must use the same integer displayed in product cards');
+assert.ok(source.includes('window.UBER_DATA_CONTRACT.money(h.eff_price)'),
+  'history table and tooltip must use shared TWD formatting');
 console.log('FoodRadar pricing and cross-page promotion contract: PASS');
