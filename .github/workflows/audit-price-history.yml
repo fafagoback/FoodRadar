@@ -1,0 +1,90 @@
+name: FoodRadar read-only price history audit
+on:
+  push:
+    branches: [audit-price-history-20261021]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install decoder
+        run: python -m pip install --quiet msgpack zstandard
+      - name: Audit matching store and raw packed events (read-only)
+        env:
+          TURSO_DATABASE_URL: \${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: \${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, urllib.request, json, base64, zstandard, msgpack, collections
+          url=os.getenv('TURSO_DATABASE_URL','').replace('libsql://','https://').rstrip('/')
+          token=os.getenv('TURSO_READONLY_TOKEN','')
+          if not url or not token: raise RuntimeError('Missing Turso read-only credentials')
+          def query(statement):
+              body=json.dumps({'requests':[{'type':'execute','stmt':{'sql':statement}},{'type':'close'}]}).encode()
+              request=urllib.request.Request(url+'/v2/pipeline', body, {'Authorization':'Bearer '+token, 'Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=90) as res: response=json.load(res)
+              result=response['results'][0]
+              if result['type']!='ok': raise RuntimeError(str(result.get('error',{})))
+              result=result['response']['result']
+              names=[x['name'] for x in result['cols']]
+              data=[]
+              for row in result['rows']:
+                  values=[(base64.b64decode(x['base64']) if x['type']=='blob' else x.get('value')) for x in row]
+                  data.append(dict(zip(names, values)))
+              return data
+          rows=query("SELECT store_id,store_uuid,name FROM store_directory WHERE name LIKE '%齊好食%' OR name LIKE '%齊食%' OR name LIKE '%齊好%' LIMIT 50")
+          print('STORE_EXACT_MATCH_COUNT',len(rows))
+          if not rows:
+              rows=query("SELECT store_id,store_uuid,name FROM store_directory WHERE name LIKE '%養生%' LIMIT 60")
+              print('STORE_FALLBACK_MATCH_COUNT',len(rows))
+          for row in rows:
+              print('STORE', row['store_id'], row['name'], row['store_uuid'])
+          any_product=False
+          for store in rows:
+              sid=store['store_id']
+              blocks=query('SELECT chunk_no,payload FROM store_bundles WHERE store_id='+str(int(sid))+' ORDER BY chunk_no')
+              prodcols=evcols=None
+              prods=[];events=[]
+              for block in blocks:
+                  bundle=msgpack.unpackb(zstandard.ZstdDecompressor().decompress(block['payload']),raw=False)
+                  prodcols=bundle.get('product_columns') or prodcols
+                  evcols=bundle.get('event_columns') or evcols
+                  for x in bundle.get('products',[]):
+                      prods.append(dict(zip(prodcols,x[1])))
+                  for x in bundle.get('events',[]):
+                      events.append(dict(zip(evcols,x)))
+              for p in prods:
+                  name=p.get('product_name','')
+                  if not any(s in name for s in ['菜飯餐','純素','養生菜飯','養生蔬','養生餐']):
+                      continue
+                  any_product=True
+                  pu=str(p['product_uuid'])
+                  hits=[e for e in events if str(e.get('product_uuid'))==pu]
+                  print('PRODUCT', name, 'PRODUCT_UUID',pu,'STORE_ID',sid, 'EVENT_COUNT',len(hits),
+                        'CURRENT_PRICE',p.get('price'))
+                  by_time=collections.defaultdict(list)
+                  for e in hits: by_time[str(e['event_time'])].append(e)
+                  for t,group in sorted(by_time.items()):
+                      if t[:10]<'2026-10-01': continue
+                      print('EVENT_TIME',t,'RECORD_COUNT',len(group))
+                      for e in group:
+                          state=json.loads(e.get('new_state') or e.get('old_state') or '{}')
+                          print('  RAW_EVENT', 'ID',e.get('id'),'TYPE',e.get('event_type'),
+                                'PRICE',state.get('price'),'EFFECTIVE_PRICE',state.get('effective_price'),
+                                'PROMO',state.get('promo_type'),'OPEN',state.get('is_open'),
+                                'OLDSTATE',bool(e.get('old_state')))
+                  first=next((e for e in sorted(hits,key=lambda x:str(x.get('event_time'))) if e.get('event_type')=='PRICE_CHANGED' and e.get('old_state')),None)
+                  if first:
+                      old=json.loads(first['old_state'])
+                      ts=old.get('last_seen') or old.get('first_seen')
+                      print('FRONTEND_BASELINE',ts,'BASELINE_PRICE',old.get('price'),
+                            'SAME_TIME_RAW_EVENTS',len(by_time.get(str(ts),[])))
+                  duplicates=[(t,len(g),[e.get('event_type') for e in g],
+                              len({(e.get('event_type'),e.get('new_state'),e.get('old_state')) for e in g}))
+                              for t,g in by_time.items() if len(g)>1]
+                  print('RAW_SAME_SECOND_GROUPS',json.dumps(duplicates,ensure_ascii=False))
+          print('TARGET_PRODUCT_FOUND',any_product)
+          PY
