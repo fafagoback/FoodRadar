@@ -18,6 +18,7 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: |
+          python - <<'PY'
           import os, json, base64, hashlib, requests, msgpack, zstandard
           raw=os.environ["TURSO_DATABASE_URL"]
           url=raw.replace("libsql://","https://").rstrip("/")+"/v2/pipeline"
@@ -78,3 +79,5 @@ jobs:
                   seen.add(pid)
                   keys=["product_uuid","product_name","category","price","effective_price","reference_price","discount_amount","discount_pct","promo_type","quantity","is_price_deal","is_open","status","_promotion_only_in_frontend","_promo_index","_brand_index"]
                   print("COSTCO_ROW",json.dumps({k:p.get(k) for k in keys},ensure_ascii=False))
+
+          PY
