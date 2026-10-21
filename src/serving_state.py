@@ -451,7 +451,10 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     init_recent = [price] if price_valid else []
                     insert_products_batch.append((sid, pid, *state.values(), now, now, "active", 0, ph, json_dumps(init_recent), 0, None, 0, 0, 0, now))
                     counts["new"] += 1
-                    if not baseline:
+                    # A first valid in-hours observation must survive even when
+                    # this snapshot initializes the whole dataset. Otherwise a
+                    # permanently stable-priced product has no chart history.
+                    if price_valid or not baseline:
                         events_batch.append((now, sid, pid, "NEW", None, json_dumps(event_state)))
                     state_cache.put_product(key, {
                         "store_uuid": sid, "product_uuid": pid, **state,
