@@ -56,6 +56,16 @@ class PriceValidityTests(unittest.TestCase):
         self.assertTrue(all(s['price_valid'] for s in observations if s['price']>0))
         self.assertEqual([s['price'] for s in observations if s['price']>0],[210])
 
+    def test_baseline_valid_price_is_recorded_even_without_any_future_price_changes(self):
+        apply_snapshot(self.conn,[menu('20261006091759',210)],'20261006091759')
+        apply_snapshot(self.conn,[menu('20261014014059',300)],'20261014014059')
+        apply_snapshot(self.conn,[menu('20261020090813',210)],'20261020090813')
+        events=self.conn.execute("SELECT event_type,event_time,new_state FROM events WHERE event_type IN ('NEW','PRICE_OBSERVED','PRICE_CHANGED')").fetchall()
+        self.assertEqual(len(events),1)
+        self.assertEqual(events[0]['event_type'],'NEW')
+        self.assertEqual(json.loads(events[0]['new_state'])['price'],210)
+        self.assertTrue(json.loads(events[0]['new_state'])['price_valid'])
+
     def test_closed_after_known_price_preserves_previous_deal_state(self):
         for batch,price in [('20261014091759',300),('20261015091759',210),
                             ('20261016014059',300)]:
