@@ -525,11 +525,55 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
 
 }
 
+// History charts show one observed price per crawl, not one row per
+// PRICE_CHANGED / CONTENT_CHANGED event emitted by the same crawl.
+export function normalizePriceHistoryEvents(events) {
+  const priority = { BASELINE: 0, NEW: 1, PRICE_CHANGED: 2 };
+  const priceEvents = (events || []).filter(e =>
+    Object.prototype.hasOwnProperty.call(priority, e.event_type));
+
+  // Some older products have no NEW event: reconstruct the pre-change price
+  // only when there is no real price observation at that timestamp.
+  const firstChange = priceEvents.find(e => e.event_type === 'PRICE_CHANGED' && e.old_state);
+  if (firstChange) {
+    try {
+      const old = JSON.parse(firstChange.old_state);
+      const oldTime = old.last_seen || old.first_seen;
+      if (oldTime && !priceEvents.some(e => String(e.event_time) === String(oldTime))) {
+        priceEvents.push({
+          event_time: oldTime, new_state: firstChange.old_state,
+          old_state: null, event_type: 'BASELINE'
+        });
+      }
+    } catch (_) {
+      // Malformed archived state cannot add a synthetic baseline.
+    }
+  }
+
+  const byTime = new Map();
+  for (const event of priceEvents) {
+    const time = String(event.event_time || '');
+    if (!time) continue;
+    let state;
+    try { state = JSON.parse(event.new_state || event.old_state || '{}'); }
+    catch (_) { continue; }
+    if (state.is_open !== 1 && state.is_open !== true) continue;
+    if (!(Number(state.price) > 0)) continue;
+    const previous = byTime.get(time);
+    if (!previous || priority[event.event_type] > priority[previous.event_type]) {
+      byTime.set(time, event);
+    }
+  }
+  return [...byTime.values()]
+    .sort((a, b) => String(a.event_time).localeCompare(String(b.event_time)))
+    .slice(-50);
+}
+
 export async function packedHistory(storeUuid, productUuid) {
   const row = (await sql(`select store_id from store_directory where store_uuid='${String(storeUuid).replace(/'/g, "''")}' limit 1`))[0];
   if (!row) return [];
   await bundlesForStores([Number(row.store_id)]);
-  const out = [];
+  const events = [];
   let cols;
   for (const chunk of bundleCache.get(Number(row.store_id)) || []) {
     cols = chunk.event_columns || cols;
@@ -537,18 +581,8 @@ export async function packedHistory(storeUuid, productUuid) {
       if (!cols) continue;
       const e = Object.fromEntries(cols.map((c, i) => [c, event[i]]));
       if (String(e.product_uuid) !== String(productUuid)) continue;
-      let state;
-      try { state = JSON.parse(e.new_state || e.old_state || '{}'); }
-      catch { continue; }
-      if (state.is_open !== true && state.is_open !== 1) continue;
-      out.push(e);
+      events.push(e);
     }
   }
-  const firstChange = out.find(e => e.event_type === 'PRICE_CHANGED' && e.old_state);
-  if (firstChange) {
-    const old = JSON.parse(firstChange.old_state);
-    out.push({ event_time: old.last_seen || old.first_seen, old_state: null,
-      new_state: firstChange.old_state, event_type: 'BASELINE' });
-  }
-  return out.sort((a, b) => String(a.event_time).localeCompare(String(b.event_time))).slice(-50);
+  return normalizePriceHistoryEvents(events);
 }
