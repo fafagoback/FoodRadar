@@ -27,6 +27,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
+    from .price_observation import price_observation_valid
+except ImportError:
+    from price_observation import price_observation_valid
+
+try:
     import orjson
 
     def json_loads(data: bytes | str) -> Any:
@@ -396,6 +401,10 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
             })
             changed_store_keys.add(sid)
 
+        # A store can have isOpen=true while its schedule says "Opens 9 AM" at 01 AM.
+        # Preserve raw off-hours prices in archived JSON, but never use them for
+        # current pricing, event histories or discount baselines.
+        store_price_valid = price_observation_valid(doc, batch_id)
         sections = (doc.get("hasMenu") or {}).get("hasMenuSection") or []
         store_product_keys: set[str] = set()
         for sec in sections:
@@ -413,29 +422,37 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 seen_product_rows.append(key)
                 counts["products"] += 1
 
-                price = _num((item.get("offers") or {}).get("price"), float, 0)
+                old = state_cache.get_product(key)
+                observed_price = _num((item.get("offers") or {}).get("price"), float, 0)
+                price_valid = store_price_valid and observed_price > 0
                 desc = str(item.get("description") or "")
                 # Original Restaurant JSON describes offers in section/name/
                 # description; it does not carry ETL-only promo_type fields.
                 inferred_promo, inferred_qty = extract_promo_info(category, name, desc)
-                promo = str(item.get("promo_type") or inferred_promo)
-                qty = max(1, _num(item.get("quantity"), int, inferred_qty))
-                effective = calculate_effective_price(price, promo, qty)  # Recompute from raw paid price; never trust stale derived input
+                observed_promo = str(item.get("promo_type") or inferred_promo)
+                observed_qty = max(1, _num(item.get("quantity"), int, inferred_qty))
+                # Never replace the last verified price/promotion with an
+                # unpurchasable closed-hours menu snapshot.
+                price = observed_price if price_valid else (float(old["price"]) if old and old["recent_prices"] else 0.0)
+                promo = observed_promo if price_valid else (str(old["promo_type"]) if old else "無")
+                qty = observed_qty if price_valid else (int(old["quantity"]) if old else 1)
+                effective = calculate_effective_price(price, promo, qty)
                 state = {
                     "product_name": name, "category": category, "description": desc,
                     "price": price, "quantity": qty, "promo_type": promo,
                     "effective_price": effective, "order_url": order_url,
                     "is_open": is_open,
                 }
+                # A flag on event JSON, not another SQL/Turso column.
+                event_state = {**state, "price_valid": bool(price_valid)}
                 ph = canonical_hash(state)
-                old = state_cache.get_product(key)
 
                 if old is None:
-                    init_recent = [price] if (is_open == 1 and price > 0) else []
+                    init_recent = [price] if price_valid else []
                     insert_products_batch.append((sid, pid, *state.values(), now, now, "active", 0, ph, json_dumps(init_recent), 0, None, 0, 0, 0, now))
                     counts["new"] += 1
                     if not baseline:
-                        events_batch.append((now, sid, pid, "NEW", None, json_dumps(state)))
+                        events_batch.append((now, sid, pid, "NEW", None, json_dumps(event_state)))
                     state_cache.put_product(key, {
                         "store_uuid": sid, "product_uuid": pid, **state,
                         "first_seen": now, "listing_started_at": now, "last_seen": now, "status": "active",
@@ -447,12 +464,13 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 else:
                     old_state = dict(old)
                     old_state["recent_prices"] = json_dumps(old["recent_prices"])
+                    old_state["price_valid"] = bool(old["recent_prices"])
                     # Keep the actual prior open-state flag; carry only the last verified
                     # payable price as the reference value for price-change events.
                     if old["recent_prices"]:
                         old_state["price"] = old["recent_prices"][-1]
                         old_state["effective_price"] = old["recent_prices"][-1]
-                    if is_open == 1 and price > 0:
+                    if price_valid:
                         previous_prices = old["recent_prices"][-1:]
                         reference_price = previous_prices[-1] if previous_prices else None
                         price_novel = int(reference_price is not None and price != reference_price)
@@ -463,9 +481,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     else:
                         price_novel = 0
                         reference_price = old.get("reference_price")
-                        discount_amount = 0
-                        discount_pct = 0
-                        is_price_deal = 0
+                        discount_amount = old.get("discount_amount", 0)
+                        discount_pct = old.get("discount_pct", 0)
+                        is_price_deal = old.get("is_price_deal", 0)
                         next_recent_prices = old["recent_prices"]
 
                     listing_started_at = old.get("listing_started_at") or old["first_seen"]
@@ -489,15 +507,17 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                             events_batch.append((now, sid, pid, "SEASONAL_RELIST" if seasonal_relist else "REAPPEARED", json_dumps({"status": old["status"], "last_seen": old["last_seen"]}), json_dumps({"status": "active", "listing_started_at": listing_started_at})))
                     if old["state_hash"] != ph or price_novel:
                         kinds = []
-                        if is_open == 1 and price > 0 and price_novel:
+                        if price_valid and not old["recent_prices"]:
+                            kinds.append("PRICE_OBSERVED")
+                        elif price_valid and price_novel:
                             kinds.append("PRICE_CHANGED")
-                        if old["promo_type"] != promo or old["quantity"] != qty:
+                        if price_valid and (old["promo_type"] != promo or old["quantity"] != qty):
                             kinds.append("PROMOTION_CHANGED")
                         if any(old[k] != state[k] for k in ("product_name", "category", "description", "order_url")):
                             kinds.append("CONTENT_CHANGED")
                         for kind in kinds:
                             if not baseline:
-                                events_batch.append((now, sid, pid, kind, json_dumps(old_state), json_dumps(state)))
+                                events_batch.append((now, sid, pid, kind, json_dumps(old_state), json_dumps(event_state)))
                         counts["changed"] += 1
                     else:
                         counts["unchanged"] += 1
