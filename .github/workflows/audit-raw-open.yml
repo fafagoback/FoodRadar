@@ -1,55 +1,80 @@
-name: Inspect archived raw isOpen (read-only)
+name: Inspect Costco promotion rows (read-only diagnostic)
 on:
   push:
     paths: ['.github/workflows/audit-raw-open.yml']
-  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install huggingface_hub
-      - name: Inspect October 20 raw archive without mutating data
+      - run: pip install requests msgpack zstandard
+      - name: Compare live Turso Costco rows against promotion search index
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: |
-          python - <<'PY'
-          import json, tarfile
-          from pathlib import Path
-          from huggingface_hub import HfApi, hf_hub_download
-          repo='hub-google/UberEat'
-          prefix='FoodRadar/snapshots/'
-          sid='34f9b599-c1f4-5e89-9434-84a433989755'
-          pid='98fe837b-3c5a-508a-9070-364d457c2e74'
-          batch='20261020010344'
-          api=HfApi()
-          files=api.list_repo_files(repo_id=repo,repo_type='dataset')
-          options=sorted(p for p in files if p.startswith(prefix) and p.endswith('/complete.json'))
-          matches=[x for x in options if batch in x]
-          print('CANDIDATE_MANIFESTS',json.dumps(matches))
-          if not matches:
-              print('NEARBY_MANIFESTS',json.dumps([x for x in options if '/20261020' in x]))
-              raise RuntimeError('Exact raw batch manifest not found')
-          for manifest_path in matches:
-              m=json.loads(Path(hf_hub_download(repo_id=repo,filename=manifest_path,repo_type='dataset')).read_text())
-              print('MANIFEST',json.dumps(m,ensure_ascii=False))
-              archive=hf_hub_download(repo_id=repo,filename=m['archive_path'],repo_type='dataset')
-              found=0
-              with tarfile.open(archive,'r:gz') as tar:
-                  for member in tar:
-                      if not member.isfile() or not member.name.startswith('Json/') or not member.name.endswith('.json'): continue
-                      stream=tar.extractfile(member)
-                      if stream is None: continue
-                      doc=json.load(stream)
-                      if doc.get('store_uuid')!=sid: continue
-                      products=[{'id':p.get('identifier'),'name':p.get('name'),'price':(p.get('offers') or {}).get('price')} for sec in ((doc.get('hasMenu') or {}).get('hasMenuSection') or []) for p in (sec.get('hasMenuItem') or []) if p.get('identifier')==pid]
-                      result={'raw_file':member.name,'store_uuid':doc.get('store_uuid'),'isOpen_present':'isOpen' in doc,'isOpen':doc.get('isOpen'),'openingHoursSpecification':doc.get('openingHoursSpecification'),'product':products}
-                      print('ORIGINAL_RAW_JSON_RESULT',json.dumps(result,ensure_ascii=False))
-                      found+=1
-              if found!=1: raise RuntimeError(f'Expected exactly one store snapshot, found {found}')
-          PY
+          import os, json, base64, hashlib, requests, msgpack, zstandard
+          raw=os.environ["TURSO_DATABASE_URL"]
+          url=raw.replace("libsql://","https://").rstrip("/")+"/v2/pipeline"
+          headers={"Authorization":"Bearer "+os.environ["TURSO_READONLY_TOKEN"],"Content-Type":"application/json"}
+          def sql(query):
+              response=requests.post(url,headers=headers,json={"requests":[{"type":"execute","stmt":{"sql":query,"want_rows":True}},{"type":"close"}]},timeout=120)
+              response.raise_for_status()
+              payload=response.json()["results"][0]
+              if payload.get("type")=="error": raise Exception(payload["error"])
+              result=payload["response"]["result"]
+              names=[c["name"] for c in result["cols"]]
+              def cv(c):
+                  typ=c["type"]
+                  if typ=="blob": return base64.b64decode(c.get("base64",""))
+                  if typ=="null": return None
+                  if typ=="integer": return int(c["value"])
+                  if typ=="float": return float(c["value"])
+                  return c.get("value")
+              return [dict(zip(names,map(cv,r))) for r in result["rows"]]
+          meta={x["key"]:json.loads(x["value"]) for x in sql("select key,value from metadata")}
+          print("DB_META",json.dumps({k:meta.get(k) for k in ["latest_batch","latest_processed_at","definition_version","active_products","application","buckets"]},ensure_ascii=False))
+          stores=sql("select store_id,store_uuid,name,status,is_open from store_directory where lower(name) like '%costco%' or name like '%好市多%' order by name limit 30")
+          print("COSTCO_DB_STORES",json.dumps(stores,ensure_ascii=False))
+          decomp=zstandard.ZstdDecompressor()
+          count=int(meta.get("buckets") or 8192)
+          def index_posting(term):
+              n=int.from_bytes(hashlib.blake2s(term.encode(),digest_size=4).digest(),"big")%count
+              rows=sql("select payload from search_buckets where bucket_id="+str(n))
+              if not rows:return set()
+              val=msgpack.unpackb(decomp.decompress(rows[0]["payload"]),raw=False)
+              return set(val.get(term,[]))
+          promo_index=index_posting("f:promo")
+          brand_index=index_posting("t:cos")
+          print("INDEX_COUNTS",json.dumps({"f_promo":len(promo_index),"t_cos":len(brand_index),"common":len(promo_index & brand_index)},ensure_ascii=False))
+          for s in stores:
+              sid=s["store_id"]
+              chunks=sql("select chunk_no,payload from store_bundles where store_id="+str(sid)+" order by chunk_no")
+              products=[]; cols=None
+              for ch in chunks:
+                  data=msgpack.unpackb(decomp.decompress(ch["payload"]),raw=False)
+                  cols=data.get("product_columns") or cols
+                  for gid,vals in data["products"]:
+                      p=dict(zip(cols,vals))
+                      if p.get("status")=="active" and int(p.get("is_open") or 0)==1 and float(p.get("price") or 0)>0:
+                          promo=bool(str(p.get("promo_type") or "").strip() not in ("","無"))
+                          deal=(float(p.get("discount_pct") or 0)>=30 and float(p.get("discount_amount") or 0)>0)
+                          p["_promotion_only_in_frontend"]=promo or deal
+                          p["_promo_index"]=gid in promo_index
+                          p["_brand_index"]=gid in brand_index
+                          products.append(p)
+              print("STORE_SUMMARY",json.dumps({"name":s["name"],"store_id":sid,"total_active":len(products),"promo_matches":sum(int(x["_promotion_only_in_frontend"]) for x in products),"promo_index_matches":sum(int(x["_promo_index"]) for x in products),"brand_index_matches":sum(int(x["_brand_index"]) for x in products),"all_promo_type_counts":{t:sum(1 for x in products if x.get("promo_type")==t) for t in set(str(x.get("promo_type")) for x in products)}},ensure_ascii=False))
+              watch=[x for x in products if any(k in str(x.get("product_name") or "").lower() for k in ["銅鑼燒","waffle","鬆餅","有機青江菜","不織布提袋","豆腐"])]
+              sample=watch[:20]+[x for x in products if x["_promotion_only_in_frontend"]][:12]+products[:8]
+              seen=set()
+              for p in sample:
+                  pid=p.get("product_uuid")
+                  if pid in seen:continue
+                  seen.add(pid)
+                  keys=["product_uuid","product_name","category","price","effective_price","reference_price","discount_amount","discount_pct","promo_type","quantity","is_price_deal","is_open","status","_promotion_only_in_frontend","_promo_index","_brand_index"]
+                  print("COSTCO_ROW",json.dumps({k:p.get(k) for k in keys},ensure_ascii=False))
