@@ -1818,14 +1818,14 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     }
   }
 
-  // 若歷史紀錄大於 1 筆，按採集時間升冪排序
+  // 圖表按時間升冪顯示；下方表格另外以降冪顯示最新採集紀錄
   if (history.length > 1) {
     history.sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
   }
 
   const tbody = document.getElementById('modal-history-tbody');
   if (history.length > 0) {
-    const rowsHtml = history.map(h => `
+    const rowsHtml = [...history].sort((a, b) => new Date(b.crawled_time) - new Date(a.crawled_time)).map(h => `
       <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
         <td class="px-3 py-2 font-mono text-slate-600 dark:text-slate-300 text-xs">${formatBatchDate(h.crawled_time)}</td>
         <td class="px-3 py-2 font-mono font-medium text-xs">$${Math.round(h.price)}</td>
@@ -1852,27 +1852,64 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   const gridColor = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)';
   const textColor = isDark ? '#94a3b8' : '#64748b';
 
-  const labels = history.length > 0 ? history.map(h => formatBatchDate(h.crawled_time)) : [];
-  const prices = history.length > 0 ? history.map(h => Number(h.eff_price)) : [];
+  // 保留每次採集資料點，X 軸只顯示精簡日期；同一天兩次採集位於同一日網格區段。
+  const dayKey = value => {
+    const raw = String(value || '');
+    const match = raw.match(/^(\\d{4}-\\d{2}-\\d{2})/);
+    if (match) return match[1];
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? raw : new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(d);
+  };
+  const dayKeys = history.map(h => dayKey(h.crawled_time));
+  const uniqueDays = [...new Set(dayKeys)];
+  const labelInterval = Math.max(1, Math.ceil(uniqueDays.length / 9));
+  const labels = history.map(h => h.crawled_time);
+  const prices = history.map(h => Number(h.eff_price));
+
+  // 在兩個日期交界的資料點中間畫淡灰色直線，形成每日區隔的網格。
+  const daySeparatorPlugin = {
+    id: 'foodRadarDaySeparators',
+    afterDraw(chart) {
+      if (history.length < 2) return;
+      const { ctx, chartArea, scales } = chart;
+      if (!chartArea || !scales.x) return;
+      ctx.save();
+      ctx.strokeStyle = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(100,116,139,0.18)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < dayKeys.length; i++) {
+        if (dayKeys[i] === dayKeys[i - 1]) continue;
+        const x = (scales.x.getPixelForValue(i - 1) + scales.x.getPixelForValue(i)) / 2;
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  };
 
   APP_STATE.chartInstance = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: labels,
+      labels,
       datasets: [{
         label: '實質單價 (TWD)',
         data: prices,
         borderColor: '#10b981',
         backgroundColor: 'rgba(16, 185, 129, 0.12)',
         fill: true,
-        tension: 0.3,
+        stepped: 'before',
+        tension: 0,
         pointBackgroundColor: '#10b981',
         pointBorderColor: '#ffffff',
         pointBorderWidth: 2,
-        pointRadius: history.length > 1 ? 5 : 6,
+        pointRadius: history.length > 1 ? 4 : 6,
         pointHoverRadius: 7
       }]
     },
+    plugins: [daySeparatorPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -1880,21 +1917,41 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (ctx) => ` 實質單價: $${ctx.parsed.y} TWD`
+            title: items => items.length ? formatBatchDate(history[items[0].dataIndex].crawled_time) : '',
+            label: item => {
+              const h = history[item.dataIndex];
+              return [
+                `實質單價：$${Number(h.eff_price).toFixed(1)} TWD`,
+                `標價：$${Number(h.price).toFixed(1)} TWD`,
+                `促銷：${h.promo_type || '無'}`
+              ];
+            }
           }
         }
       },
       scales: {
         x: {
-          grid: { color: gridColor },
-          ticks: { color: textColor, font: { size: 11 } }
+          grid: { display: false },
+          ticks: {
+            color: textColor,
+            font: { size: 11 },
+            maxRotation: 0,
+            minRotation: 0,
+            autoSkip: false,
+            callback: (_, index) => {
+              if (index > 0 && dayKeys[index] === dayKeys[index - 1]) return '';
+              const dayIndex = uniqueDays.indexOf(dayKeys[index]);
+              if (dayIndex % labelInterval !== 0 && dayIndex !== uniqueDays.length - 1) return '';
+              return dayKeys[index] ? dayKeys[index].slice(5).replace('-', '/') : '';
+            }
+          }
         },
         y: {
           grid: { color: gridColor },
-          ticks: { 
-            color: textColor, 
+          ticks: {
+            color: textColor,
             font: { size: 11 },
-            callback: (v) => `$${v}`
+            callback: v => `$${v}`
           },
           suggestedMin: prices.length ? Math.max(0, Math.min(...prices) * 0.85) : 0,
           suggestedMax: prices.length ? Math.max(...prices) * 1.15 : 1
