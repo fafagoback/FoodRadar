@@ -32,7 +32,7 @@ jobs:
               names=[x['name'] for x in result['cols']]
               data=[]
               for row in result['rows']:
-                  values=[(base64.b64decode(x['base64']) if x['type']=='blob' else x.get('value')) for x in row]
+                  values=[(base64.urlsafe_b64decode(x['base64'] + '=' * ((-len(x['base64'])) % 4)) if x['type']=='blob' else x.get('value')) for x in row]
                   data.append(dict(zip(names, values)))
               return data
           rows=query("SELECT store_id,store_uuid,name FROM store_directory WHERE name LIKE '%齊好食%' OR name LIKE '%齊食%' OR name LIKE '%齊好%' LIMIT 50")
