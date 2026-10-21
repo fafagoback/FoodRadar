@@ -32,7 +32,7 @@ jobs:
               names=[c["name"] for c in result["cols"]]
               def cv(c):
                   typ=c["type"]
-                  if typ=="blob": return base64.b64decode(c.get("base64",""))
+                  if typ=="blob": return base64.urlsafe_b64decode(c.get("base64","")+"===")
                   if typ=="null": return None
                   if typ=="integer": return int(c["value"])
                   if typ=="float": return float(c["value"])
