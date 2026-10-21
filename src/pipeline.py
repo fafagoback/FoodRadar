@@ -12,7 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def restore_history(config):
+def restore_history(config, rebuild_all=False):
     """Rebuild this point's Current/Events state on ephemeral Actions runners."""
     from huggingface_hub import HfApi, hf_hub_download
     import tarfile
@@ -26,7 +26,7 @@ def restore_history(config):
     local_batch=previous.read_text(encoding='utf-8').strip() if previous.exists() else ''
     conn=None
     checkpoint_path=f'{folder}/state/latest.json'
-    if not local_batch and checkpoint_path in files:
+    if not rebuild_all and not local_batch and checkpoint_path in files:
         checkpoint=json.loads(Path(hf_hub_download(config['hf_repo_id'],checkpoint_path,repo_type='dataset')).read_text(encoding='utf-8'))
         packed=Path(hf_hub_download(config['hf_repo_id'],checkpoint['state_path'],repo_type='dataset')).read_bytes()
         if hashlib.sha256(packed).hexdigest()!=checkpoint['sha256']:
@@ -64,11 +64,23 @@ def restore_history(config):
             if len(docs)!=meta['store_count']:
                 raise ValueError('HF store count mismatch')
             apply_snapshot(conn,docs,batch)
+            if not rebuild_all:
+                saved=sqlite3.connect(target/'serving.db')
+                conn.backup(saved)
+                saved.close()
+            previous.write_text(batch,encoding='utf-8')
+            local_batch=batch
+        # A clean rebuild does not trust the old HF checkpoint: every archived
+        # menu is replayed to eliminate previously recorded closed-hour prices.
+        # Save only the final state to avoid dozens of huge SQLite copies.
+        if rebuild_all:
+            if conn is None:
+                raise RuntimeError('Cannot rebuild prices without complete archived snapshots')
+            target=ROOT/'data'/local_batch
             saved=sqlite3.connect(target/'serving.db')
             conn.backup(saved)
             saved.close()
-            previous.write_text(batch,encoding='utf-8')
-            local_batch=batch
+            print(f'REBUILT_VALID_PRICE_HISTORY batch={local_batch} snapshots={len(manifests)}',flush=True)
         for path in files:
             if path.startswith(f'{folder}/Parquet/history/') and path.endswith('.parquet'):
                 batch=Path(path).stem.removeprefix('taiwan_catalog_')
