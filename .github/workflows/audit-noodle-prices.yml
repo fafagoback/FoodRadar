@@ -17,4 +17,4 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/list_turso_schema_readonly.py
+        run: python scripts/audit_noodle_price_readonly.py
