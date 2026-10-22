@@ -53,9 +53,8 @@
   }
   function unitMoney(value) {
     const n = positive(value);
-    return n === null ? '價格未提供' : '
-})(typeof window === 'undefined' ? globalThis : window);
- + n.toLocaleString('zh-TW', {minimumFractionDigits: 0, maximumFractionDigits: 2});
+    const decimals = Number.isInteger(n) ? 0 : 2;
+    return n === null ? '價格未提供' : String.fromCharCode(36) + n.toLocaleString('zh-TW', {minimumFractionDigits: decimals, maximumFractionDigits: 2});
   }
   root.UBER_DATA_CONTRACT = {city, positive, product, money, unitPrice, unitMoney};
 })(typeof window === 'undefined' ? globalThis : window);
