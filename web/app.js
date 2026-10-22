@@ -516,12 +516,7 @@ async function fetchDiscounts(page = 1) {
     if (item.discount_pct < discountMinPct) return false;
     if (item.savings_amount < discountMinSavings) return false;
     if (discountCategory !== '全部' && !item.category_name?.includes(discountCategory)) return false;
-    if (discountSearch) {
-      const kw = discountSearch.toLowerCase();
-      if (!item.product_name?.toLowerCase().includes(kw) && !item.store_name?.toLowerCase().includes(kw)) {
-        return false;
-      }
-    }
+    if (!matchesProductKeyword(item, discountSearch)) return false;
     return true;
   });
 
@@ -858,13 +853,7 @@ async function fetchNewProducts(page = 1) {
     items = applyLocationFilter(APP_STATE.newProducts || []);
   }
 
-  if (productSearch) {
-    const kw = productSearch.toLowerCase();
-    items = items.filter(p => 
-      (p.product_name && p.product_name.toLowerCase().includes(kw)) ||
-      (p.store_name && p.store_name.toLowerCase().includes(kw))
-    );
-  }
+  if (productSearch) items = items.filter(p => matchesProductKeyword(p, productSearch));
 
   APP_STATE.filteredProducts = items;
   renderNewProducts();
@@ -1118,6 +1107,12 @@ function isVerifiedPriceDeal(p) {
 function isAnyPromotion(p) { return isPlatformPromotion(p) || isVerifiedPriceDeal(p); }
 function displayUnitPrice(p) { return window.UBER_DATA_CONTRACT.unitPrice(p.price, p.promo_type, p.quantity) ?? 0; }
 function productIdentity(p) { return `${p.store_uuid || p.store_id}\u001f${p.product_uuid || p.product_id}`; }
+function matchesProductKeyword(item, query) {
+  const haystack = [item.product_name, item.store_name, item.category_name]
+    .map(value => String(value || '').normalize('NFKC').toLocaleLowerCase()).join(' ');
+  return String(query || '').trim().normalize('NFKC').toLocaleLowerCase()
+    .split(/\s+/).filter(Boolean).every(token => haystack.includes(token));
+}
 
 // 6. TAB 4: 折扣活動專區 (Promotions) (每頁 50 筆)
 // -----------------------------------------------------------------------------
@@ -1180,14 +1175,7 @@ async function fetchPromotions(page = 1) {
   }
 
   // 關鍵字搜尋
-  if (promoSearch) {
-    const kw = promoSearch.toLowerCase();
-    items = items.filter(p => 
-      (p.product_name && p.product_name.toLowerCase().includes(kw)) ||
-      (p.store_name && p.store_name.toLowerCase().includes(kw)) ||
-      (p.category_name && p.category_name.toLowerCase().includes(kw))
-    );
-  }
+  if (promoSearch) items = items.filter(p => matchesProductKeyword(p, promoSearch));
 
   // 排序
   if (promoSort === 'price_asc') {

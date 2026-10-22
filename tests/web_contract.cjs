@@ -18,10 +18,14 @@ function extract(name) {
 const context = vm.createContext({});
 context.window = context;
 vm.runInContext(fs.readFileSync('web/data-contract.js', 'utf8'), context);
-for (const name of ['formatTaiwanDiscount','calculateEffectivePromo','isPlatformPromotion','isVerifiedPriceDeal','isAnyPromotion','displayUnitPrice']) {
+for (const name of ['formatTaiwanDiscount','calculateEffectivePromo','isPlatformPromotion','isVerifiedPriceDeal','isAnyPromotion','displayUnitPrice','matchesProductKeyword']) {
   vm.runInContext(extract(name), context);
 }
 const run = (name, ...args) => context[name](...args);
+assert.equal(run('matchesProductKeyword', {store_name:'漢堡王',product_name:'華堡',category_name:'漢堡'}, '漢堡王 華堡'), true,
+  'keywords may match across the store and product fields');
+assert.equal(run('matchesProductKeyword', {store_name:'漢堡王',product_name:'華堡'}, '漢堡王 薯條'), false);
+assert.equal(run('matchesProductKeyword', {store_name:'COSTCO',product_name:'Chocolate Cookie'}, 'Costco cookie'), true);
 const deal = (price, pct, savings) => ({
   price, current_price: price, discount_pct: pct, savings_amount: savings,
   is_price_drop: pct > 0 && savings > 0 // fixture represents Python's persisted decision

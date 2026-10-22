@@ -424,16 +424,18 @@ export async function directory(location, limit = 50000) {
 
 export async function searchStores({ keyword = '', location = null, newOnly = false, limit = 50000 } = {}) {
   if (cfg().SINGLE_POINT) limit = -1;
-  const k = normalize(keyword);
+  const keywords = String(keyword || '').trim().split(/\s+/).map(normalize).filter(Boolean);
   let where = "name != '' and status='active' and is_open=1";
-  if (k) {
-    const safe = k.replace(/'/g, "''");
-    if (k.includes('costco') || k.includes('好市多')) {
-      where += " and (lower(name) like '%costco%' or name like '%好市多%')";
-    } else if (k.includes('mcdonald') || k.includes('麥當勞')) {
-      where += " and (lower(name) like '%mcdonald%' or name like '%麥當勞%')";
+  for (const word of keywords) {
+    // Each token must match, but may appear in a different store field.
+    // instr avoids treating user-entered % and _ as SQL LIKE wildcards.
+    const safe = word.replace(/'/g, "''");
+    if (word.includes('costco') || word.includes('好市多')) {
+      where += " and (instr(lower(name),'costco')>0 or instr(name,'好市多')>0)";
+    } else if (word.includes('mcdonald') || word.includes('麥當勞')) {
+      where += " and (instr(lower(name),'mcdonald')>0 or instr(name,'麥當勞')>0)";
     } else {
-      where += ` and (lower(name) like '%${safe}%' or locality like '%${safe}%' or address like '%${safe}%')`;
+      where += ` and (instr(lower(name),'${safe}')>0 or instr(lower(locality),'${safe}')>0 or instr(lower(address),'${safe}')>0)`;
     }
   }
   if (location?.enabled) {

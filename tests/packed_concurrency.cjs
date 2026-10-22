@@ -15,7 +15,7 @@ const blob = {
   event_columns: ['product_uuid', 'id', 'event_type', 'event_time', 'old_state', 'new_state'],
   events: [['p', 1, 'NEW', '2026-10-22T12:00:00+08:00', null, value]]
 };
-let bundleSelects = 0, locationSelects = 0;
+let bundleSelects = 0, locationSelects = 0, lastStoreSearch = '';
 function result(rows) {
   const cols = Object.keys(rows[0] || {}).map(name => ({name}));
   return {results: [{type:'ok', response:{result:{cols, rows:rows.map(r =>
@@ -39,6 +39,10 @@ globalThis.fetch = async (_url, opts) => {
     locationSelects++;
     return {ok:true,json:async()=>result([])};
   }
+  if (sql.includes('from store_directory') && sql.includes('status=')) {
+    lastStoreSearch = sql;
+    return {ok:true,json:async()=>result([])};
+  }
   throw Error('Unexpected SQL: '+sql);
 };
 (async () => {
@@ -53,5 +57,12 @@ globalThis.fetch = async (_url, opts) => {
   await reader.getStoresInLocation(pos1);
   await reader.getStoresInLocation(pos2);
   assert.equal(locationSelects,2,'distinct input coordinates cannot share a rounded cache key');
+  await reader.searchStores({keyword:'好市多 天母'});
+  assert.match(lastStoreSearch,/instr\(lower\(name\),'costco'\)/);
+  assert.match(lastStoreSearch,/instr\(lower\(name\),'天母'\)/);
+  assert.equal((lastStoreSearch.match(/ and \(/g) || []).length,2,
+    'two whitespace-delimited keywords must each constrain the store search');
+  await reader.searchStores({keyword:'100%_特價'});
+  assert.ok(lastStoreSearch.includes('100%_特價'), 'search symbols must remain literal');
   console.log('PASS: concurrent bundle reads and precise location-cache invalidation');
 })().catch(err => {console.error(err); process.exitCode=1;});
