@@ -27,9 +27,9 @@ except ImportError:
     from .json_to_db import calculate_effective_price
 
 try:
-    from price_change import compare_effective_prices
+    from price_change import PriceChange
 except ImportError:
-    from .price_change import compare_effective_prices
+    from .price_change import PriceChange
 
 # 確保標準輸出支援 UTF-8
 if hasattr(sys.stdout, 'reconfigure'):
@@ -254,13 +254,11 @@ class UberEatsAlertEngine:
             if prev_eff <= 0:
                 continue
 
-            comparison = compare_effective_prices(prev_eff, curr_eff)
-            if comparison is None or comparison["direction"] != "down":
-                continue
-            savings = comparison["savings"]
-            drop_pct = comparison["discount_pct"]
-            curr_promo = r["curr_promo"] or "無"
-            if drop_pct >= min_discount_pct and savings >= min_savings_twd:
+            comparison = PriceChange.compare(prev_eff, curr_eff)
+            if PriceChange.qualifies(comparison, min_discount_pct, min_savings_twd):
+                savings = comparison["savings"]
+                drop_pct = comparison["discount_pct"]
+                curr_promo = r["curr_promo"] or "無"
                 raw_url = r["order_action_url"] or ""
                 clean_url = raw_url.replace("&amp;", "&")
                 discounts.append({
