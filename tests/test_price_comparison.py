@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from price_change import compare_effective_prices
+from price_change import PriceChange, compare_effective_prices
 from alert_engine import UberEatsAlertEngine
 from export_static_snapshots import calculate_previous_discounts
 
@@ -19,6 +19,19 @@ class PriceComparisonContractTests(unittest.TestCase):
         self.assertEqual(compare_effective_prices(30, 50)["direction"], "up")
         self.assertEqual(compare_effective_prices(1000, 100)["discount_pct"], 90.0)
         self.assertEqual(compare_effective_prices(89 / 2, 55)["direction"], "up")
+        self.assertEqual(PriceChange.persisted(PriceChange.compare(180, 120)), {
+            "reference_price": 180.0,
+            "price_direction": "down",
+            "price_change_amount": -60.0,
+            "price_change_percent": -33.33,
+            "discount_amount": 60.0,
+            "discount_pct": 33.33,
+            "is_price_deal": 1,
+        })
+        self.assertFalse(PriceChange.qualifies(PriceChange.compare(120,120)))
+        self.assertTrue(PriceChange.qualifies(PriceChange.compare(180,120), 30))
+        self.assertFalse(PriceChange.qualifies(PriceChange.compare(180,120), 40))
+        self.assertEqual(PriceChange.persisted(PriceChange.compare(None,120))["price_direction"], "unknown")
 
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
