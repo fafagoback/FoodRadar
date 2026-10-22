@@ -192,10 +192,12 @@ function productView(product, store) {
   // Do not trust legacy effective_price (it could double-apply a direct discount).
   // Historical reference_price is now the PREVIOUS effective unit cost.
   const effective = window.UBER_DATA_CONTRACT.unitPrice(price, product.promo_type, product.quantity);
-  const refPrice = Number(product.reference_price || 0);
-  const comparison = window.UBER_DATA_CONTRACT.compareUnitPrices(refPrice, effective);
-  const originalPrice = comparison?.direction === 'down' ? refPrice : effective;
-  const historicalSaving = comparison?.savings || 0;
+  // Derived change data comes only from Python PriceChange, persisted in Turso.
+  // This read adapter must not recompare reference_price with effective.
+  const refPrice = Number(product.reference_price || 0) > 0 ? Number(product.reference_price) : null;
+  const direction = product.price_direction || 'unknown';
+  const originalPrice = direction === 'down' ? refPrice : effective;
+  const historicalSaving = Number(product.discount_amount || 0);
   return {
     product_id: product.product_uuid,
     product_uuid: product.product_uuid,
@@ -223,11 +225,15 @@ function productView(product, store) {
     first_seen: product.first_seen,
     listing_started_at: product.listing_started_at || product.first_seen,
     original_price: originalPrice,
-    reference_price: comparison?.previous ?? null,
+    reference_price: refPrice,
     current_price: effective,
-    discount_pct: comparison?.dropPct || 0,
+    price_direction: direction,
+    price_change_amount: Number(product.price_change_amount || 0),
+    price_change_percent: Number(product.price_change_percent || 0),
+    is_price_drop: direction === 'down',
+    discount_pct: Number(product.discount_pct || 0),
     savings_amount: historicalSaving,
-    is_price_deal: Number(comparison?.direction === 'down' && comparison.dropPct >= 30),
+    is_price_deal: Number(product.is_price_deal || 0),
     status: product.status,
     is_open: (Number(product.is_open) === 1 && Number(store.is_open) === 1) ? 1 : 0
   };
