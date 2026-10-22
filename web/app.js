@@ -1777,10 +1777,9 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   if (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_TURSO && (storeUuid || productId)) {
     try {
       const client = await getPackedTursoClient();
-      const [events, currentProduct] = await Promise.all([
-        client.packedHistory(storeUuid, productId),
-        client.packedCurrentProduct(storeUuid, productId)
-      ]);
+      // Load the same store bundle once; concurrent lookups may duplicate cached chunks.
+      const currentProduct = await client.packedCurrentProduct(storeUuid, productId);
+      const events = await client.packedHistory(storeUuid, productId);
       if (currentProduct) {
         currentProductLoaded = true;
         currentComparison = currentProduct;
