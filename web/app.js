@@ -608,9 +608,9 @@ function renderDiscounts() {
         <div class="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
           <div class="flex items-baseline justify-between">
             <div>
-              <div class="text-xs text-slate-400 line-through">前次實質單價 ${window.UBER_DATA_CONTRACT.money(item.original_price)}</div>
+              <div class="text-xs text-slate-400 line-through">前次實質單價 ${window.UBER_DATA_CONTRACT.unitMoney(item.original_price)}</div>
               <div class="text-2xl font-black text-red-600 dark:text-red-400 font-mono flex items-baseline gap-1">
-                ${window.UBER_DATA_CONTRACT.money(item.current_price)}
+                ${window.UBER_DATA_CONTRACT.unitMoney(item.current_price)}
                 <span class="text-xs font-normal text-slate-500 dark:text-slate-400">/ 實質單件</span>
               </div>
             </div>
@@ -621,7 +621,7 @@ function renderDiscounts() {
                 -${item.discount_pct}%
               </span>
               <div class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
-                每件省 ${window.UBER_DATA_CONTRACT.money(item.savings_amount)}
+                每件省 ${window.UBER_DATA_CONTRACT.unitMoney(item.savings_amount)}
               </div>
             </div>
           </div>
@@ -1764,6 +1764,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   modal.classList.add('flex');
 
   document.getElementById('modal-history-tbody').innerHTML = '<tr><td colspan="4" class="px-3 py-4 text-center">載入價格歷史中...</td></tr>';
+  document.getElementById('modal-price-change').textContent = '正在比對實質單價...';
   if (APP_STATE.chartInstance) {
     APP_STATE.chartInstance.destroy();
     APP_STATE.chartInstance = null;
@@ -1834,6 +1835,25 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   history = [...uniqueHistory.values()]
     .sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
 
+  const latestUnit = history.length ? Number(history[history.length - 1].eff_price) : null;
+  const previousUnit = history.length > 1 ? Number(history[history.length - 2].eff_price) : null;
+  const priceChangeEl = document.getElementById('modal-price-change');
+  if (priceChangeEl) {
+    const unitFmt = window.UBER_DATA_CONTRACT.unitMoney;
+    if (previousUnit > 0 && latestUnit > 0) {
+      const delta = latestUnit - previousUnit;
+      const percent = Math.abs(delta / previousUnit * 100).toFixed(1);
+      const direction = delta > 0 ? '漲價' : delta < 0 ? '降價' : '價格持平';
+      priceChangeEl.textContent = delta === 0
+        ? `前次 ${unitFmt(previousUnit)} → 本次 ${unitFmt(latestUnit)}（價格持平）`
+        : `前次 ${unitFmt(previousUnit)} → 本次 ${unitFmt(latestUnit)}（${direction} ${unitFmt(Math.abs(delta))}，${delta > 0 ? '+' : '-'}${percent}%）`;
+    } else {
+      priceChangeEl.textContent = latestUnit > 0
+        ? `目前實質單價 ${unitFmt(latestUnit)}（尚無前次可比較紀錄）`
+        : '目前沒有可比較的實質單價紀錄';
+    }
+  }
+
   const tbody = document.getElementById('modal-history-tbody');
   if (history.length > 0) {
     const rowsHtml = [...history].reverse().map(h => `
@@ -1841,7 +1861,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         <td class="px-3 py-2 font-mono text-slate-600 dark:text-slate-300 text-xs">${formatBatchDate(h.crawled_time)}</td>
         <td class="px-3 py-2 font-mono font-medium text-xs">${window.UBER_DATA_CONTRACT.money(h.price)}</td>
         <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-[11px] font-medium ${h.promo_type && h.promo_type !== '無' ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}">${escapeHtml(h.promo_type || '無')}</span></td>
-        <td class="px-3 py-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">${window.UBER_DATA_CONTRACT.money(h.eff_price)}</td>
+        <td class="px-3 py-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">${window.UBER_DATA_CONTRACT.unitMoney(h.eff_price)}</td>
       </tr>
     `).join('');
 
@@ -1926,7 +1946,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
             label: item => {
               const h = history[item.dataIndex];
               return [
-                `實質單價：${window.UBER_DATA_CONTRACT.money(h.eff_price)} TWD`,
+                `實質單價：${window.UBER_DATA_CONTRACT.unitMoney(h.eff_price)} TWD`,
                 `標價：${window.UBER_DATA_CONTRACT.money(h.price)} TWD`,
                 `促銷：${h.promo_type || '無'}`
               ];
