@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from json_to_db import calculate_effective_price
+from price_change import compare_effective_prices
 
 
 def verified_unit(state_json):
@@ -42,40 +43,43 @@ def repair(db_path):
         conn.executemany(
             "UPDATE products SET effective_price=? WHERE store_uuid=? AND product_uuid=?", updates
         )
-        # Older checkpoints compared raw sticker prices across buy-one-get-one
-        # transitions. Recover the previous *effective unit price* from the
-        # verified price-change event, never from a potentially stale baseline.
+        # Only the LAST verified observation can be used as a comparison.
+        # Historical PRICE_CHANGED events omit identical-price crawls; do not
+        # overwrite a later valid baseline with the previous change event.
         deal_columns = {'reference_price', 'discount_amount', 'discount_pct', 'is_price_deal'}
         events_exist = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'"
         ).fetchone() is not None
         deal_updates = []
-        if events_exist and deal_columns.issubset(columns):
+        if deal_columns.issubset(columns):
+            has_last_seen = 'last_seen' in columns
+            last_seen_column = 'last_seen' if has_last_seen else 'NULL AS last_seen'
             candidates = conn.execute(
-                """SELECT store_uuid,product_uuid,price,promo_type,quantity
-                   FROM products
-                   WHERE is_price_deal=1 OR discount_pct>0 OR discount_amount>0"""
+                f"""SELECT store_uuid,product_uuid,price,promo_type,quantity,
+                          reference_price,{last_seen_column} FROM products"""
             ).fetchall()
-            for sid, pid, raw, promo, qty in candidates:
-                latest_unit = round(calculate_effective_price(raw, promo, qty), 2)
-                events = conn.execute(
-                    """SELECT old_state,new_state FROM events
-                       WHERE store_uuid=? AND product_uuid=?
-                         AND event_type IN ('PRICE_CHANGED','PROMOTION_CHANGED')
-                       ORDER BY event_time DESC,id DESC LIMIT 8""",
-                    (sid, pid)
-                )
-                for old_state, new_state in events:
-                    previous_unit = verified_unit(old_state)
-                    observed_unit = verified_unit(new_state)
-                    if (previous_unit is None or observed_unit is None
-                            or abs(observed_unit - latest_unit) > 0.01):
-                        continue
-                    savings = round(max(0, previous_unit - latest_unit), 2)
-                    percent = round(savings / previous_unit * 100, 2)
-                    deal_updates.append(
-                        (previous_unit, savings, percent, int(percent >= 30), sid, pid))
-                    break
+            for sid, pid, raw, promo, qty, prior, last_seen in candidates:
+                current = calculate_effective_price(raw, promo, qty)
+                # Use event evidence only if it is the latest actual observation.
+                # The no-last_seen fallback exists for limited legacy repair DBs.
+                if events_exist:
+                    event = conn.execute(
+                        """SELECT event_time,old_state,new_state FROM events
+                           WHERE store_uuid=? AND product_uuid=?
+                             AND event_type IN ('PRICE_CHANGED','PROMOTION_CHANGED')
+                           ORDER BY event_time DESC,id DESC LIMIT 1""",
+                        (sid, pid)
+                    ).fetchone()
+                    if event and (not has_last_seen or str(event[0]) == str(last_seen)):
+                        old_unit = verified_unit(event[1])
+                        new_unit = verified_unit(event[2])
+                        if old_unit and new_unit and abs(new_unit - current) <= 0.01:
+                            prior = old_unit
+                comparison = compare_effective_prices(prior, current)
+                reference = comparison["previous"] if comparison else None
+                savings = comparison["savings"] if comparison else 0.0
+                percent = comparison["discount_pct"] if comparison else 0.0
+                deal_updates.append((reference, savings, percent, int(percent >= 30), sid, pid))
             conn.executemany(
                 """UPDATE products SET reference_price=?,discount_amount=?,
                    discount_pct=?,is_price_deal=? WHERE store_uuid=? AND product_uuid=?""",
