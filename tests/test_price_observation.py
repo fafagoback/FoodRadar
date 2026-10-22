@@ -76,6 +76,37 @@ class PriceValidityTests(unittest.TestCase):
         self.assertEqual(len(rows),1)
         self.assertEqual(json.loads(rows[0][0])['price_valid'],True)
 
+    def test_bogo_expiry_is_price_increase_not_false_38_percent_discount(self):
+        original = menu('20261013091759', 89)
+        item = original['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
+        item['promo_type'] = '買1送1'
+        item['quantity'] = 2
+        apply_snapshot(self.conn, [original], '20261013091759')
+
+        expired = menu('20261021091759', 55)
+        apply_snapshot(self.conn, [expired], '20261021091759')
+        row = self.conn.execute('SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products').fetchone()
+        self.assertEqual((row['price'], row['effective_price'], row['reference_price']), (55, 55, 44.5))
+        self.assertEqual((row['discount_amount'], row['discount_pct'], row['is_price_deal']), (0, 0, 0))
+        change = self.conn.execute("SELECT old_state,new_state FROM events WHERE event_type='PRICE_CHANGED'").fetchone()
+        self.assertIsNotNone(change)
+        self.assertEqual(json.loads(change['old_state'])['effective_price'], 44.5)
+        self.assertEqual(json.loads(change['new_state'])['effective_price'], 55)
+
+    def test_promotion_only_change_is_a_real_unit_price_drop(self):
+        apply_snapshot(self.conn, [menu('20261013091759', 89)], '20261013091759')
+        promoted = menu('20261014091759', 89)
+        item = promoted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
+        item['promo_type'] = '買1送1'
+        item['quantity'] = 2
+        apply_snapshot(self.conn, [promoted], '20261014091759')
+        row = self.conn.execute('SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products').fetchone()
+        self.assertEqual((row['price'], row['effective_price'], row['reference_price']), (89, 44.5, 89))
+        self.assertEqual((row['discount_amount'], row['discount_pct'], row['is_price_deal']), (44.5, 50, 1))
+        types = [r[0] for r in self.conn.execute("SELECT event_type FROM events WHERE event_type IN ('PRICE_CHANGED','PROMOTION_CHANGED')")]
+        self.assertIn('PRICE_CHANGED', types)
+        self.assertIn('PROMOTION_CHANGED', types)
+
     def test_per_store_captured_at_not_early_batch_start(self):
         doc=menu('20261014014059',300)
         doc['captured_at']='2026-10-14T09:15:00+08:00'
