@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS products(
   reference_price REAL, discount_amount REAL NOT NULL DEFAULT 0,
   discount_pct REAL NOT NULL DEFAULT 0, is_price_deal INTEGER NOT NULL DEFAULT 0,
   price_direction TEXT NOT NULL DEFAULT 'unknown',
+  is_price_drop INTEGER NOT NULL DEFAULT 0,
   price_change_amount REAL NOT NULL DEFAULT 0,
   price_change_percent REAL NOT NULL DEFAULT 0,
   is_open INTEGER NOT NULL DEFAULT 1,
@@ -207,6 +208,7 @@ def ensure_schema_and_migrations(conn: sqlite3.Connection) -> None:
         ("discount_pct", "REAL NOT NULL DEFAULT 0"),
         ("is_price_deal", "INTEGER NOT NULL DEFAULT 0"),
         ("price_direction", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("is_price_drop", "INTEGER NOT NULL DEFAULT 0"),
         ("price_change_amount", "REAL NOT NULL DEFAULT 0"),
         ("price_change_percent", "REAL NOT NULL DEFAULT 0"),
         ("is_open", "INTEGER NOT NULL DEFAULT 1"),
@@ -327,10 +329,10 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
             conn.executemany("UPDATE stores SET name=?,address=?,city=?,locality=?,latitude=?,longitude=?,rating=?,review_count=?,order_url=?,is_open=?,last_seen=?,status=?,missing_streak=0,state_hash=? WHERE store_uuid=?", update_stores_batch)
             update_stores_batch.clear()
         if insert_products_batch:
-            conn.executemany("INSERT INTO products(store_uuid,product_uuid,product_name,category,description,price,quantity,promo_type,effective_price,order_url,is_open,first_seen,last_seen,status,missing_streak,state_hash,recent_prices,price_novel_vs_previous_3,reference_price,discount_amount,discount_pct,is_price_deal,price_direction,price_change_amount,price_change_percent,listing_started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", insert_products_batch)
+            conn.executemany("INSERT INTO products(store_uuid,product_uuid,product_name,category,description,price,quantity,promo_type,effective_price,order_url,is_open,first_seen,last_seen,status,missing_streak,state_hash,recent_prices,price_novel_vs_previous_3,reference_price,discount_amount,discount_pct,is_price_deal,price_direction,is_price_drop,price_change_amount,price_change_percent,listing_started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", insert_products_batch)
             insert_products_batch.clear()
         if update_products_batch:
-            conn.executemany("UPDATE products SET product_name=?,category=?,description=?,price=?,quantity=?,promo_type=?,effective_price=?,order_url=?,is_open=?,last_seen=?,status='active',missing_streak=0,state_hash=?,recent_prices=?,price_novel_vs_previous_3=?,reference_price=?,discount_amount=?,discount_pct=?,is_price_deal=?,price_direction=?,price_change_amount=?,price_change_percent=?,listing_started_at=? WHERE store_uuid=? AND product_uuid=?", update_products_batch)
+            conn.executemany("UPDATE products SET product_name=?,category=?,description=?,price=?,quantity=?,promo_type=?,effective_price=?,order_url=?,is_open=?,last_seen=?,status='active',missing_streak=0,state_hash=?,recent_prices=?,price_novel_vs_previous_3=?,reference_price=?,discount_amount=?,discount_pct=?,is_price_deal=?,price_direction=?,is_price_drop=?,price_change_amount=?,price_change_percent=?,listing_started_at=? WHERE store_uuid=? AND product_uuid=?", update_products_batch)
             update_products_batch.clear()
         if events_batch:
             conn.executemany("INSERT INTO events(event_time,store_uuid,product_uuid,event_type,old_state,new_state) VALUES(?,?,?,?,?,?)", events_batch)
@@ -459,7 +461,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
 
                 if old is None:
                     init_recent = [price] if price_valid else []
-                    insert_products_batch.append((sid, pid, *state.values(), now, now, "active", 0, ph, json_dumps(init_recent), 0, None, 0, 0, 0, 'unknown', 0, 0, now))
+                    insert_products_batch.append((sid, pid, *state.values(), now, now, "active", 0, ph, json_dumps(init_recent), 0, None, 0, 0, 0, 'unknown', 0, 0, 0, now))
                     counts["new"] += 1
                     # A first valid in-hours observation must survive even when
                     # this snapshot initializes the whole dataset. Otherwise a
@@ -473,7 +475,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         "missing_streak": 0, "state_hash": ph, "recent_prices": init_recent,
                         "price_novel_vs_previous_3": 0, "reference_price": None,
                         "discount_amount": 0, "discount_pct": 0, "is_price_deal": 0,
-                        "price_direction": "unknown", "price_change_amount": 0,
+                        "price_direction": "unknown", "is_price_drop": 0,
+                        "price_change_amount": 0,
                         "price_change_percent": 0,
                     })
                     changed_product_rows.append(key)
@@ -499,6 +502,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         discount_pct = change_fields["discount_pct"]
                         is_price_deal = change_fields["is_price_deal"]
                         price_direction = change_fields["price_direction"]
+                        is_price_drop = change_fields["is_price_drop"]
                         price_change_amount = change_fields["price_change_amount"]
                         price_change_percent = change_fields["price_change_percent"]
                         # recent_prices stores last verified raw price for off-hours
@@ -511,6 +515,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         discount_pct = old.get("discount_pct", 0)
                         is_price_deal = old.get("is_price_deal", 0)
                         price_direction = old.get("price_direction", "unknown")
+                        is_price_drop = old.get("is_price_drop", 0)
                         price_change_amount = old.get("price_change_amount", 0)
                         price_change_percent = old.get("price_change_percent", 0)
                         next_recent_prices = old["recent_prices"]
@@ -529,6 +534,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         or old.get("discount_pct") != discount_pct
                         or old.get("is_price_deal") != is_price_deal
                         or old.get("price_direction") != price_direction
+                        or old.get("is_price_drop") != is_price_drop
                         or old.get("price_change_amount") != price_change_amount
                         or old.get("price_change_percent") != price_change_percent
                     )
@@ -554,7 +560,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     else:
                         counts["unchanged"] += 1
 
-                    update_products_batch.append((*state.values(), now, ph, json_dumps(next_recent_prices), price_novel, reference_price, discount_amount, discount_pct, is_price_deal, price_direction, price_change_amount, price_change_percent, listing_started_at, sid, pid))
+                    update_products_batch.append((*state.values(), now, ph, json_dumps(next_recent_prices), price_novel, reference_price, discount_amount, discount_pct, is_price_deal, price_direction, is_price_drop, price_change_amount, price_change_percent, listing_started_at, sid, pid))
                     old.update(state)
                     old["listing_started_at"] = listing_started_at
                     old["last_seen"] = now
@@ -568,6 +574,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     old["discount_pct"] = discount_pct
                     old["is_price_deal"] = is_price_deal
                     old["price_direction"] = price_direction
+                    old["is_price_drop"] = is_price_drop
                     old["price_change_amount"] = price_change_amount
                     old["price_change_percent"] = price_change_percent
                     if product_needs_publish:
@@ -643,12 +650,12 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
 
     if insert_products_batch:
         conn.executemany(
-            "INSERT INTO products(store_uuid,product_uuid,product_name,category,description,price,quantity,promo_type,effective_price,order_url,is_open,first_seen,last_seen,status,missing_streak,state_hash,recent_prices,price_novel_vs_previous_3,reference_price,discount_amount,discount_pct,is_price_deal,price_direction,price_change_amount,price_change_percent,listing_started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO products(store_uuid,product_uuid,product_name,category,description,price,quantity,promo_type,effective_price,order_url,is_open,first_seen,last_seen,status,missing_streak,state_hash,recent_prices,price_novel_vs_previous_3,reference_price,discount_amount,discount_pct,is_price_deal,price_direction,is_price_drop,price_change_amount,price_change_percent,listing_started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             insert_products_batch,
         )
     if update_products_batch:
         conn.executemany(
-            "UPDATE products SET product_name=?,category=?,description=?,price=?,quantity=?,promo_type=?,effective_price=?,order_url=?,is_open=?,last_seen=?,status='active',missing_streak=0,state_hash=?,recent_prices=?,price_novel_vs_previous_3=?,reference_price=?,discount_amount=?,discount_pct=?,is_price_deal=?,price_direction=?,price_change_amount=?,price_change_percent=?,listing_started_at=? WHERE store_uuid=? AND product_uuid=?",
+            "UPDATE products SET product_name=?,category=?,description=?,price=?,quantity=?,promo_type=?,effective_price=?,order_url=?,is_open=?,last_seen=?,status='active',missing_streak=0,state_hash=?,recent_prices=?,price_novel_vs_previous_3=?,reference_price=?,discount_amount=?,discount_pct=?,is_price_deal=?,price_direction=?,is_price_drop=?,price_change_amount=?,price_change_percent=?,listing_started_at=? WHERE store_uuid=? AND product_uuid=?",
             update_products_batch,
         )
     if missing_products_batch:
