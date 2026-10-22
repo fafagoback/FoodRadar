@@ -35,6 +35,9 @@ assert.equal(run('displayUnitPrice', {price: 168, promo_type: '買一送一', qu
 assert.equal(run('displayUnitPrice', {price: 100, promo_type: '第2件半價', quantity: 1}), 75);
 assert.equal(run('displayUnitPrice', {price: 100, promo_type: '', quantity: 2}), 50);
 assert.equal(run('displayUnitPrice', {price: 89, promo_type: '買1送1', quantity: 2}), 44.5);
+assert.equal(run('displayUnitPrice', {price: 89, promo_type: 'BOGO', quantity: 1}), 44.5);
+assert.equal(run('calculateEffectivePromo', 89, 'BOGO', 1).effPrice, 44.5);
+assert.equal(context.UBER_DATA_CONTRACT.unitMoney(44.5), '$44.5', 'derived unit cost retains fractional TWD');
 assert.equal(run('displayUnitPrice', {price: 55, promo_type: '無', quantity: 1}), 55);
 assert.equal(Math.round((55 / 44.5 - 1) * 1000) / 10, 23.6,
   '89 buy-one-get-one followed by 55 no promotion is a 23.6% price INCREASE');
