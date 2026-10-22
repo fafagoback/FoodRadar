@@ -68,9 +68,13 @@ class PackedUpdateTests(unittest.TestCase):
             build_web_db(root/'state.db',root/'a.db')
             apply_snapshot(conn,docs,'20261007063000')
             build_web_db(root/'state.db',root/'b.db')
-            for table in ('store_directory','store_bundles','search_buckets'):
+            # The second crawl supplies the first comparison baseline, so the
+            # product bundle gains reference_price=100 exactly once. Store and
+            # search indexes must remain unchanged.
+            for table in ('store_directory','search_buckets'):
                 with contextlib.closing(sqlite3.connect(root/'a.db')) as a, contextlib.closing(sqlite3.connect(root/'b.db')) as b:
                     self.assertEqual(a.execute(f'SELECT * FROM {table}').fetchall(),b.execute(f'SELECT * FROM {table}').fetchall(),table)
+            self.assertEqual(conn.execute('SELECT reference_price,discount_pct FROM products').fetchone()[:], (100,0))
             # New identities sort before the old UUID but must append to IDs,
             # and a new product must leave the existing product ref unchanged.
             new_sid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
