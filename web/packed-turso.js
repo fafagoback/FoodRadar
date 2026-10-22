@@ -193,8 +193,9 @@ function productView(product, store) {
   // Historical reference_price is now the PREVIOUS effective unit cost.
   const effective = window.UBER_DATA_CONTRACT.unitPrice(price, product.promo_type, product.quantity);
   const refPrice = Number(product.reference_price || 0);
-  const originalPrice = (refPrice > effective) ? refPrice : effective;
-  const historicalSaving = Number(product.discount_amount || 0);
+  const comparison = window.UBER_DATA_CONTRACT.compareUnitPrices(refPrice, effective);
+  const originalPrice = comparison?.direction === 'down' ? refPrice : effective;
+  const historicalSaving = comparison?.savings || 0;
   return {
     product_id: product.product_uuid,
     product_uuid: product.product_uuid,
@@ -222,10 +223,11 @@ function productView(product, store) {
     first_seen: product.first_seen,
     listing_started_at: product.listing_started_at || product.first_seen,
     original_price: originalPrice,
+    reference_price: comparison?.previous ?? null,
     current_price: effective,
-    discount_pct: Number(product.discount_pct || 0),
+    discount_pct: comparison?.dropPct || 0,
     savings_amount: historicalSaving,
-    is_price_deal: Number(product.is_price_deal || 0),
+    is_price_deal: Number(comparison?.direction === 'down' && comparison.dropPct >= 30),
     status: product.status,
     is_open: (Number(product.is_open) === 1 && Number(store.is_open) === 1) ? 1 : 0
   };
@@ -485,7 +487,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
   if (newOnly && !meta.definition_version) return [];
   const count = Number(meta.buckets || 8192);
   const terms = [...queryTokens(keyword), ...queryTokens(city)];
-  // The promotions view includes platform-labelled offers AND verified historical drops >=30%.
+  // The promotions view includes platform-labelled offers and verified unit-price drops.
   if (promo) terms.push('f:promo');
   if (newOnly) terms.push('f:new');
   const bIds = await Promise.all(terms.map(t => bucketId(t, count)));
@@ -573,6 +575,32 @@ export function normalizePriceHistoryEvents(events) {
   return [...byTime.values()]
     .sort((a, b) => String(a.event_time).localeCompare(String(b.event_time)))
     .slice(-50);
+}
+
+// Resolve the actual current comparison; change-event history omits unchanged crawls.
+export async function packedCurrentProduct(storeUuid, productUuid) {
+  const escaped = String(storeUuid).replace(/'/g, "''");
+  const row = (await sql(`select store_id from store_directory where store_uuid='${escaped}' limit 1`))[0];
+  if (!row) return null;
+  const sid = Number(row.store_id);
+  await bundlesForStores([sid]);
+  let store = null, cols = null;
+  for (const chunk of bundleCache.get(sid) || []) {
+    if (chunk.store) {
+      store = Object.fromEntries(chunk.store_columns.map((name, index) => [name, chunk.store[index]]));
+      cols = chunk.product_columns;
+    }
+    if (!store || !cols) continue;
+    for (const pair of chunk.products || []) {
+      const item = Object.fromEntries(cols.map((name, index) => [name, pair[1][index]]));
+      if (String(item.product_uuid) === String(productUuid)) {
+        if (store.status !== 'active' || Number(store.is_open) !== 1 ||
+            item.status !== 'active' || Number(item.is_open) !== 1) return null;
+        return productView(item, store);
+      }
+    }
+  }
+  return null;
 }
 
 export async function packedHistory(storeUuid, productUuid) {
