@@ -121,8 +121,13 @@ def build_snapshot(output, config):
     conn.row_factory=sqlite3.Row
     documents=[json.loads(p.read_text(encoding='utf-8')) for p in sorted((output/'menus').glob('*.json'))]
     counts=apply_snapshot(conn, documents, batch)
-    print(f"VALID_OPEN_STORES={counts['stores']} RAW_ONLY_CLOSED_STORES={counts['skipped_closed_stores']}", flush=True)
     conn.close()
+    # Recompute legacy promotion/discount baselines before building the
+    # published web DB and the persisted HF normalized checkpoint.
+    sys.path.insert(0, str(ROOT/'scripts'))
+    from repair_effective_prices import repair
+    repair(serving)
+    print(f"VALID_OPEN_STORES={counts['stores']} RAW_ONLY_CLOSED_STORES={counts['skipped_closed_stores']}", flush=True)
     subprocess.run([sys.executable,str(ROOT/'scripts/build_web_db.py'),
                     str(serving),str(output/'packed-serving.db')],check=True)
     subprocess.run([sys.executable, str(ROOT/'src/package_and_upload_menu_snapshot.py'),
