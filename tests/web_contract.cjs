@@ -16,6 +16,7 @@ function extract(name) {
   return source.slice(start, end + 1);
 }
 const context = vm.createContext({});
+vm.runInContext(fs.readFileSync('web/data-contract.js', 'utf8'), context);
 for (const name of ['formatTaiwanDiscount','calculateEffectivePromo','isPlatformPromotion','isVerifiedPriceDeal','isAnyPromotion','displayUnitPrice']) {
   vm.runInContext(extract(name), context);
 }
@@ -32,11 +33,18 @@ assert.equal(run('displayUnitPrice', {price: 168, promo_type: '7折', quantity: 
 assert.equal(run('displayUnitPrice', {price: 168, promo_type: '買一送一', quantity: 1}), 84);
 assert.equal(run('displayUnitPrice', {price: 100, promo_type: '第2件半價', quantity: 1}), 75);
 assert.equal(run('displayUnitPrice', {price: 100, promo_type: '', quantity: 2}), 50);
+assert.equal(run('displayUnitPrice', {price: 89, promo_type: '買1送1', quantity: 2}), 44.5);
+assert.equal(run('displayUnitPrice', {price: 55, promo_type: '無', quantity: 1}), 55);
+assert.equal(Math.round((55 / 44.5 - 1) * 1000) / 10, 23.6,
+  '89 buy-one-get-one followed by 55 no promotion is a 23.6% price INCREASE');
+assert.equal(run('isVerifiedPriceDeal', {current_price:55,discount_pct:0,savings_amount:0}),false,
+  'promotion ended is not a verified discount');
 assert.equal(run('calculateEffectivePromo', 100, '', 2).discountText, '', 'multipack must not show a fake discount badge');
 const packed = fs.readFileSync('scripts/prototype_pack_db.py', 'utf8');
 assert.ok(!packed.includes('int(product["quantity"] or 1) > 1 or product["promo_type"]'), 'bundled products must not be indexed as platform promotions');
 const reader = fs.readFileSync('web/packed-turso.js', 'utf8');
-assert.ok(reader.includes('const effective = price;'), 'packed reader must not use double-discounted historical effective_price');
+assert.ok(reader.includes('const effective = window.UBER_DATA_CONTRACT.unitPrice(price, product.promo_type, product.quantity);'),
+  'packed reader uses actual unit cost, not raw list price or a legacy double-discount');
 
 assert.ok(reader.includes('Number(product.is_open) === 1 && Number(store.is_open) === 1'), 'both product and store must explicitly be open');
 assert.ok(source.includes('state.is_open === 1 || state.is_open === true'), 'price-history events require explicit open status');
@@ -59,8 +67,8 @@ for (const [input, expected] of [
 }
 assert.equal(run('displayUnitPrice', {price: 114.63, promo_type: '', quantity: 1}), 114.63,
   'the source price must be preserved for sorting and historical comparisons');
-assert.ok(source.includes('const prices = history.map(h => Math.round(Number(h.eff_price)))'),
-  'history graph must use the same integer displayed in product cards');
+assert.ok(source.includes('const prices = history.map(h => Number(h.eff_price))'),
+  'history graph must retain accurate fractional effective unit prices');
 assert.ok(source.includes('window.UBER_DATA_CONTRACT.money(h.eff_price)'),
   'history table and tooltip must use shared TWD formatting');
 console.log('FoodRadar pricing and cross-page promotion contract: PASS');
