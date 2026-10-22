@@ -31,6 +31,13 @@ assert.equal(run('isAnyPromotion', {price: 200, quantity: 2, promo_type: ''}), f
 assert.equal(run('isPlatformPromotion', {price: 200, quantity: 2, promo_type: ''}), false);
 assert.equal(run('isPlatformPromotion', {price: 100, promo_type: '買一送一'}), true);
 assert.equal(run('displayUnitPrice', {price: 168, promo_type: '7折', quantity: 1}), 168, 'already discounted payable price is not discounted twice');
+assert.equal(run('displayUnitPrice', {price: 30, promo_type: '3折特惠', quantity: 1}), 30,
+  '100 list price / 3折 has payable price 30, not 100 or 9');
+assert.equal(run('displayUnitPrice', {price: 50, promo_type: '無', quantity: 1}), 50);
+assert.equal(Math.round((50 / 30 - 1) * 1000) / 10, 66.7,
+  '3折 30 followed by unpromoted 50 is 66.7% price increase');
+assert.equal(run('calculateEffectivePromo', 30, '3折特惠', 1).effPrice, 30,
+  'direct discount badge must not discount the already-payable price twice');
 assert.equal(run('displayUnitPrice', {price: 168, promo_type: '買一送一', quantity: 1}), 84);
 assert.equal(run('displayUnitPrice', {price: 100, promo_type: '第2件半價', quantity: 1}), 75);
 assert.equal(run('displayUnitPrice', {price: 100, promo_type: '', quantity: 2}), 50);
@@ -73,6 +80,6 @@ assert.equal(run('displayUnitPrice', {price: 114.63, promo_type: '', quantity: 1
   'the source price must be preserved for sorting and historical comparisons');
 assert.ok(source.includes('const prices = history.map(h => Number(h.eff_price))'),
   'history graph must retain accurate fractional effective unit prices');
-assert.ok(source.includes('window.UBER_DATA_CONTRACT.money(h.eff_price)'),
-  'history table and tooltip must use shared TWD formatting');
+assert.ok(source.includes('window.UBER_DATA_CONTRACT.unitMoney(h.eff_price)'),
+  'history table and tooltip must use exact fractional unit cost formatting');
 console.log('FoodRadar pricing and cross-page promotion contract: PASS');
