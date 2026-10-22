@@ -5,7 +5,7 @@
 - 比較同一個店家 UUID 與商品 UUID，不限制相隔日數、七日窗口或快照批次數。
 - 每一次有效採集都算一次比較；180→120 是降價，下一次 120→120 就是持平，不因為變價事件仍顯示 180→120 而再次顯示降價。
 - **唯一判斷入口**：`src/price_change.py:PriceChange.compare`，各 Python 流程透過 `PriceChange.qualifies` 與 `PriceChange.persisted` 使用同一結果。
-- `serving_state.products` 永久保存 `reference_price`、`price_direction`、`price_change_amount`、`price_change_percent`、`discount_amount`、`discount_pct`、`is_price_deal`。
+- `serving_state.products` 永久保存 `reference_price`、`price_direction`、`is_price_drop`、`price_change_amount`、`price_change_percent`、`discount_amount`、`discount_pct`、`is_price_deal`。**是否降價由 Python 一次決定**；Turso、JavaScript 只能讀取 `is_price_drop`，不得從方向或百分比再判斷一次。
 - 前端不再有價格漲跌計算函式；`web/packed-turso.js` 直接映射既有欄位，`web/app.js` 僅顯示與篩選。
 - 只要本次價格比前次低，就是降價。30% 或省下多少元只是篩選條件，不是降價定義；不根據商家的促銷標籤判斷。
 - 商品詳情標頭查詢目前商品列的前次有效單價；趨勢圖只儲存變價事件，不能直接用最後兩個變價事件代表最近兩次採集。
