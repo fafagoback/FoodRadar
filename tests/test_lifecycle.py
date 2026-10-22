@@ -47,6 +47,13 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(row['reference_price'],10)
         changes=self.conn.execute("SELECT old_state FROM events WHERE event_type='PRICE_CHANGED' ORDER BY id").fetchall()
         self.assertEqual(json.loads(changes[0][0])['price'],20)
+    def test_identical_next_observation_clears_previous_drop(self):
+        self.observe('20261013063000',180)
+        discounted = self.observe('20261021063000',120)
+        self.assertEqual((discounted['reference_price'],discounted['discount_pct']), (180,33.33))
+        steady = self.observe('20261022063000',120)
+        self.assertEqual((steady['reference_price'],steady['discount_pct'],steady['discount_amount'],steady['is_price_deal']), (120,0,0,0))
+
     def test_inactive_short_and_exact_60_day_relist_with_cache(self):
         first=self.observe('20260101063000')
         cache=ServingStateCache(self.conn)
