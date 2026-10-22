@@ -44,6 +44,11 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
+      - name: Recover pre-rebuild verified HF checkpoint
+        if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[restore-pre-rebuild-state]') }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/restore_pre_rebuild_checkpoint.py
       - name: Restore latest verified HF Raw for initialization or retry
         if: ${{ (github.event_name == 'push' && !contains(github.event.head_commit.message, '[crawl-now]')) || (github.event_name == 'workflow_dispatch' && inputs.publish_existing) }}
         env:
