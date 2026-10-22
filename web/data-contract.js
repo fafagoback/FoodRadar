@@ -47,19 +47,6 @@
       city: city(row.street_address || row.address, legacy ? '' : row.city),
       valid_price: price !== null};
   }
-  // Same last-valid-observation comparison as src/price_change.py.
-  function compareUnitPrices(previous, current) {
-    const prior = positive(previous), now = positive(current);
-    if (prior === null || now === null) return null;
-    const delta = Math.round((now - prior) * 100) / 100;
-    const savings = Math.round(Math.max(0, -delta) * 100) / 100;
-    return {
-      previous: prior, current: now, delta, savings,
-      direction: delta < 0 ? 'down' : delta > 0 ? 'up' : 'flat',
-      dropPct: savings > 0 ? Math.round(savings / prior * 10000) / 100 : 0,
-      percent: Math.round(Math.abs(delta) / prior * 10000) / 100
-    };
-  }
   function money(value) {
     const n = positive(value);
     return n === null ? '價格未提供' : '$' + n.toLocaleString('zh-TW', {minimumFractionDigits: 0, maximumFractionDigits: 0});
@@ -69,5 +56,5 @@
     const decimals = Number.isInteger(n) ? 0 : 2;
     return n === null ? '價格未提供' : String.fromCharCode(36) + n.toLocaleString('zh-TW', {minimumFractionDigits: decimals, maximumFractionDigits: 2});
   }
-  root.UBER_DATA_CONTRACT = {city, positive, product, money, unitPrice, unitMoney, compareUnitPrices};
+  root.UBER_DATA_CONTRACT = {city, positive, product, money, unitPrice, unitMoney};
 })(typeof window === 'undefined' ? globalThis : window);
