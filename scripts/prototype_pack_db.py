@@ -146,9 +146,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
                 if (product["promo_type"] not in (None, "", "無")
-                        or product["price_direction"] == "down"):
+                        or int(product["is_price_drop"] or 0) == 1):
                     terms.add("f:promo")
-                if product["price_direction"] == "down":
+                if int(product["is_price_drop"] or 0) == 1:
                     terms.add(f"f:discount:{int(float(product['discount_pct']) // 5)}")
             for term in sorted(terms):
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
