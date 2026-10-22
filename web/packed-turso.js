@@ -230,7 +230,7 @@ function productView(product, store) {
     price_direction: direction,
     price_change_amount: Number(product.price_change_amount || 0),
     price_change_percent: Number(product.price_change_percent || 0),
-    is_price_drop: direction === 'down',
+    is_price_drop: Number(product.is_price_drop || 0),
     discount_pct: Number(product.discount_pct || 0),
     savings_amount: historicalSaving,
     is_price_deal: Number(product.is_price_deal || 0),
