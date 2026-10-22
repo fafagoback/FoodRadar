@@ -16,6 +16,7 @@ function extract(name) {
   return source.slice(start, end + 1);
 }
 const context = vm.createContext({});
+context.window = context;
 vm.runInContext(fs.readFileSync('web/data-contract.js', 'utf8'), context);
 for (const name of ['formatTaiwanDiscount','calculateEffectivePromo','isPlatformPromotion','isVerifiedPriceDeal','isAnyPromotion','displayUnitPrice']) {
   vm.runInContext(extract(name), context);
