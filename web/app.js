@@ -1104,7 +1104,7 @@ function isPlatformPromotion(p) {
   return Boolean(String(p.promo_type || '').trim() && String(p.promo_type).trim() !== '無');
 }
 function isVerifiedPriceDeal(p) {
-  return Number(p.discount_pct || 0) >= 30 && Number(p.current_price ?? p.price ?? 0) > 0 && Number(p.savings_amount || 0) > 0;
+  return Number(p.discount_pct || 0) > 0 && Number(p.current_price ?? p.price ?? 0) > 0 && Number(p.savings_amount || 0) > 0;
 }
 function isAnyPromotion(p) { return isPlatformPromotion(p) || isVerifiedPriceDeal(p); }
 function displayUnitPrice(p) { return window.UBER_DATA_CONTRACT.unitPrice(p.price, p.promo_type, p.quantity) ?? 0; }
@@ -1156,7 +1156,7 @@ async function fetchPromotions(page = 1) {
     if (promoType === '平台優惠') {
       items = items.filter(isPlatformPromotion);
     } else if (promoType === '實質降價30') {
-      items = items.filter(isVerifiedPriceDeal);
+      items = items.filter(p => isVerifiedPriceDeal(p) && Number(p.discount_pct) >= 30);
     } else if (promoType === '買一送一') {
       items = items.filter(p => /買.*送/.test(p.promo_type));
     } else if (promoType === '半價') {
@@ -1770,12 +1770,22 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     APP_STATE.chartInstance = null;
   }
   let history = [];
+  let currentComparison = null;
+  let currentProductLoaded = false;
 
   // Packed DB: events live inside the selected store bundle.
   if (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_TURSO && (storeUuid || productId)) {
     try {
       const client = await getPackedTursoClient();
-      const events = await client.packedHistory(storeUuid, productId);
+      const [events, currentProduct] = await Promise.all([
+        client.packedHistory(storeUuid, productId),
+        client.packedCurrentProduct(storeUuid, productId)
+      ]);
+      if (currentProduct) {
+        currentProductLoaded = true;
+        currentComparison = window.UBER_DATA_CONTRACT.compareUnitPrices(
+          currentProduct.reference_price, currentProduct.current_price);
+      }
       if (events.length) {
         history = events
           .filter(e => {
@@ -1840,13 +1850,16 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   const priceChangeEl = document.getElementById('modal-price-change');
   if (priceChangeEl) {
     const unitFmt = window.UBER_DATA_CONTRACT.unitMoney;
-    if (previousUnit > 0 && latestUnit > 0) {
-      const delta = latestUnit - previousUnit;
-      const percent = Math.abs(delta / previousUnit * 100).toFixed(1);
+    // Event history only tracks CHANGES; it is not the previous valid crawl.
+    const compared = currentProductLoaded ? currentComparison :
+      window.UBER_DATA_CONTRACT.compareUnitPrices(previousUnit, latestUnit);
+    if (compared) {
+      const delta = compared.delta;
+      const percent = compared.percent.toFixed(1);
       const direction = delta > 0 ? '漲價' : delta < 0 ? '降價' : '價格持平';
       priceChangeEl.textContent = delta === 0
-        ? `前次 ${unitFmt(previousUnit)} → 本次 ${unitFmt(latestUnit)}（價格持平）`
-        : `前次 ${unitFmt(previousUnit)} → 本次 ${unitFmt(latestUnit)}（${direction} ${unitFmt(Math.abs(delta))}，${delta > 0 ? '+' : '-'}${percent}%）`;
+        ? `前次 ${unitFmt(compared.previous)} → 本次 ${unitFmt(compared.current)}（價格持平）`
+        : `前次 ${unitFmt(compared.previous)} → 本次 ${unitFmt(compared.current)}（${direction} ${unitFmt(Math.abs(delta))}，${delta > 0 ? '+' : '-'}${percent}%）`;
     } else {
       priceChangeEl.textContent = latestUnit > 0
         ? `目前實質單價 ${unitFmt(latestUnit)}（尚無前次可比較紀錄）`
