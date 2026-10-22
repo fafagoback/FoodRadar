@@ -138,6 +138,26 @@ def publish(database, remote, apply=False):
             raise ValueError('Refusing an existing database owned by another application')
         if old_meta and old_meta.get('schema_version') != local_meta['schema_version']:
             raise ValueError('Schema changes require a new versioned database')
+        # A historical Raw archive can be incomplete even when its checksum is
+        # valid. Never turn a re-pack into a destructive mass purge of known
+        # stores or products without a separately audited source of truth.
+        if 'store_directory' in tables:
+            remote_stores = int(remote.query('SELECT COUNT(*) AS count FROM store_directory')[0]['count'])
+            local_stores = int(conn.execute('SELECT COUNT(*) FROM store_directory').fetchone()[0])
+            if remote_stores >= 100 and local_stores < remote_stores * 0.7:
+                raise ValueError(
+                    f'Unsafe store shrink: {remote_stores} -> {local_stores}; '
+                    'HF Raw replay may omit historical snapshots. Refusing publish.')
+        if old_meta:
+            before_counts = json.loads(old_meta.get('source_counts', '{}'))
+            after_counts = json.loads(local_meta.get('source_counts', '{}'))
+            for kind in ('stores','products'):
+                before = int(before_counts.get(kind, 0))
+                after = int(after_counts.get(kind, 0))
+                if before >= 100 and after < before * 0.7:
+                    raise ValueError(
+                        f'Unsafe {kind} shrink: {before} -> {after}; '
+                        'do not replace a durable checkpoint with incomplete HF Raw.')
         target_batch = json.loads(local_meta['latest_batch'])
         previous_batch = json.loads(old_meta.get('latest_batch', '""'))
         if previous_batch > target_batch:

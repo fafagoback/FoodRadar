@@ -74,6 +74,18 @@ class DeltaTests(unittest.TestCase):
         self.assertEqual(self.remote.query('SELECT checksum FROM store_bundles')[0]['checksum'],'first')
         self.assertEqual(json.loads(self.remote.query("SELECT value FROM metadata WHERE key='latest_batch'")[0]['value']),'20261006090919')
 
+    def test_incomplete_hf_replay_cannot_mass_delete_existing_stores(self):
+        self.local.executemany(
+            'INSERT INTO store_directory(store_id,store_uuid,name,chunk_count) VALUES(?,?,?,?)',
+            [(i,f'uuid-{i}','Store',1) for i in range(100)])
+        self.local.commit()
+        publish(self.path,self.remote,True)
+        self.local.execute('DELETE FROM store_directory WHERE store_id>=10')
+        self.local.commit()
+        with self.assertRaisesRegex(ValueError,'Unsafe store shrink'):
+            publish(self.path,self.remote,True)
+        self.assertEqual(self.remote.query('SELECT COUNT(*) AS count FROM store_directory')[0]['count'],100)
+
     def test_packed_directory_id_swap_preserves_uuid_uniqueness(self):
         self.local.executemany(
             'INSERT INTO store_directory(store_id,store_uuid,name,chunk_count) VALUES(?,?,?,?)',
