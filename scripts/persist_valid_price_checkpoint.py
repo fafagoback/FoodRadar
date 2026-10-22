@@ -20,11 +20,11 @@ batch = (ROOT/'data/latest.txt').read_text(encoding='utf-8').strip()
 source = ROOT/'data'/batch/'serving.db'
 if not source.is_file():
     raise RuntimeError('Rebuilt serving state missing; refuse to update HF pointer')
-gzip_path = ROOT/'data'/batch/'serving-valid-hours-v2.db.gz'
+gzip_path = ROOT/'data'/batch/'serving-valid-open-observations-v3.db.gz'
 with source.open('rb') as orig, gzip.open(gzip_path,'wb') as archive:
     shutil.copyfileobj(orig,archive)
 compressed = gzip_path.read_bytes()
-remote = f'{folder}/state/{batch}/serving-valid-hours-v2.db.gz'
+remote = f'{folder}/state/{batch}/serving-valid-open-observations-v3.db.gz'
 manifest = {
     'schema_version':1,
     'batch_id':batch,
@@ -39,6 +39,6 @@ commit=api.create_commit(
         CommitOperationAdd(path_in_repo=f'{folder}/state/latest.json',
                            path_or_fileobj=json.dumps(manifest).encode('utf-8'))
     ],
-    commit_message=f'FoodRadar normalized opening-hour price history repair {batch}'
+    commit_message=f'FoodRadar verified-open store/product history repair {batch}'
 )
 print('HF_VALID_PRICE_CHECKPOINT '+json.dumps({'batch_id':batch,'sha256':manifest['sha256'],'commit':commit.oid}),flush=True)
