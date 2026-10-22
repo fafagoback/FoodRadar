@@ -71,6 +71,40 @@ const fs = require('node:fs');
     assert.ok(noodle.events.every(e => e.valid === true && Number(e.price) !== 300),
       'Closed-hours 300 must not show up as a price observation');
 
+    // Regression reported for 鬆餅家士林店: 89 BOGO (unit 44.5) -> 55 plain.
+    // Missing/retired products do not fail future deployments, but whenever
+    // the item is available we verify the published database and graph inputs.
+    const lemon = await page.evaluate(async () => {
+      const client = await import('./packed-turso.js');
+      const products = await client.searchPacked({keyword:'鮮檸冬瓜露', limit:500});
+      const product = products.find(p => p.product_uuid === '643f21a6-7cce-48c0-8c1a-87b2c282d936');
+      if (!product) return {found:false, matches:products.length};
+      const events = await client.packedHistory(product.store_uuid, product.product_uuid);
+      return {found:true,price:product.price,promo:product.promo_type,
+        discount:product.discount_pct,savings:product.savings_amount,
+        currentUnit:product.current_price,
+        history:events.map(e => {
+          const state=JSON.parse(e.new_state || e.old_state || '{}');
+          return {time:e.event_time,price:state.price,promo:state.promo_type,
+            unit:window.UBER_DATA_CONTRACT.unitPrice(state.price,state.promo_type,state.quantity)};
+        })};
+    });
+    console.log('LEMON_GOURD_EFFECTIVE_PRICE_REGRESSION ' + JSON.stringify(lemon));
+    if (lemon.found) {
+      const old = lemon.history.find(h => h.price === 89 && /買.*送/.test(h.promo || ''));
+      const regular = lemon.history.find(h => h.price === 55 && (!h.promo || h.promo === '無'));
+      if (old && regular) {
+        assert.equal(old.unit,44.5, 'archived BOGO effective price must be $44.50');
+        assert.equal(regular.unit,55, 'regular price must be $55 per unit');
+        assert.ok(regular.unit > old.unit, 'BOGO expiration was a price increase, not a drop');
+      }
+      if (lemon.price === 55 && (!lemon.promo || lemon.promo === '無')) {
+        assert.equal(lemon.currentUnit,55);
+        assert.equal(lemon.discount,0, 'current item cannot falsely claim a 38.2% discount');
+        assert.equal(lemon.savings,0);
+      }
+    }
+
     assert.deepEqual(errors, [], 'browser must have no uncaught errors');
     console.log('LIVE PAGE PASS: 30%-discounts homepage=' + home + ', promotions=' + promo);
   } catch (error) {
