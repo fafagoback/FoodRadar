@@ -5,7 +5,7 @@ Uber Eats 邊緣靜態快照導出引擎 (Stage 6: Export Static Snapshots to Ja
 【核心職責】:
 1. 嚴格驗證來源 JSON 菜單檔案的結構與完整性
 2. 執行本地 SQLite ETL (json_to_db) 並建立完整關聯
-3. 執行智慧差異情報引擎 (alert_engine) 計算 7 天歷史價差、買一送一與新品
+3. 比較本次與同店同商品的上一筆有效實質單價（不限制天數）
 4. 匯出完全預先計算好的極速靜態 JSON 資料集至 web/data/:
    - stats.json: 大盤總覽統計與時間戳記
    - discounts.json: 今日大特價商品清單
@@ -61,6 +61,7 @@ from json_to_db import UberEatsDBImporter
 from alert_engine import UberEatsAlertEngine
 from snapshot_validation import validate_document, validate_snapshot
 from price_observation import price_observation_valid
+from price_change import compare_effective_prices
 
 TW_CITIES = [
     "基隆市", "台北市", "臺北市", "新北市", "桃園市", "新竹市", "新竹縣", "苗栗縣",
@@ -134,16 +135,9 @@ def fatal_error(step_name: str, reason: str, expected: str = "", actual: str = "
     sys.exit(1)
 
 
-def calculate_7day_discounts(conn: sqlite3.Connection, latest_batch: str, min_discount_pct: float = 20.0, min_savings_twd: float = 20.0) -> List[Dict[str, Any]]:
+def calculate_previous_discounts(conn: sqlite3.Connection, latest_batch: str, min_discount_pct: float = 0.0, min_savings_twd: float = 0.0) -> List[Dict[str, Any]]:
     """計算相較於前次快照營業中實質單價的降價商品"""
     cursor = conn.cursor()
-
-    # 計算 7 天前時間戳記 (YYYYMMDDhhmmss)
-    try:
-        dt = datetime.strptime(latest_batch, "%Y%m%d%H%M%S")
-        seven_days_ago = (dt - timedelta(days=7)).strftime("%Y%m%d%H%M%S")
-    except Exception:
-        seven_days_ago = "20000101000000"
 
     # 檢查是否有任何前置歷史批次
     cursor.execute("SELECT COUNT(*) FROM crawl_batches WHERE crawled_time < ?", (latest_batch,))
@@ -161,8 +155,7 @@ def calculate_7day_discounts(conn: sqlite3.Connection, latest_batch: str, min_di
             p0.eff_price as prev_eff_price,
             ROW_NUMBER() OVER (PARTITION BY p0.product_id, p0.store_id ORDER BY p0.crawled_time DESC) as rn
         FROM products p0
-        WHERE p0.crawled_time >= ?
-          AND p0.crawled_time < ?
+        WHERE p0.crawled_time < ?
           AND p0.price >= 1
           AND p0.is_open = 1
     )
@@ -194,7 +187,7 @@ def calculate_7day_discounts(conn: sqlite3.Connection, latest_batch: str, min_di
       AND p1.price >= 1
       AND p1.is_open = 1;
     """
-    cursor.execute(query, (seven_days_ago, latest_batch, latest_batch))
+    cursor.execute(query, (latest_batch, latest_batch))
     rows = cursor.fetchall()
 
     discounts = []
@@ -205,14 +198,12 @@ def calculate_7day_discounts(conn: sqlite3.Connection, latest_batch: str, min_di
         if prev_eff is None or prev_eff <= 0:
             continue
 
-        savings = prev_eff - curr_eff
-        drop_pct = (savings / prev_eff) * 100.0
-
-        promo_t = r["promo_type"] or "無"
-        # 防呆機制：排除無促銷標籤但降幅 > 80% 的疑似店家漏打 0 錯誤
-        if promo_t == "無" and drop_pct > 80.0:
+        comparison = compare_effective_prices(prev_eff, curr_eff)
+        if comparison is None or comparison["direction"] != "down":
             continue
-
+        savings = comparison["savings"]
+        drop_pct = comparison["discount_pct"]
+        promo_t = r["promo_type"] or "無"
         if drop_pct >= min_discount_pct and savings >= min_savings_twd:
             raw_url = r["order_action_url"] or ""
             clean_url = raw_url.replace("&amp;", "&")
@@ -242,6 +233,10 @@ def calculate_7day_discounts(conn: sqlite3.Connection, latest_batch: str, min_di
 
     discounts.sort(key=lambda x: (x["discount_pct"], x["savings_amount"]), reverse=True)
     return discounts
+
+
+# Compatibility alias: no seven-day cutoff is applied.
+calculate_7day_discounts = calculate_previous_discounts
 
 
 def extract_curated_catalog(conn: sqlite3.Connection, latest_batch: str, max_items: int = 4000) -> List[Dict[str, Any]]:
@@ -668,14 +663,14 @@ def compute_cross_snapshot_intelligence(
     latest_parquet_path: str,
     batch_id: str,
     repo_id: str = "hub-google/UberEat",
-    min_discount_pct: float = 20.0,
-    min_savings_twd: float = 20.0,
+    min_discount_pct: float = 0.0,
+    min_savings_twd: float = 0.0,
     store_rows: Optional[List[tuple]] = None
 ) -> Dict[str, Any]:
     """
-    使用 DuckDB 對比最新 Parquet 與 Hugging Face 過去 7 天的歷史 Parquet 檔案
+    使用 DuckDB 對比最新 Parquet 與本地所有可取得的舊快照
     產出:
-    1. 7 天最高價差大特價 (discounts)
+    1. 本次與同店同商品上一筆有效單價的降價 (discounts)
     2. 全新進駐店家 (new_stores)
     3. 老店新菜 (new_products)
     4. 跨批次商品歷史價格走勢字典 (history_map)
@@ -699,7 +694,8 @@ def compute_cross_snapshot_intelligence(
         if ts.isdigit() and ts < batch_id:
             history_files.append((ts, str(path).replace('\\', '/')))
     history_files.sort()
-    all_downloaded_history_paths = history_files[-7:]
+    # The previous valid observation can be older than seven batches.
+    all_downloaded_history_paths = history_files
     prev_batch_id, prev_parquet_path = all_downloaded_history_paths[-1] if all_downloaded_history_paths else (None, None)
 
     discounts = []
@@ -763,10 +759,9 @@ def compute_cross_snapshot_intelligence(
         JOIN hist_prev h ON curr.product_id = h.product_id AND curr.store_id = h.store_id
         WHERE curr.eff_price > 0 
           AND curr.is_open = 1
+          AND curr.eff_price < h.prev_eff_price
           AND (h.prev_eff_price - curr.eff_price) >= {min_savings_twd}
           AND (h.prev_eff_price - curr.eff_price) * 100.0 / h.prev_eff_price >= {min_discount_pct}
-          -- 防呆機制：過濾無促銷標籤但降幅 > 80% 的疑似店家漏打 0 錯誤
-          AND NOT (curr.promo_type = '無' AND (h.prev_eff_price - curr.eff_price) * 100.0 / h.prev_eff_price > 80.0)
         ORDER BY discount_pct DESC, savings_amount DESC;
         """
         try:
@@ -1226,8 +1221,8 @@ def export_all_static_snapshots(
         latest_parquet_path=latest_parquet_filepath,
         batch_id=batch_id,
         repo_id=hf_repo_id,
-        min_discount_pct=20.0,
-        min_savings_twd=20.0,
+        min_discount_pct=0.0,
+        min_savings_twd=0.0,
         store_rows=store_rows
     )
 
@@ -1335,7 +1330,7 @@ def export_all_static_snapshots(
 | :--- | :---: | :--- | :---: |
 | `taiwan_catalog.parquet` | **{total_parquet_rows:,}** 筆全台商品 | 列式壓縮湖倉檔，直傳 Hugging Face (支援 DuckDB-WASM 邊緣 SQL 毫秒級檢索) | ✅ 完成 |
 | `stats.json` | 1 份 | 總店家 **{len(store_rows):,}** 間、總商品 **{len(product_rows):,}** 項 | ✅ 完成 |
-| `discounts.json` | **{len(discounts):,}** 筆 | 7 天價差降幅 ≥ 20% 大特價 (現省最高 ${round(max_savings_val)}) | ✅ 完成 |
+| `discounts.json` | **{len(discounts):,}** 筆 | 相較前次有效單價下降的商品 (現省最高 ${round(max_savings_val)}) | ✅ 完成 |
 | `new_stores.json` | **{len(new_stores):,}** 間 | 本批次全新進駐店家 | ✅ 完成 |
 | `promotions.json` | **{len(promotions):,}** 筆 | 買一送一與促銷活動 | ✅ 完成 |
 | `products.json` | **{len(curated_catalog):,}** 筆 | 精選商品清單 (輕量備援) | ✅ 完成 |
