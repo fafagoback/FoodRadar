@@ -11,6 +11,8 @@ function element(id) {
 }
 const context={console,URL,setTimeout,clearTimeout,document:{readyState:'loading',addEventListener(){},getElementById:element,documentElement:element('root')},localStorage:{getItem:()=>null,setItem(){}},window:{matchMedia:()=>({matches:false}),UBER_RADAR_CONFIG:{ENABLE_TURSO:false},isSecureContext:true,open(){context.opened=true;}},navigator:{clipboard:{writeText:()=>new Promise(()=>{})}},lucide:{createIcons(){}},Chart:function(ctx,config){this.options=config.options;this.data=config.data;this.destroy=()=>{};this.update=()=>{context.updated=true;};}};
 vm.createContext(context);
+// The production page loads its shared price/display contract before app.js.
+vm.runInContext(fs.readFileSync('web/data-contract.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/app.js','utf8'),context);
 (async()=>{
   vm.runInContext('initTheme()',context);

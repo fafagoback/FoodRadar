@@ -3,8 +3,8 @@ on:
   push:
     branches: [main]
   schedule:
-    # Asia/Taipei 04:30 and 15:30 daily; GitHub schedules use UTC.
-    - cron: '30 7,20 * * *'
+    # Asia/Taipei 06:30 and 18:30 daily; GitHub schedules use UTC.
+    - cron: '30 10,22 * * *'
   workflow_dispatch:
     inputs:
       publish_existing:
