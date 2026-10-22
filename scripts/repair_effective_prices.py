@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from json_to_db import calculate_effective_price
-from price_change import compare_effective_prices
+from price_change import PriceChange
 
 
 def verified_unit(state_json):
@@ -52,6 +52,13 @@ def repair(db_path):
         ).fetchone() is not None
         deal_updates = []
         if deal_columns.issubset(columns):
+            for name, definition in (
+                ("price_direction", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ("price_change_amount", "REAL NOT NULL DEFAULT 0"),
+                ("price_change_percent", "REAL NOT NULL DEFAULT 0"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE products ADD COLUMN {name} {definition}")
             has_last_seen = 'last_seen' in columns
             last_seen_column = 'last_seen' if has_last_seen else 'NULL AS last_seen'
             candidates = conn.execute(
@@ -75,14 +82,18 @@ def repair(db_path):
                         new_unit = verified_unit(event[2])
                         if old_unit and new_unit and abs(new_unit - current) <= 0.01:
                             prior = old_unit
-                comparison = compare_effective_prices(prior, current)
-                reference = comparison["previous"] if comparison else None
-                savings = comparison["savings"] if comparison else 0.0
-                percent = comparison["discount_pct"] if comparison else 0.0
-                deal_updates.append((reference, savings, percent, int(percent >= 30), sid, pid))
+                fields = PriceChange.persisted(PriceChange.compare(prior, current))
+                deal_updates.append((
+                    fields["reference_price"], fields["discount_amount"],
+                    fields["discount_pct"], fields["is_price_deal"],
+                    fields["price_direction"], fields["price_change_amount"],
+                    fields["price_change_percent"], sid, pid
+                ))
             conn.executemany(
                 """UPDATE products SET reference_price=?,discount_amount=?,
-                   discount_pct=?,is_price_deal=? WHERE store_uuid=? AND product_uuid=?""",
+                   discount_pct=?,is_price_deal=?,price_direction=?,
+                   price_change_amount=?,price_change_percent=?
+                   WHERE store_uuid=? AND product_uuid=?""",
                 deal_updates
             )
         errors = conn.execute(
