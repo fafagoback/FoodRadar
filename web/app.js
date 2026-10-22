@@ -301,6 +301,8 @@ async function executeTursoQuery(sql) {
 
 let PACKED_TURSO_CLIENT = null;
 let storeSearchSequence = 0;
+let discountsSearchSequence = 0;
+let newProductsSearchSequence = 0;
 let promotionsRequestSequence = 0;
 async function getPackedTursoClient() {
   if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import(`./packed-turso.js?_t=${Date.now()}`);
@@ -477,6 +479,7 @@ function smoothScrollToTab(tabId) {
 // 3. TAB 1: 今日大特價 (-30%+) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchDiscounts(page = 1) {
+  const requestId = ++discountsSearchSequence;
   APP_STATE.discountsPage = page;
   const { discountMinPct, discountMinSavings, discountSort, discountCategory, discountSearch } = APP_STATE.filters;
 
@@ -498,10 +501,12 @@ async function fetchDiscounts(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
+      if (requestId !== discountsSearchSequence) return;
       return showDatabaseUnavailable(err, 'discounts-grid');
     }
   }
 
+  if (requestId !== discountsSearchSequence) return;
   if (!fetchedRemote) {
     items = applyLocationFilter(APP_STATE.rawDiscounts && APP_STATE.rawDiscounts.length > 0 ? APP_STATE.rawDiscounts : (APP_STATE.discounts || []));
   }
@@ -681,6 +686,7 @@ async function fetchNewStores(page = 1) {
       });
       items = stores || [];
     } catch (e) {
+      if (sequence !== storeSearchSequence) return;
       return showDatabaseUnavailable(e, 'new-stores-grid');
     }
   }
@@ -822,6 +828,7 @@ function renderNewStores() {
 // 5. TAB 3: 老店新菜推薦 (Tab 3) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchNewProducts(page = 1) {
+  const requestId = ++newProductsSearchSequence;
   APP_STATE.productsPage = page;
   const { productSearch } = APP_STATE.filters;
   let items = [];
@@ -841,10 +848,12 @@ async function fetchNewProducts(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
+      if (requestId !== newProductsSearchSequence) return;
       return showDatabaseUnavailable(err, 'new-products-grid');
     }
   }
 
+  if (requestId !== newProductsSearchSequence) return;
   if (!fetchedRemote) {
     items = applyLocationFilter(APP_STATE.newProducts || []);
   }
@@ -1585,16 +1594,13 @@ async function fetchGlobalProducts(page = 1) {
         return;
       }
     } catch (err) {
+      if (sequence !== globalSearchSequence) return;
       return showDatabaseUnavailable(err, 'global-products-grid');
     }
   }
 
+  if (sequence !== globalSearchSequence) return;
   return showDatabaseUnavailable(new Error('Database query unavailable'), 'global-products-grid');
-}
-
-function changeGlobalPage(page) {
-  fetchGlobalProducts(page);
-  smoothScrollToTab('tab-global-search');
 }
 
 function renderGlobalLoadingState(rawSearch) {

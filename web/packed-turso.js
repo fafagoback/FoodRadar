@@ -1,6 +1,9 @@
 let runtimePromise;
 const bucketCache = new Map();
 const bundleCache = new Map();
+// Deduplicate concurrent bundle requests; decoding a store twice corrupts chunk offsets.
+const pendingBundleLoads = new Map();
+let cacheEpoch = 0;
 const encoder = new TextEncoder();
 let locationStoresCache = { key: '', storeIds: new Set(), stores: [] };
 let releaseMeta = {};
@@ -107,7 +110,8 @@ export async function metadata() {
     catch { return [r.key, r.value]; }
   }));
   if (releaseMeta.latest_batch && releaseMeta.latest_batch !== meta.latest_batch) {
-    bucketCache.clear(); bundleCache.clear();
+    cacheEpoch++;
+    bucketCache.clear(); bundleCache.clear(); pendingBundleLoads.clear();
     locationStoresCache = { key: '', storeIds: new Set(), stores: [] };
   }
   releaseMeta = meta;
@@ -240,23 +244,37 @@ function productView(product, store) {
 }
 
 async function bundlesForStores(storeIds) {
-  const missing = [...new Set(storeIds)].filter(id => !bundleCache.has(id));
+  const requested = [...new Set(storeIds.map(Number))].filter(Number.isInteger);
+  const missing = requested.filter(id => !bundleCache.has(id) && !pendingBundleLoads.has(id));
   for (let i = 0; i < missing.length; i += 60) {
     const ids = missing.slice(i, i + 60);
-    const rows = await sql(`select store_id, chunk_no, payload, checksum from store_bundles where store_id in (${ids.join(',')}) order by store_id, chunk_no`);
-    for (const row of rows) {
-      const decoded = await unpack(row.payload, row.checksum);
-      const sid = Number(row.store_id);
-      if (!bundleCache.has(sid)) bundleCache.set(sid, []);
-      bundleCache.get(sid).push(decoded);
-    }
+    const epoch = cacheEpoch;
+    const loader = (async () => {
+      const rows = await sql(`select store_id, chunk_no, payload, checksum from store_bundles where store_id in (${ids.join(',')}) order by store_id, chunk_no`);
+      const grouped = new Map(ids.map(id => [id, []]));
+      for (const row of rows) {
+        const sid = Number(row.store_id);
+        if (grouped.has(sid)) grouped.get(sid).push(await unpack(row.payload, row.checksum));
+      }
+      // Ignore an obsolete fetch if a newer release invalidated this cache.
+      if (epoch === cacheEpoch) {
+        for (const [sid, chunks] of grouped) bundleCache.set(sid, chunks);
+      }
+    })();
+    for (const id of ids) pendingBundleLoads.set(id, loader);
+    loader.finally(() => {
+      for (const id of ids) {
+        if (pendingBundleLoads.get(id) === loader) pendingBundleLoads.delete(id);
+      }
+    }).catch(() => {}); // The original caller handles the load error.
   }
-  return storeIds.flatMap(id => bundleCache.get(Number(id)) || []);
+  await Promise.all(requested.map(id => pendingBundleLoads.get(id)).filter(Boolean));
+  return requested.flatMap(id => bundleCache.get(id) || []);
 }
 
 export async function getStoresInLocation(location) {
   if (!location?.enabled) return null;
-  const key = `${Number(location.latitude).toFixed(4)},${Number(location.longitude).toFixed(4)},${Number(location.radiusKm).toFixed(2)}`;
+  const key = JSON.stringify([Number(location.latitude), Number(location.longitude), Number(location.radiusKm)]);
   if (locationStoresCache.key === key) return locationStoresCache;
   const lat = Number(location.latitude), lon = Number(location.longitude), r = Number(location.radiusKm);
   const dy = r / 111.32, dx = r / Math.max(1, 111.32 * Math.cos(lat * Math.PI / 180));
