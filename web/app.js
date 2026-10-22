@@ -608,9 +608,9 @@ function renderDiscounts() {
         <div class="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
           <div class="flex items-baseline justify-between">
             <div>
-              <div class="text-xs text-slate-400 line-through">原價 $${Math.round(item.original_price)}</div>
+              <div class="text-xs text-slate-400 line-through">前次實質單價 ${window.UBER_DATA_CONTRACT.money(item.original_price)}</div>
               <div class="text-2xl font-black text-red-600 dark:text-red-400 font-mono flex items-baseline gap-1">
-                $${Math.round(item.current_price)}
+                ${window.UBER_DATA_CONTRACT.money(item.current_price)}
                 <span class="text-xs font-normal text-slate-500 dark:text-slate-400">/ 實質單件</span>
               </div>
             </div>
@@ -621,7 +621,7 @@ function renderDiscounts() {
                 -${item.discount_pct}%
               </span>
               <div class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
-                現省 $${Math.round(item.savings_amount)}
+                每件省 ${window.UBER_DATA_CONTRACT.money(item.savings_amount)}
               </div>
             </div>
           </div>
@@ -1101,7 +1101,7 @@ function isVerifiedPriceDeal(p) {
   return Number(p.discount_pct || 0) >= 30 && Number(p.current_price ?? p.price ?? 0) > 0 && Number(p.savings_amount || 0) > 0;
 }
 function isAnyPromotion(p) { return isPlatformPromotion(p) || isVerifiedPriceDeal(p); }
-function displayUnitPrice(p) { return calculateEffectivePromo(p.price, p.promo_type, p.quantity).effPrice ?? Number(p.price || 0); }
+function displayUnitPrice(p) { return window.UBER_DATA_CONTRACT.unitPrice(p.price, p.promo_type, p.quantity) ?? 0; }
 function productIdentity(p) { return `${p.store_uuid || p.store_id}\u001f${p.product_uuid || p.product_id}`; }
 
 // 6. TAB 4: 折扣活動專區 (Promotions) (每頁 50 筆)
@@ -1778,7 +1778,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
           .map(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
             const p = Number(state.price || 0);
-            const eff = Number(state.effective_price || p);
+            const eff = window.UBER_DATA_CONTRACT.unitPrice(p, state.promo_type, state.quantity);
             return {
               crawled_time: e.event_time,
               price: p,
@@ -1805,7 +1805,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         && String(x.store_uuid || x.store_id || '') === String(storeUuid));
 
     if (found && (found.is_open === 1 || found.is_open === true) && Number(found.price || 0) > 0) {
-      const eff = found.eff_price || (found.quantity > 1 ? Math.round((found.price / found.quantity) * 10) / 10 : found.price);
+      const eff = window.UBER_DATA_CONTRACT.unitPrice(found.price, found.promo_type, found.quantity);
       if (Number(eff) > 0) {
         history = [{
           crawled_time: found.crawled_time || (APP_STATE.stats && APP_STATE.stats.latest_batch) || '最新',
@@ -1863,7 +1863,9 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   const uniqueDays = [...new Set(dayKeys)];
   const labelInterval = Math.max(1, Math.ceil(uniqueDays.length / 9));
   const labels = history.map(h => h.crawled_time);
-  const prices = history.map(h => Math.round(Number(h.eff_price)));
+  // Preserve exact unit cost (e.g. 89 / 2 = 44.50) in chart geometry.
+  // TWD text remains rounded for display, matching Uber Eats.
+  const prices = history.map(h => Number(h.eff_price));
 
   // 在兩個日期交界的資料點中間畫淡灰色直線，形成每日區隔的網格。
   const daySeparatorPlugin = {
