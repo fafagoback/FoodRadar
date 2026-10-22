@@ -28,13 +28,15 @@ class SingleSourcePriceChangeTests(unittest.TestCase):
                 self.assertNotIn("refPrice > effective", source)
         reader = (ROOT / "web/packed-turso.js").read_text(encoding="utf-8")
         self.assertIn("product.price_direction", reader)
+        self.assertIn("Number(product.is_price_drop || 0)", reader)
+        self.assertNotIn("is_price_drop: direction === 'down'", reader)
         self.assertIn("product.price_change_percent", reader)
         page = (ROOT / "web/app.js").read_text(encoding="utf-8")
         self.assertIn("compared.price_change_amount", page)
 
     def test_normalized_table_preserves_authoritative_fields(self):
         normalized = (ROOT / "src/serving_state.py").read_text(encoding="utf-8")
-        for field in ("price_direction", "price_change_amount", "price_change_percent"):
+        for field in ("price_direction", "is_price_drop", "price_change_amount", "price_change_percent"):
             self.assertIn(field, normalized)
         projected = (ROOT / "scripts/build_web_db.py").read_text(encoding="utf-8")
         self.assertNotIn("SET reference_price=NULL", projected)
