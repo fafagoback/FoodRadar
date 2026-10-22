@@ -469,18 +469,23 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     old_state = dict(old)
                     old_state["recent_prices"] = json_dumps(old["recent_prices"])
                     old_state["price_valid"] = bool(old["recent_prices"])
-                    # Keep the actual prior open-state flag; carry only the last verified
-                    # payable price as the reference value for price-change events.
+                    # Keep the last verified raw payable price separately from its
+                    # unit-equivalent price. An older buy-one-get-one at $89 costs
+                    # $44.50 per unit, NOT $89. Do not overwrite this historical
+                    # effective price with the raw price in event old_state.
                     if old["recent_prices"]:
                         old_state["price"] = old["recent_prices"][-1]
-                        old_state["effective_price"] = old["recent_prices"][-1]
                     if price_valid:
-                        previous_prices = old["recent_prices"][-1:]
-                        reference_price = previous_prices[-1] if previous_prices else None
-                        price_novel = int(reference_price is not None and price != reference_price)
-                        discount_amount = round(reference_price - price, 2) if reference_price and price < reference_price else 0
+                        # Price drops, price rises and promotion start/end MUST be
+                        # compared on the same per-unit basis (not menu list price).
+                        previous_unit = float(old["effective_price"] or 0) if old["recent_prices"] else 0
+                        reference_price = round(previous_unit, 2) if previous_unit > 0 else None
+                        price_novel = int(reference_price is not None and round(effective, 2) != reference_price)
+                        discount_amount = round(reference_price - effective, 2) if reference_price and effective < reference_price else 0
                         discount_pct = round(discount_amount / reference_price * 100, 2) if discount_amount and reference_price else 0
                         is_price_deal = int(discount_pct >= 30)
+                        # recent_prices stores last verified raw price for off-hours
+                        # protection; reference_price stores prior effective unit cost.
                         next_recent_prices = [price]
                     else:
                         price_novel = 0
