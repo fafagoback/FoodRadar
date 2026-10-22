@@ -1104,7 +1104,7 @@ function isPlatformPromotion(p) {
   return Boolean(String(p.promo_type || '').trim() && String(p.promo_type).trim() !== '無');
 }
 function isVerifiedPriceDeal(p) {
-  return Number(p.discount_pct || 0) > 0 && Number(p.current_price ?? p.price ?? 0) > 0 && Number(p.savings_amount || 0) > 0;
+  return p.is_price_drop === true || p.is_price_drop === 1;
 }
 function isAnyPromotion(p) { return isPlatformPromotion(p) || isVerifiedPriceDeal(p); }
 function displayUnitPrice(p) { return window.UBER_DATA_CONTRACT.unitPrice(p.price, p.promo_type, p.quantity) ?? 0; }
@@ -1783,8 +1783,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
       ]);
       if (currentProduct) {
         currentProductLoaded = true;
-        currentComparison = window.UBER_DATA_CONTRACT.compareUnitPrices(
-          currentProduct.reference_price, currentProduct.current_price);
+        currentComparison = currentProduct;
       }
       if (events.length) {
         history = events
@@ -1846,23 +1845,24 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     .sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
 
   const latestUnit = history.length ? Number(history[history.length - 1].eff_price) : null;
-  const previousUnit = history.length > 1 ? Number(history[history.length - 2].eff_price) : null;
   const priceChangeEl = document.getElementById('modal-price-change');
   if (priceChangeEl) {
     const unitFmt = window.UBER_DATA_CONTRACT.unitMoney;
-    // Event history only tracks CHANGES; it is not the previous valid crawl.
-    const compared = currentProductLoaded ? currentComparison :
-      window.UBER_DATA_CONTRACT.compareUnitPrices(previousUnit, latestUnit);
+    // Read-only presentation of fields computed by Python PriceChange.
+    // Change events are sparse: never recompute from the last two chart points.
+    const compared = currentProductLoaded && Number(currentComparison.reference_price) > 0
+      && currentComparison.price_direction !== 'unknown' ? currentComparison : null;
     if (compared) {
-      const delta = compared.delta;
-      const percent = compared.percent.toFixed(1);
-      const direction = delta > 0 ? '漲價' : delta < 0 ? '降價' : '價格持平';
-      priceChangeEl.textContent = delta === 0
-        ? `前次 ${unitFmt(compared.previous)} → 本次 ${unitFmt(compared.current)}（價格持平）`
-        : `前次 ${unitFmt(compared.previous)} → 本次 ${unitFmt(compared.current)}（${direction} ${unitFmt(Math.abs(delta))}，${delta > 0 ? '+' : '-'}${percent}%）`;
+      const delta = Number(compared.price_change_amount);
+      const percent = Math.abs(Number(compared.price_change_percent)).toFixed(1);
+      const direction = {up: '漲價', down: '降價', flat: '價格持平'}[compared.price_direction];
+      priceChangeEl.textContent = compared.price_direction === 'flat'
+        ? `前次 ${unitFmt(compared.reference_price)} → 本次 ${unitFmt(compared.current_price)}（價格持平）`
+        : `前次 ${unitFmt(compared.reference_price)} → 本次 ${unitFmt(compared.current_price)}（${direction} ${unitFmt(Math.abs(delta))}，${delta > 0 ? '+' : '-'}${percent}%）`;
     } else {
-      priceChangeEl.textContent = latestUnit > 0
-        ? `目前實質單價 ${unitFmt(latestUnit)}（尚無前次可比較紀錄）`
+      const shownPrice = currentProductLoaded ? Number(currentComparison.current_price) : latestUnit;
+      priceChangeEl.textContent = shownPrice > 0
+        ? `目前實質單價 ${unitFmt(shownPrice)}（尚無前次可比較紀錄）`
         : '目前沒有可比較的實質單價紀錄';
     }
   }
