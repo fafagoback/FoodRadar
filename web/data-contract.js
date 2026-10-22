@@ -18,6 +18,25 @@
     const n = Number(value);
     return Number.isFinite(n) && n > 0 ? n : null;
   }
+  // Shared unit-equivalent price for all product lists and historical trends.
+  // Direct discounted menu prices (e.g. 7折) are already payable prices.
+  function unitPrice(price, promoType, quantity = 1) {
+    const p = positive(price);
+    if (p === null) return null;
+    const type = String(promoType || '').trim();
+    const digit = {'1':1,'2':2,'3':3,'4':4,'5':5,'一':1,'二':2,'兩':2,'三':3,'四':4,'五':5};
+    const buy = type.match(/買\s*([1-5一二兩三四五])\s*送\s*([1-5一二兩三四五])/);
+    const round = n => Math.round((n + Number.EPSILON) * 100) / 100;
+    if (buy) {
+      const b = digit[buy[1]], f = digit[buy[2]];
+      return round(p * b / (b + f));
+    }
+    if (type === '買A送B' || type.toUpperCase() === 'BOGO') return round(p / 2);
+    if (/加\s*[1一]\s*元多\s*[1一]\s*件/.test(type)) return round((p + 1) / 2);
+    if (/第\s*[2二兩]\s*[件杯項份]\s*半價/.test(type)) return round(p * 0.75);
+    const q = positive(quantity) || 1;
+    return round(p / q);
+  }
   function product(row) {
     const price = positive(row.price ?? row.curr_raw_price);
     const quantity = positive(row.quantity ?? row.curr_qty) || 1;
@@ -32,5 +51,5 @@
     const n = positive(value);
     return n === null ? '價格未提供' : '$' + n.toLocaleString('zh-TW', {minimumFractionDigits: 0, maximumFractionDigits: 0});
   }
-  root.UBER_DATA_CONTRACT = {city, positive, product, money};
+  root.UBER_DATA_CONTRACT = {city, positive, product, money, unitPrice};
 })(typeof window === 'undefined' ? globalThis : window);
