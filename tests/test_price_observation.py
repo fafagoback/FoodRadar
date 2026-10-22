@@ -148,6 +148,39 @@ class PriceValidityTests(unittest.TestCase):
         self.assertIn('PRICE_CHANGED', types)
         self.assertIn('PROMOTION_CHANGED', types)
 
+    def test_direct_three_tenths_discount_uses_payable_price_not_original(self):
+        # Uber menu offer price is the discounted payable amount (30),
+        # while the original 100 is only promotional context.
+        discounted = menu('20261013091759', 30)
+        item = discounted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
+        item['promo_type'] = '3折特惠'
+        apply_snapshot(self.conn, [discounted], '20261013091759')
+
+        regular = menu('20261014091759', 50)
+        apply_snapshot(self.conn, [regular], '20261014091759')
+        row = self.conn.execute(
+            'SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products'
+        ).fetchone()
+        self.assertEqual((row['price'], row['effective_price'], row['reference_price']), (50, 50, 30))
+        self.assertEqual((row['discount_amount'], row['discount_pct'], row['is_price_deal']), (0, 0, 0))
+        history = [json.loads(r['new_state']) for r in self.conn.execute(
+            "SELECT new_state FROM events WHERE event_type IN ('NEW','PRICE_CHANGED') ORDER BY event_time"
+        ).fetchall()]
+        self.assertEqual([r['effective_price'] for r in history], [30, 50])
+
+    def test_direct_discount_begins_without_double_application(self):
+        regular = menu('20261013091759', 50)
+        apply_snapshot(self.conn, [regular], '20261013091759')
+        discounted = menu('20261014091759', 30)
+        item = discounted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
+        item['promo_type'] = '3折特惠'
+        apply_snapshot(self.conn, [discounted], '20261014091759')
+        row = self.conn.execute(
+            'SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products'
+        ).fetchone()
+        self.assertEqual((row['price'], row['effective_price'], row['reference_price']), (30, 30, 50))
+        self.assertEqual((row['discount_amount'], row['discount_pct'], row['is_price_deal']), (20, 40, 1))
+
     def test_per_store_captured_at_not_early_batch_start(self):
         doc=menu('20261014014059',300)
         doc['captured_at']='2026-10-14T09:15:00+08:00'
