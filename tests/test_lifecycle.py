@@ -53,10 +53,12 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual((discounted['reference_price'],discounted['discount_pct']), (180,33.33))
         self.assertEqual((discounted['price_direction'],discounted['price_change_amount'],discounted['price_change_percent']),
                          ('down',-60,-33.33))
+        self.assertEqual(discounted['is_price_drop'], 1)
         steady = self.observe('20261022063000',120)
         self.assertEqual((steady['reference_price'],steady['discount_pct'],steady['discount_amount'],steady['is_price_deal']), (120,0,0,0))
         self.assertEqual((steady['price_direction'],steady['price_change_amount'],steady['price_change_percent']),
                          ('flat',0,0))
+        self.assertEqual(steady['is_price_drop'], 0)
 
     def test_inactive_short_and_exact_60_day_relist_with_cache(self):
         first=self.observe('20260101063000')
