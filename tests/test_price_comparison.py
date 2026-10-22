@@ -22,6 +22,7 @@ class PriceComparisonContractTests(unittest.TestCase):
         self.assertEqual(PriceChange.persisted(PriceChange.compare(180, 120)), {
             "reference_price": 180.0,
             "price_direction": "down",
+            "is_price_drop": 1,
             "price_change_amount": -60.0,
             "price_change_percent": -33.33,
             "discount_amount": 60.0,
@@ -32,6 +33,9 @@ class PriceComparisonContractTests(unittest.TestCase):
         self.assertTrue(PriceChange.qualifies(PriceChange.compare(180,120), 30))
         self.assertFalse(PriceChange.qualifies(PriceChange.compare(180,120), 40))
         self.assertEqual(PriceChange.persisted(PriceChange.compare(None,120))["price_direction"], "unknown")
+        self.assertEqual(PriceChange.persisted(PriceChange.compare(None,120))["is_price_drop"], 0)
+        self.assertEqual(PriceChange.persisted(PriceChange.compare(120,120))["is_price_drop"], 0)
+        self.assertEqual(PriceChange.persisted(PriceChange.compare(180,120))["is_price_drop"], 1)
 
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
