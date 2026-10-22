@@ -22,7 +22,10 @@ for (const name of ['formatTaiwanDiscount','calculateEffectivePromo','isPlatform
   vm.runInContext(extract(name), context);
 }
 const run = (name, ...args) => context[name](...args);
-const deal = (price, pct, savings) => ({price, current_price: price, discount_pct: pct, savings_amount: savings});
+const deal = (price, pct, savings) => ({
+  price, current_price: price, discount_pct: pct, savings_amount: savings,
+  is_price_drop: pct > 0 && savings > 0 // fixture represents Python's persisted decision
+});
 assert.equal(run('isVerifiedPriceDeal', deal(168, 34.12, 87)), true);
 assert.equal(run('isVerifiedPriceDeal', deal(168, 34.12, 0)), false);
 assert.equal(run('isVerifiedPriceDeal', deal(168, 20, 87)), true, 'a 20-percent decrease is a drop; 30 percent is only a filter');
@@ -45,12 +48,10 @@ assert.equal(run('displayUnitPrice', {price: 89, promo_type: '買1送1', quantit
 assert.equal(run('displayUnitPrice', {price: 89, promo_type: 'BOGO', quantity: 1}), 44.5);
 assert.equal(run('calculateEffectivePromo', 89, 'BOGO', 1).effPrice, 44.5);
 assert.equal(context.UBER_DATA_CONTRACT.unitMoney(44.5), '$44.50', 'derived unit cost retains fractional TWD');
-const comparison = context.UBER_DATA_CONTRACT.compareUnitPrices;
-assert.equal(comparison(180,120).dropPct,33.33);
-assert.equal(comparison(120,120).direction,'flat');
-assert.equal(comparison(30,50).direction,'up');
-assert.equal(comparison(null,120),null);
-assert.equal(comparison(89,44.5).savings,44.5);
+assert.equal(context.UBER_DATA_CONTRACT.compareUnitPrices, undefined,
+  'the website must not implement another price-comparison formula');
+assert.equal(run('isVerifiedPriceDeal', {is_price_drop:true,discount_pct:0,savings_amount:0}),true,
+  'front end trusts persisted Python classification rather than recomputing prices');
 assert.ok(source.includes('client.packedCurrentProduct(storeUuid, productId)'),
   'modal must fetch last valid crawl, not assume its chart events are full history');
 assert.equal(run('displayUnitPrice', {price: 55, promo_type: '無', quantity: 1}), 55);
@@ -64,6 +65,10 @@ assert.ok(!packed.includes('int(product["quantity"] or 1) > 1 or product["promo_
 const reader = fs.readFileSync('web/packed-turso.js', 'utf8');
 assert.ok(reader.includes('const effective = window.UBER_DATA_CONTRACT.unitPrice(price, product.promo_type, product.quantity);'),
   'packed reader uses actual unit cost, not raw list price or a legacy double-discount');
+assert.ok(reader.includes("const direction = product.price_direction || 'unknown';"),
+  'packed reader must rely on backend direction');
+assert.ok(!reader.includes('compareUnitPrices(') && !source.includes('compareUnitPrices('),
+  'no separate price-change formula may exist in website JS');
 
 assert.ok(reader.includes('Number(product.is_open) === 1 && Number(store.is_open) === 1'), 'both product and store must explicitly be open');
 assert.ok(source.includes('state.is_open === 1 || state.is_open === true'), 'price-history events require explicit open status');
