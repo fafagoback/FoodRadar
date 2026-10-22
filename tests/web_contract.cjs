@@ -25,7 +25,7 @@ const run = (name, ...args) => context[name](...args);
 const deal = (price, pct, savings) => ({price, current_price: price, discount_pct: pct, savings_amount: savings});
 assert.equal(run('isVerifiedPriceDeal', deal(168, 34.12, 87)), true);
 assert.equal(run('isVerifiedPriceDeal', deal(168, 34.12, 0)), false);
-assert.equal(run('isVerifiedPriceDeal', deal(168, 20, 87)), false);
+assert.equal(run('isVerifiedPriceDeal', deal(168, 20, 87)), true, 'a 20-percent decrease is a drop; 30 percent is only a filter');
 assert.equal(run('isAnyPromotion', deal(168, 34.12, 87)), true);
 assert.equal(run('isAnyPromotion', {price: 200, quantity: 2, promo_type: ''}), false, 'plain multipacks are not offers');
 assert.equal(run('isPlatformPromotion', {price: 200, quantity: 2, promo_type: ''}), false);
@@ -45,6 +45,14 @@ assert.equal(run('displayUnitPrice', {price: 89, promo_type: '買1送1', quantit
 assert.equal(run('displayUnitPrice', {price: 89, promo_type: 'BOGO', quantity: 1}), 44.5);
 assert.equal(run('calculateEffectivePromo', 89, 'BOGO', 1).effPrice, 44.5);
 assert.equal(context.UBER_DATA_CONTRACT.unitMoney(44.5), '$44.50', 'derived unit cost retains fractional TWD');
+const comparison = context.UBER_DATA_CONTRACT.compareUnitPrices;
+assert.equal(comparison(180,120).dropPct,33.33);
+assert.equal(comparison(120,120).direction,'flat');
+assert.equal(comparison(30,50).direction,'up');
+assert.equal(comparison(null,120),null);
+assert.equal(comparison(89,44.5).savings,44.5);
+assert.ok(source.includes('client.packedCurrentProduct(storeUuid, productId)'),
+  'modal must fetch last valid crawl, not assume its chart events are full history');
 assert.equal(run('displayUnitPrice', {price: 55, promo_type: '無', quantity: 1}), 55);
 assert.equal(Math.round((55 / 44.5 - 1) * 1000) / 10, 23.6,
   '89 buy-one-get-one followed by 55 no promotion is a 23.6% price INCREASE');
