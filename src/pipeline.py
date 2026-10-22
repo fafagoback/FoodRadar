@@ -107,13 +107,8 @@ def build_snapshot(output, config):
              'success_count':len(list((output/'menus').glob('*.json'))),'fail_count':0}
     summary_path=output/f'{batch}_nearby_stores_summary.json'
     summary_path.write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
-    from json_to_db import UberEatsDBImporter
-    importer=UberEatsDBImporter(str(output/'ubereats.db'), str(output/'menus'))
-    importer.init_database()
-    shutil.copy2(summary_path,output/'menus'/summary_path.name)
-    importer.import_all_data()
-    importer.close()
-    (output/'menus'/summary_path.name).unlink()
+    # Avoid building an unused second DB containing non-operating Raw menus.
+    # Hugging Face receives the untouched JSON archive below.
     import sqlite3
     from serving_state import apply_snapshot
     serving=output/'serving.db'
@@ -126,6 +121,7 @@ def build_snapshot(output, config):
     conn.row_factory=sqlite3.Row
     documents=[json.loads(p.read_text(encoding='utf-8')) for p in sorted((output/'menus').glob('*.json'))]
     counts=apply_snapshot(conn, documents, batch)
+    print(f"VALID_OPEN_STORES={counts['stores']} RAW_ONLY_CLOSED_STORES={counts['skipped_closed_stores']}", flush=True)
     conn.close()
     subprocess.run([sys.executable,str(ROOT/'scripts/build_web_db.py'),
                     str(serving),str(output/'packed-serving.db')],check=True)

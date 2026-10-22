@@ -74,14 +74,21 @@ def _schedule_open(doc: dict, when: datetime):
 
 def price_observation_valid(doc: dict, batch_id: str) -> bool:
     # Never infer that false/missing isOpen represents a verified payable price.
-    if doc.get('isOpen') is not True:
+    if doc.get('isOpen') is not True or doc.get('menu_status') == 'inactive_account':
+        return False
+    # A closure banner supersedes an occasional stale isOpen=True flag.
+    if str(doc.get('closedMessage') or '').strip():
         return False
     text = str(doc.get('workingHoursTagline') or '').strip().lower()
-    if text.startswith(('opens ', 'opens at ', 'closed', 'temporarily closed', 'currently closed')):
+    if text.startswith(('opens ', 'opening ', 'closed', 'temporarily closed',
+                        'currently closed', '未營業', '尚未營業', '休息中', '已打烊', '暫停營業')):
         return False
     hours = _schedule_open(doc, observed_at(doc, batch_id))
     if hours is False:
         return False
-    # No schedule supplied in an older source: use the API's affirmative flag,
-    # but reject an explicit "opens" / "closed" status above.
-    return True
+    if hours is True:
+        return True
+    # Absent or malformed schedule requires a positive OPEN tagline as well
+    # as isOpen=True. Unknown observations remain only in HF Raw.
+    return text.startswith(('open ', 'currently open', '24 hours', '24 小時',
+                            '營業中', '營業至', '營業到'))

@@ -18,6 +18,7 @@ from publish_turso_delta import plan_table
 def document(sid,pids):
     return {'@type':'Restaurant','@id':f'https://www.ubereats.com/tw/store/test/{sid}',
         'store_uuid':sid,'name':'測試餐廳','isOpen':True,
+        'openingHoursSpecification':[{'dayOfWeek':['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],'opens':'00:00','closes':'00:00'}],
         'address':{'streetAddress':'台北市測試路1號'},
         'hasMenu':{'hasMenuSection':[{'name':'飯','hasMenuItem':[
             {'identifier':pid,'name':'雞肉飯','offers':{'price':100}} for pid in pids]}]}}

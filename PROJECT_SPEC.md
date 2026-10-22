@@ -23,7 +23,7 @@
 
 - 同 UUID 店家當天或日後再次被抓到，保留原 `first_seen`，不重算新店。
 - 目前程式對店家有 `STORE_REAPPEARED` 事件，但**即使消失超過 60 天再出現，也不算新店**。這是現行約定；不要擅自把商品的 60 天規則套用到店家。
-- 「第一次爬到」不等於新開幕，亦不保證與同名店／更換 UUID 的店家可跨 ID 去重。
+- `first_seen` 只在店家首次**有效營業中觀測**時建立；HF Raw 的非營業時段快照不視為首次發現。「第一次爬到」不等於新開幕，亦不保證與同名店／更換 UUID 的店家可跨 ID 去重。
 - 新店的店家身份使用正規化 Uber Eats 店家 UUID。
 
 ### 2.3 老店新菜（首頁及「老店新菜推薦」）
@@ -49,13 +49,15 @@
 
 ## 3. 資料生命週期與防重複
 
-1. `src/crawl.py` 掃描此配送座標的店家，將同次 feed 依正規化店家 UUID 去重，抓取逐店菜單；任何店家抓取失敗即拒絕發布不完整快照。
+1. `src/crawl.py` 掃描此配送座標的店家，將同次 feed 依正規化店家 UUID 去重，抓取逐店菜單；任何店家抓取失敗即拒絕發布不完整快照。HF Raw 完整封存所有成功抓取的店家與菜單（含非營業時段）。
 2. `src/pipeline.py:restore_history` 優先從 Hugging Face 永久 normalized state 還原先前 `serving.db`（驗證 SHA-256、SQLite integrity 與批次一致性），再補入新於 checkpoint 的已完成 Raw 快照。
-3. `src/serving_state.py` 以店家 UUID、商品複合 UUID 查詢含 inactive 的歷史資料。存在則更新狀態但不重設 `first_seen`；不存在才插入並產生 `STORE_NEW` 或 `NEW` 事件。
+3. `src/price_observation.py` 統一校驗採集當下是否營業：必須 `isOpen=True`、不能有關店訊息、營業時段不能矛盾。缺少營業時間表時須有明確營業中文字訊號。未通過者只留 HF Raw，**不得新增／更新正式 stores、products、events、first_seen 或歷史價格**；僅用暫存 seen marker 防止假下架。
+4. `src/serving_state.py` 只對驗證通過的資料，以店家 UUID、商品複合 UUID 查詢含 inactive 的歷史資料。存在則更新狀態但不重設 `first_seen`；不存在才插入並產生 `STORE_NEW` 或 `NEW` 事件。
 4. 店家缺席會累積 `missing_streak`，達預設門檻成 `inactive`；回歸產生 `STORE_REAPPEARED`，不重設首次日期。
-5. 商品在可見且開放的店家菜單內缺席累積 `missing_streak`，達門檻成 `inactive`；滿 60 天再觀測時標記季節性回歸並更新本輪上架日期。
+5. 商品在可見且已驗證營業的店家菜單內缺席累積 `missing_streak`，達門檻成 `inactive`；滿 60 天再觀測時標記季節性回歸並更新本輪上架日期。
 6. `scripts/prototype_pack_db.py` 從歷史 state 建立查詢用 Packed DB：新店保留 `first_seen`；新商品以 `listing_started_at` 的七日視窗、基準日和店家首次日期產生 `f:new` 索引。
-7. Turso 使用只寫入必要差異的發布程序，驗證後才提交；原始快照與永久 state 保存在 HF。
+7. 靜態 JSON 及衍生 Parquet 採用同一營業判斷，防止另一條 ETL 路徑重新寫入髒資料。
+8. Turso 使用只寫入必要差異的發布程序，驗證後才提交；原始快照與僅含有效營業觀測的永久 state 保存在 HF。既有髒資料需重播 HF Raw 全量重建。
 
 ## 4. 正式系統架構
 

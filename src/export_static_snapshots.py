@@ -60,6 +60,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from json_to_db import UberEatsDBImporter
 from alert_engine import UberEatsAlertEngine
 from snapshot_validation import validate_document, validate_snapshot
+from price_observation import price_observation_valid
 
 TW_CITIES = [
     "基隆市", "台北市", "臺北市", "新北市", "桃園市", "新竹市", "新竹縣", "苗栗縣",
@@ -1037,6 +1038,10 @@ def export_all_static_snapshots(
         if not c_time:
             c_time = doc.get("batch_id") or "20260827164757"
 
+        # This disposable projection must not re-introduce rejected Raw
+        # observations into JSON, Parquet or historical price comparisons.
+        if not price_observation_valid(doc, c_time):
+            return
         detected_batches.add(c_time)
 
         store_id = get_md5_hash(store_url)

@@ -300,7 +300,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         DELETE FROM snapshot_seen_products;
     """)
     seen_stores: set[str] = set()
-    counts = {k: 0 for k in ("stores", "products", "new", "changed", "reappeared", "removed", "unchanged", "store_new", "store_changed", "store_reappeared", "store_removed", "fallback_stores", "fallback_products")}
+    counts = {k: 0 for k in ("stores", "products", "new", "changed", "reappeared", "removed", "unchanged", "store_new", "store_changed", "store_reappeared", "store_removed", "fallback_stores", "fallback_products", "skipped_closed_stores")}
 
     insert_stores_batch: list[tuple] = []
     update_stores_batch: list[tuple] = []
@@ -336,17 +336,21 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
 
     for doc in docs:
         sid, sfallback = store_identity(doc)
-        counts["fallback_stores"] += int(sfallback)
         if sid in seen_stores:
             continue
         seen_stores.add(sid)
+        # A connection-local seen marker suppresses false missing-item
+        # detection on closed hours, without persisting the rejected menu.
+        is_open = int(price_observation_valid(doc, batch_id))
+        conn.execute("INSERT OR REPLACE INTO snapshot_seen_stores VALUES(?,?)", (sid, is_open))
+        if not is_open:
+            counts["skipped_closed_stores"] += 1
+            continue
+
+        counts["fallback_stores"] += int(sfallback)
         counts["stores"] += 1
         if counts["stores"] > 1 and counts["stores"] % 100 == 1:
             flush_snapshot_batches()
-
-        is_open_val = doc.get("isOpen")
-        is_open = 1 if (is_open_val is True) else 0
-        conn.execute("INSERT OR REPLACE INTO snapshot_seen_stores VALUES(?,?)", (sid, is_open))
 
         address = doc.get("address") or {}
         rating = doc.get("aggregateRating") or {}
@@ -401,10 +405,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
             })
             changed_store_keys.add(sid)
 
-        # A store can have isOpen=true while its schedule says "Opens 9 AM" at 01 AM.
-        # Preserve raw off-hours prices in archived JSON, but never use them for
-        # current pricing, event histories or discount baselines.
-        store_price_valid = price_observation_valid(doc, batch_id)
+        # The shared store-open gate already rejected off-hours observations.
+        store_price_valid = True
         sections = (doc.get("hasMenu") or {}).get("hasMenuSection") or []
         store_product_keys: set[str] = set()
         for sec in sections:
