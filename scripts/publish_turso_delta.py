@@ -116,9 +116,10 @@ def plan_table(table, local_rows, published):
         # Packed store_id values are positional and may be re-numbered after
         # repairing Raw history. A UUID can move to another store_id even when
         # both IDs are still present: delete its old slot before any upsert.
-        old_ids_by_uuid = {row['store_uuid']: key for key,row in published.items()}
+        old_ids_by_uuid = {row['store_uuid']: key for key,row in published.items()
+                           if row.get('store_uuid') is not None}
         for key,row in candidate.items():
-            former = old_ids_by_uuid.get(row['store_uuid'])
+            former = old_ids_by_uuid.get(row.get('store_uuid'))
             if former is not None and former != key and former not in deleted:
                 deleted.append(former)
     return changed, deleted
