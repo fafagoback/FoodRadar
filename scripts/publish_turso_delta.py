@@ -112,6 +112,15 @@ def plan_table(table, local_rows, published):
     changed = [row for key, row in candidate.items()
                if key not in published or not same_row(row,published[key])]
     deleted = [key for key in published if key not in candidate]
+    if table == 'store_directory':
+        # Packed store_id values are positional and may be re-numbered after
+        # repairing Raw history. A UUID can move to another store_id even when
+        # both IDs are still present: delete its old slot before any upsert.
+        old_ids_by_uuid = {row['store_uuid']: key for key,row in published.items()}
+        for key,row in candidate.items():
+            former = old_ids_by_uuid.get(row['store_uuid'])
+            if former is not None and former != key and former not in deleted:
+                deleted.append(former)
     return changed, deleted
 
 
@@ -170,6 +179,15 @@ def publish(database, remote, apply=False):
                     size = 0
             for table, (changed, deleted) in plans.items():
                 keys = TABLE_KEYS[table]
+                # Delete first, then upsert. Upserting a renumbered store UUID
+                # before freeing its old store_id hits UNIQUE(store_uuid).
+                # This all runs inside the same transaction, so a failure
+                # rolls back both deletion and insertion.
+                for key in deleted:
+                    pending.append((f"DELETE FROM {table} WHERE {' AND '.join(k+'=?' for k in keys)}", key, False))
+                    if len(pending) >= 50:
+                        flush()
+                flush()
                 for row in changed:
                     cols = list(row)
                     updates = ','.join(f'{c}=excluded.{c}' for c in cols if c not in keys)
@@ -180,10 +198,6 @@ def publish(database, remote, apply=False):
                         flush()
                     pending.append((sql,args,False))
                     size += item_size
-                for key in deleted:
-                    pending.append((f"DELETE FROM {table} WHERE {' AND '.join(k+'=?' for k in keys)}", key, False))
-                    if len(pending) >= 50:
-                        flush()
             flush()
             # Verify every key/checksum and directory/metadata value before commit.
             for table in TABLE_KEYS:

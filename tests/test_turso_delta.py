@@ -74,6 +74,38 @@ class DeltaTests(unittest.TestCase):
         self.assertEqual(self.remote.query('SELECT checksum FROM store_bundles')[0]['checksum'],'first')
         self.assertEqual(json.loads(self.remote.query("SELECT value FROM metadata WHERE key='latest_batch'")[0]['value']),'20261006090919')
 
+    def test_packed_directory_id_swap_preserves_uuid_uniqueness(self):
+        self.local.executemany(
+            'INSERT INTO store_directory(store_id,store_uuid,name,chunk_count) VALUES(?,?,?,?)',
+            [(0,'uuid-a','A',1),(1,'uuid-b','B',1)])
+        self.local.commit()
+        publish(self.path,self.remote,True)
+        # Repacking can swap the position-based IDs of two known stores.
+        self.local.execute('UPDATE store_directory SET store_id=-1 WHERE store_id=0')
+        self.local.execute('UPDATE store_directory SET store_id=0 WHERE store_id=1')
+        self.local.execute('UPDATE store_directory SET store_id=1 WHERE store_id=-1')
+        self.local.commit()
+        report=publish(self.path,self.remote,True)
+        self.assertTrue(report['applied'])
+        self.assertEqual(report['tables']['store_directory']['upsert'],2)
+        self.assertEqual(report['tables']['store_directory']['delete'],2)
+        self.assertEqual([(r['store_id'],r['store_uuid']) for r in self.remote.query(
+            'SELECT store_id,store_uuid FROM store_directory ORDER BY store_id')],
+            [(0,'uuid-b'),(1,'uuid-a')])
+
+    def test_rebuilt_single_store_reuses_previous_uuid_with_new_id(self):
+        self.local.execute(
+            "INSERT INTO store_directory(store_id,store_uuid,name,chunk_count) VALUES(1,'uuid-a','A',1)")
+        self.local.commit()
+        publish(self.path,self.remote,True)
+        self.local.execute("UPDATE store_directory SET store_id=0 WHERE store_uuid='uuid-a'")
+        self.local.commit()
+        report=publish(self.path,self.remote,True)
+        self.assertTrue(report['applied'])
+        self.assertEqual(report['tables']['store_directory']['delete'],1)
+        self.assertEqual([(r['store_id'],r['store_uuid']) for r in self.remote.query(
+            'SELECT store_id,store_uuid FROM store_directory')],[(0,'uuid-a')])
+
     def test_original_database_url_is_rejected(self):
         with self.assertRaises(ValueError):
             Remote('https://ubereats-packed-v1-eeetchen.aws-ap-northeast-1.turso.io','unused')
