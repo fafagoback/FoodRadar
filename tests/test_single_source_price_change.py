@@ -30,7 +30,7 @@ class SingleSourcePriceChangeTests(unittest.TestCase):
         self.assertIn("product.price_direction", reader)
         self.assertIn("product.price_change_percent", reader)
         page = (ROOT / "web/app.js").read_text(encoding="utf-8")
-        self.assertIn("currentComparison.price_change_amount", page)
+        self.assertIn("compared.price_change_amount", page)
 
     def test_normalized_table_preserves_authoritative_fields(self):
         normalized = (ROOT / "src/serving_state.py").read_text(encoding="utf-8")
