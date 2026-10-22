@@ -220,6 +220,7 @@ def calculate_previous_discounts(conn: sqlite3.Connection, latest_batch: str, mi
                 "curr_qty": int(r["curr_qty"]),
                 "discount_pct": round(drop_pct, 1),
                 "savings_amount": round(savings, 1),
+                "is_price_drop": comparison["is_price_drop"],
                 "promo_type": promo_t,
                 "order_action_url": clean_url,
                 "rating_value": float(r["rating_value"]) if r["rating_value"] is not None else None,
@@ -743,8 +744,6 @@ def compute_cross_snapshot_intelligence(
             curr.price AS curr_raw_price,
             h.prev_qty,
             curr.quantity AS curr_qty,
-            ROUND((h.prev_eff_price - curr.eff_price) * 100.0 / h.prev_eff_price, 1) AS discount_pct,
-            ROUND(h.prev_eff_price - curr.eff_price, 1) AS savings_amount,
             curr.promo_type,
             curr.order_action_url,
             curr.rating_value,
@@ -757,14 +756,20 @@ def compute_cross_snapshot_intelligence(
         JOIN hist_prev h ON curr.product_id = h.product_id AND curr.store_id = h.store_id
         WHERE curr.eff_price > 0 
           AND curr.is_open = 1
-          AND curr.eff_price < h.prev_eff_price
-          AND (h.prev_eff_price - curr.eff_price) >= {min_savings_twd}
-          AND (h.prev_eff_price - curr.eff_price) * 100.0 / h.prev_eff_price >= {min_discount_pct}
-        ORDER BY discount_pct DESC, savings_amount DESC;
+          AND h.prev_eff_price > 0
+        ORDER BY curr.store_id, curr.product_id;
         """
         try:
-            discounts = [dict(r) for r in conn.execute(q_disc).to_arrow_table().to_pylist()]
-            print(f"   ├─ 發現降價大特價商品: {len(discounts):,} 筆")
+            for candidate in conn.execute(q_disc).to_arrow_table().to_pylist():
+                comparison = PriceChange.compare(candidate["original_price"], candidate["current_price"])
+                if not PriceChange.qualifies(comparison, min_discount_pct, min_savings_twd):
+                    continue
+                candidate["discount_pct"] = round(comparison["discount_pct"], 1)
+                candidate["savings_amount"] = comparison["savings"]
+                candidate["is_price_drop"] = comparison["is_price_drop"]
+                discounts.append(candidate)
+            discounts.sort(key=lambda item: (item["discount_pct"], item["savings_amount"]), reverse=True)
+            print(f"   ├─ 發現降價商品: {len(discounts):,} 筆")
         except Exception as e:
             print(f"⚠️ 計算降價特價時發生異常: {e}")
 
