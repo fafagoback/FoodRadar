@@ -46,6 +46,13 @@ async function main() {
   assert.equal(withoutNew[0].event_time, t0);
   assert.equal(normalized.some(e => e.event_type === 'BASELINE'), false, 'no duplicate baseline when NEW exists');
 
+  // Same listed price can have a different effective unit price as promotions start/end.
+  const promotionChange = event(142143, 'PROMOTION_CHANGED', '2026-10-21T09:00:00+08:00', 89);
+  promotionChange.new_state = state(89, {promo_type:'買1送1', quantity:2, effective_price:44.5});
+  const withPromotion = normalize([...events, promotionChange]);
+  assert.equal(withPromotion.length, 5, 'promotion-only unit-cost change must appear in the chart');
+  assert.equal(withPromotion[4].event_type, 'PROMOTION_CHANGED');
+
   const duplicatePrice = normalize([...events, event(142142, 'PRICE_CHANGED', t4, 175)]);
   assert.equal(duplicatePrice.length, 4, 'same-second duplicate price events are collapsed');
   assert.equal(normalize([...events, event(143333,'PRICE_CHANGED','2026-10-21T00:00:00+08:00',0)]).length,4,
