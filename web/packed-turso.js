@@ -188,10 +188,12 @@ function dedupeProducts(products) {
 
 function productView(product, store) {
   const price = Number(product.price || 0);
-  // Raw payable menu price is authoritative; legacy effective_price may have applied a direct discount twice.
-  const effective = price;
+  // Derive true per-unit cost from the raw payable menu price and promotion.
+  // Do not trust legacy effective_price (it could double-apply a direct discount).
+  // Historical reference_price is now the PREVIOUS effective unit cost.
+  const effective = window.UBER_DATA_CONTRACT.unitPrice(price, product.promo_type, product.quantity);
   const refPrice = Number(product.reference_price || 0);
-  const originalPrice = (refPrice > price) ? refPrice : price;
+  const originalPrice = (refPrice > effective) ? refPrice : effective;
   const historicalSaving = Number(product.discount_amount || 0);
   return {
     product_id: product.product_uuid,
@@ -220,7 +222,7 @@ function productView(product, store) {
     first_seen: product.first_seen,
     listing_started_at: product.listing_started_at || product.first_seen,
     original_price: originalPrice,
-    current_price: price,
+    current_price: effective,
     discount_pct: Number(product.discount_pct || 0),
     savings_amount: historicalSaving,
     is_price_deal: Number(product.is_price_deal || 0),
@@ -528,7 +530,8 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
 // History charts show one observed price per crawl, not one row per
 // PRICE_CHANGED / CONTENT_CHANGED event emitted by the same crawl.
 export function normalizePriceHistoryEvents(events) {
-  const priority = { BASELINE: 0, NEW: 1, PRICE_OBSERVED: 2, PRICE_CHANGED: 3 };
+  // A promotion change can change unit cost even when the raw menu price is stable.
+  const priority = { BASELINE: 0, NEW: 1, PRICE_OBSERVED: 2, PROMOTION_CHANGED: 3, PRICE_CHANGED: 4 };
   const priceEvents = (events || []).filter(e =>
     Object.prototype.hasOwnProperty.call(priority, e.event_type));
 
