@@ -17,7 +17,7 @@ permissions:
   id-token: write
 concurrency:
   group: foodradar-publish
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[emergency-stop-rebuild]') }}
 jobs:
   crawl:
     runs-on: ubuntu-latest
