@@ -57,6 +57,7 @@ class PriceChange:
         return {
             "reference_price": comparison["previous"] if comparison else None,
             "price_direction": comparison["direction"] if comparison else "unknown",
+            "is_price_drop": int(comparison["is_price_drop"]) if comparison else 0,
             "price_change_amount": comparison["change"] if comparison else 0.0,
             "price_change_percent": comparison["change_percent"] if comparison else 0.0,
             "discount_amount": comparison["savings"] if comparison else 0.0,
