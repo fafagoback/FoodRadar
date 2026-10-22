@@ -24,6 +24,18 @@ class EffectivePriceTests(unittest.TestCase):
         self.assertEqual(calculate_effective_price(100, "第2件半價", 1), 75)
         self.assertEqual(calculate_effective_price(100, "加1元多1件", 2), 50.50)
 
+    def test_invalid_prices_are_excluded_before_comparison(self):
+        for price in (None, 'NaN', float('nan'), float('inf'), float('-inf'), 'not a price', 0, -3):
+            with self.subTest(price=str(price)):
+                self.assertEqual(calculate_effective_price(price, '買1送1', 2), 0.0)
+
+    def test_numeric_conversion_rejects_non_finite_values(self):
+        from serving_state import _num
+        for value in ('NaN', float('inf'), float('-inf')):
+            with self.subTest(value=str(value)):
+                self.assertEqual(_num(value, float, 0), 0)
+                self.assertIsNone(_num(value, float, None))
+
     def test_regular_product_is_unchanged(self):
         self.assertEqual(calculate_effective_price(168.30, "無", 1), 168.30)
 

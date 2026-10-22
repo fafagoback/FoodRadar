@@ -155,6 +155,13 @@ export function distanceKm(a, b, c, d) {
   const q = Math.sin(x / 2) ** 2 + Math.cos(a * p) * Math.cos(c * p) * Math.sin(y / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(q));
 }
+function locationBounds(lat, radiusKm) {
+  // SQL rectangles only pre-filter candidates; the precise distance check is authoritative.
+  const dy = (radiusKm * 1.05) / 110.5;
+  const maxLat = Math.min(89, Math.abs(lat) + dy);
+  const dx = (radiusKm * 1.05) / Math.max(1, 111.32 * Math.cos(maxLat * Math.PI / 180));
+  return { dy, dx };
+}
 
 function inLocation(store, location) {
   if (!location?.enabled) return true;
@@ -277,7 +284,7 @@ export async function getStoresInLocation(location) {
   const key = JSON.stringify([Number(location.latitude), Number(location.longitude), Number(location.radiusKm)]);
   if (locationStoresCache.key === key) return locationStoresCache;
   const lat = Number(location.latitude), lon = Number(location.longitude), r = Number(location.radiusKm);
-  const dy = r / 111.32, dx = r / Math.max(1, 111.32 * Math.cos(lat * Math.PI / 180));
+  const { dy, dx } = locationBounds(lat, r);
   const rows = await sql(`select * from store_directory where status='active' and is_open=1 and latitude between ${lat - dy} and ${lat + dy} and longitude between ${lon - dx} and ${lon + dx} order by rating desc nulls last, review_count desc limit 50000`);
   const allStores = rows.map(r => ({
     store_id: Number(r.store_id),
@@ -322,9 +329,7 @@ async function productsFromRefs(refs, location, limit = 50000, accepts = () => t
   if (location?.enabled) {
     const lat = Number(location.latitude), lon = Number(location.longitude), r = Number(location.radiusKm);
     // 預先過濾外接矩形 (Bounding Box)，加 5% 安全裕度避免地表橢球曲率造成邊界誤切
-    const dy = (r * 1.05) / 110.5;
-    const maxLat = Math.min(89, Math.abs(lat) + dy);
-    const dx = (r * 1.05) / Math.max(1, 111.32 * Math.cos(maxLat * Math.PI / 180));
+    const { dy, dx } = locationBounds(lat, r);
     const validStoreIds = [];
 
     // 針對搜尋命中的候選店家直接進行座標與精確距離測算，不再盲取全區前 5000 家
@@ -440,7 +445,7 @@ export async function searchStores({ keyword = '', location = null, newOnly = fa
   }
   if (location?.enabled) {
     const lat = Number(location.latitude), lon = Number(location.longitude), r = Number(location.radiusKm);
-    const dy = r / 111.32, dx = r / Math.max(1, 111.32 * Math.cos(lat * Math.PI / 180));
+    const { dy, dx } = locationBounds(lat, r);
     where += ` and latitude between ${lat - dy} and ${lat + dy} and longitude between ${lon - dx} and ${lon + dx}`;
   }
   if (newOnly) {

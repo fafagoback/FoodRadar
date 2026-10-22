@@ -15,7 +15,7 @@ const blob = {
   event_columns: ['product_uuid', 'id', 'event_type', 'event_time', 'old_state', 'new_state'],
   events: [['p', 1, 'NEW', '2026-10-22T12:00:00+08:00', null, value]]
 };
-let bundleSelects = 0, locationSelects = 0, lastStoreSearch = '';
+let bundleSelects = 0, locationSelects = 0, lastStoreSearch = '', lastLocationSearch = '';
 function result(rows) {
   const cols = Object.keys(rows[0] || {}).map(name => ({name}));
   return {results: [{type:'ok', response:{result:{cols, rows:rows.map(r =>
@@ -37,6 +37,7 @@ globalThis.fetch = async (_url, opts) => {
   }
   if (sql.includes('from store_directory') && sql.includes('latitude between')) {
     locationSelects++;
+    lastLocationSearch = sql;
     return {ok:true,json:async()=>result([])};
   }
   if (sql.includes('from store_directory') && sql.includes('status=')) {
@@ -57,6 +58,10 @@ globalThis.fetch = async (_url, opts) => {
   await reader.getStoresInLocation(pos1);
   await reader.getStoresInLocation(pos2);
   assert.equal(locationSelects,2,'distinct input coordinates cannot share a rounded cache key');
+  const bound = lastLocationSearch.match(/latitude between ([\d.-]+) and ([\d.-]+)/);
+  assert.ok(bound,'location filter query must have a latitude bounding box');
+  assert.ok(Number(bound[2]) - Number(bound[1]) > 2 * 5 / 111.32,
+    'geospatial SQL prefilter must include edge locations for exact distance checks');
   await reader.searchStores({keyword:'好市多 天母'});
   assert.match(lastStoreSearch,/instr\(lower\(name\),'costco'\)/);
   assert.match(lastStoreSearch,/instr\(lower\(name\),'天母'\)/);

@@ -20,6 +20,7 @@
 import os
 import sys
 import json
+import math
 import glob
 import time
 import html
@@ -163,11 +164,14 @@ def calculate_effective_price(price: float, promo_type: Optional[str], quantity:
     6. 一般無促銷:
        若 quantity > 1 則 標價 / quantity，否則即為標價
     """
-    if price is None or price <= 0:
+    try:
+        p_float = float(price)
+    except (TypeError, ValueError, OverflowError):
         return 0.0
-        
+    if not math.isfinite(p_float) or p_float <= 0:
+        return 0.0
+
     p_type = str(promo_type or "無").strip()
-    p_float = float(price)
 
     # 1. 買 B 送 F (包含中文與英文 Buy X Get Y)
     m_buy = re.search(r"買\s*([0-9一二兩三四五])\s*送\s*([0-9一二兩三四五])", p_type)

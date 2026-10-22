@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import sqlite3
@@ -169,8 +170,9 @@ def iter_documents(source: str | Iterable[dict[str, Any]]) -> Iterable[dict[str,
 
 def _num(value: Any, typ=float, default=0):
     try:
-        return typ(value)
-    except (TypeError, ValueError):
+        converted = typ(value)
+        return default if isinstance(converted, float) and not math.isfinite(converted) else converted
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
