@@ -22,7 +22,7 @@ def build_web_db(source, target):
         dst.execute(f'UPDATE {table} SET last_seen=first_seen WHERE missing_streak=0')
         dst.execute(f'UPDATE {table} SET missing_streak=0')
     dst.execute("UPDATE products SET recent_prices='[]',price_novel_vs_previous_3=0")
-    dst.execute('UPDATE products SET reference_price=NULL WHERE is_price_deal=0')
+    # Keep the previous verified unit price for flat/rising and small drops too.
     dst.commit()
     dst.close()
     build(str(projection), str(target))
