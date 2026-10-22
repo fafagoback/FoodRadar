@@ -61,7 +61,7 @@ from json_to_db import UberEatsDBImporter
 from alert_engine import UberEatsAlertEngine
 from snapshot_validation import validate_document, validate_snapshot
 from price_observation import price_observation_valid
-from price_change import compare_effective_prices
+from price_change import PriceChange
 
 TW_CITIES = [
     "基隆市", "台北市", "臺北市", "新北市", "桃園市", "新竹市", "新竹縣", "苗栗縣",
@@ -198,13 +198,11 @@ def calculate_previous_discounts(conn: sqlite3.Connection, latest_batch: str, mi
         if prev_eff is None or prev_eff <= 0:
             continue
 
-        comparison = compare_effective_prices(prev_eff, curr_eff)
-        if comparison is None or comparison["direction"] != "down":
-            continue
-        savings = comparison["savings"]
-        drop_pct = comparison["discount_pct"]
-        promo_t = r["promo_type"] or "無"
-        if drop_pct >= min_discount_pct and savings >= min_savings_twd:
+        comparison = PriceChange.compare(prev_eff, curr_eff)
+        if PriceChange.qualifies(comparison, min_discount_pct, min_savings_twd):
+            savings = comparison["savings"]
+            drop_pct = comparison["discount_pct"]
+            promo_t = r["promo_type"] or "無"
             raw_url = r["order_action_url"] or ""
             clean_url = raw_url.replace("&amp;", "&")
             discounts.append({
