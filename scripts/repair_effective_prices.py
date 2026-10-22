@@ -54,6 +54,7 @@ def repair(db_path):
         if deal_columns.issubset(columns):
             for name, definition in (
                 ("price_direction", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ("is_price_drop", "INTEGER NOT NULL DEFAULT 0"),
                 ("price_change_amount", "REAL NOT NULL DEFAULT 0"),
                 ("price_change_percent", "REAL NOT NULL DEFAULT 0"),
             ):
@@ -86,12 +87,13 @@ def repair(db_path):
                 deal_updates.append((
                     fields["reference_price"], fields["discount_amount"],
                     fields["discount_pct"], fields["is_price_deal"],
-                    fields["price_direction"], fields["price_change_amount"],
+                    fields["price_direction"], fields["is_price_drop"],
+                    fields["price_change_amount"],
                     fields["price_change_percent"], sid, pid
                 ))
             conn.executemany(
                 """UPDATE products SET reference_price=?,discount_amount=?,
-                   discount_pct=?,is_price_deal=?,price_direction=?,
+                   discount_pct=?,is_price_deal=?,price_direction=?,is_price_drop=?,
                    price_change_amount=?,price_change_percent=?
                    WHERE store_uuid=? AND product_uuid=?""",
                 deal_updates
