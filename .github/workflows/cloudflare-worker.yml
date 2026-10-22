@@ -1,0 +1,53 @@
+name: FoodRadar Cloudflare Worker check
+on:
+  push:
+    branches: [main]
+    paths: ['worker/**', '.github/workflows/cloudflare-worker.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: github-pages
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
+      TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+      TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe credentials without displaying values
+        id: probe
+        shell: bash
+        run: |
+          missing=()
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || missing+=(CLOUDFLARE_API_TOKEN)
+          [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [[ -n "$TURSO_DATABASE_URL" ]] || missing+=(FOODRADAR_TURSO_DATABASE_URL)
+          [[ -n "$TURSO_READONLY_TOKEN" ]] || missing+=(FOODRADAR_TURSO_READONLY_TOKEN)
+          if (( ${#missing[@]} )); then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Missing: ${missing[*]}"
+            echo "Deployment skipped. Missing: ${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "Credentials present. Checking Cloudflare validity." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Check token validity
+        if: steps.probe.outputs.ready == 'true'
+        run: |
+          curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify | python3 -c 'import json,sys; j=json.load(sys.stdin); ok=j.get("success") and j.get("result",{}).get("status")=="active"; print("Cloudflare token active:",bool(ok)); sys.exit(0 if ok else 1)'
+      - uses: actions/setup-node@v4
+        if: steps.probe.outputs.ready == 'true'
+        with:
+          node-version: '22'
+      - name: Deploy isolated Worker
+        if: steps.probe.outputs.ready == 'true'
+        working-directory: worker
+        run: |
+          npx --yes wrangler@4 deploy
+          printf '%s' "$TURSO_DATABASE_URL" | npx --yes wrangler@4 secret put TURSO_DATABASE_URL
+          printf '%s' "$TURSO_READONLY_TOKEN" | npx --yes wrangler@4 secret put TURSO_READONLY_TOKEN
+          echo "Worker deployed; existing FoodRadar Pages unchanged." >> "$GITHUB_STEP_SUMMARY"
