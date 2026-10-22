@@ -152,9 +152,9 @@ class PriceValidityTests(unittest.TestCase):
         # Uber menu offer price is the discounted payable amount (30),
         # while the original 100 is only promotional context.
         discounted = menu('20261013091759', 30)
-        item = discounted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
-        item['promo_type'] = '3折特惠'
+        discounted['hasMenu']['hasMenuSection'][0]['name'] = '3折特惠'
         apply_snapshot(self.conn, [discounted], '20261013091759')
+        self.assertEqual(self.conn.execute('SELECT promo_type FROM products').fetchone()[0], '3折特惠')
 
         regular = menu('20261014091759', 50)
         apply_snapshot(self.conn, [regular], '20261014091759')
@@ -172,8 +172,7 @@ class PriceValidityTests(unittest.TestCase):
         regular = menu('20261013091759', 50)
         apply_snapshot(self.conn, [regular], '20261013091759')
         discounted = menu('20261014091759', 30)
-        item = discounted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
-        item['promo_type'] = '3折特惠'
+        discounted['hasMenu']['hasMenuSection'][0]['name'] = '3折特惠'
         apply_snapshot(self.conn, [discounted], '20261014091759')
         row = self.conn.execute(
             'SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products'
