@@ -985,8 +985,8 @@ function productPromo(row) {
   const p = window.UBER_DATA_CONTRACT.product(row);
   const promo = calculateEffectivePromo(p.price, p.promo_type, p.quantity);
   if (!p.valid_price) return {...promo, effPrice: null, isPromo: false, totalQty: 1, discountText: ''};
-  // Always derive display unit cost from the raw payable price. Older DB rows may contain double-discounted effective_price.
-  return promo;
+  // Every card uses the same canonical price as the graph and deal comparison.
+  return {...promo, effPrice: window.UBER_DATA_CONTRACT.unitPrice(p.price, p.promo_type, p.quantity)};
 }
 
 function calculateEffectivePromo(price, promoType, quantity) {
@@ -1017,7 +1017,13 @@ function calculateEffectivePromo(price, promoType, quantity) {
     };
   }
 
-  // 2. 匹配「第2件半價」/「第2杯半價」
+  // 2. English BOGO / archived 買A送B are equivalent to 買1送1.
+  if (type === '買A送B' || type.toUpperCase() === 'BOGO') {
+    return { effPrice: p / 2, totalQty: 2, buyQty: 1, freeQty: 1, ratio: 0.5,
+      discountText: '5折', rawPrice: p, isPromo: true };
+  }
+
+  // 3. 匹配「第2件半價」/「第2杯半價」
   if (/第\s*[2二兩]\s*[件杯項份]\s*半價/.test(type)) {
     const eff = (p * 1.5) / 2;
     const ratio = 0.75;
