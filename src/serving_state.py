@@ -9,9 +9,11 @@ from __future__ import annotations
 try:
     from .city_normalization import canonical_city
     from .json_to_db import extract_promo_info, calculate_effective_price
+    from .price_change import compare_effective_prices
 except ImportError:
     from city_normalization import canonical_city
     from json_to_db import extract_promo_info, calculate_effective_price
+    from price_change import compare_effective_prices
 
 import argparse
 import hashlib
@@ -481,11 +483,13 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         # Price drops, price rises and promotion start/end MUST be
                         # compared on the same per-unit basis (not menu list price).
                         previous_unit = float(old["effective_price"] or 0) if old["recent_prices"] else 0
-                        reference_price = round(previous_unit, 2) if previous_unit > 0 else None
-                        price_novel = int(reference_price is not None and round(effective, 2) != reference_price)
-                        discount_amount = round(reference_price - effective, 2) if reference_price and effective < reference_price else 0
-                        discount_pct = round(discount_amount / reference_price * 100, 2) if discount_amount and reference_price else 0
-                        is_price_deal = int(discount_pct >= 30)
+                        comparison = compare_effective_prices(previous_unit, effective)
+                        reference_price = comparison["previous"] if comparison else None
+                        price_novel = int(bool(comparison and comparison["change"] != 0))
+                        discount_amount = comparison["savings"] if comparison else 0
+                        discount_pct = comparison["discount_pct"] if comparison else 0
+                        # >=30% is only a UI filter; any strictly lower unit cost is a drop.
+                        is_price_deal = int(bool(comparison and comparison["direction"] == "down" and discount_pct >= 30))
                         # recent_prices stores last verified raw price for off-hours
                         # protection; reference_price stores prior effective unit cost.
                         next_recent_prices = [price]
