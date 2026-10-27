@@ -36,6 +36,26 @@ const fs = require('node:fs');
       'dashboard must disclose the valid comparison denominator, not only a zero');
     console.log('DEAL_COMPARISON_COVERAGE ' + coverage);
 
+    // Archived menu quotes must remain separately marked as non-payable
+    // references. Verify the actual rendered cards match published metadata.
+    const archivedMeta = await page.evaluate(async () => {
+      const db = await import('./packed-turso.js');
+      return db.metadata();
+    });
+    await page.waitForFunction(() => {
+      const label = document.querySelector('#archive-quote-count')?.textContent?.trim() || '';
+      return /^另有 [\d,]+ 件使用舊菜單報價推算/.test(label);
+    }, null, { timeout: 90000 });
+    const archivedLabel = (await page.locator('#archive-quote-count').innerText()).trim();
+    const archivedVisible = Number(archivedLabel.match(/^另有 ([\d,]+) 件/)[1].replace(/,/g, ''));
+    const archivedExpected = Number(archivedMeta.archive_30pct_candidates || 0);
+    const archivedCards = await page.locator('#archive-quote-grid article').count();
+    assert.equal(archivedVisible, archivedExpected, 'archived reference count matches Turso');
+    assert.equal(archivedCards, archivedExpected, 'each archival suggestion must render');
+    for (const card of await page.locator('#archive-quote-grid article').all()) {
+      assert.match((await card.innerText()), /菜單參考/, 'archive suggestions must be visibly non-verified');
+    }
+    console.log('LIVE_ARCHIVE_QUOTE_COUNTS ' + JSON.stringify({archivedExpected, archivedVisible, archivedCards}));
     // The promotions filter belongs to a hidden tab; activate it as a real user does.
     const promotionsTab = page.locator('.nav-tab[data-target="tab-promos"]');
     await promotionsTab.click();
