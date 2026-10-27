@@ -130,8 +130,9 @@ def repair(db_path):
                     histories[(sid, pid)].append((when, unit))
         week_updates = []
         week_deals = 0
+        seen_sql = "last_seen" if "last_seen" in columns else "NULL AS last_seen"
         for sid, pid, unit, last_seen in conn.execute(
-            "SELECT store_uuid,product_uuid,effective_price,last_seen FROM products"
+            f"SELECT store_uuid,product_uuid,effective_price,{seen_sql} FROM products"
         ):
             seven = PriceChange.seven_day_high(
                 histories.get((sid, pid), ()), last_batch, unit) if last_batch == last_seen else None
