@@ -24,12 +24,52 @@ import hashlib
 import base64
 import uuid
 import threading
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from snapshot_validation import validate_document
 
 TW_TZ = timezone(timedelta(hours=8))
+
+def attach_delivery_location(session, store_item: dict) -> bool:
+    """Use the same actual delivery coordinate for getStoreV1 as getFeedV1.
+
+    Without the location cookie, Uber can return an out-of-area/closed
+    store status despite returning a menu. A valid OPEN signal is still
+    required separately by price_observation_valid.
+    """
+    points = store_item.get("discovered_points") or []
+    if not points or not isinstance(points[0], dict):
+        return False
+    point = points[0]
+    try:
+        latitude = float(point["lat"])
+        longitude = float(point["lon"])
+    except (KeyError, ValueError, TypeError):
+        return False
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return False
+    county = str(point.get("county") or "台北市")
+    address_ref = f"{county}座標點#foodradar"
+    location_cookie = {
+        "address": {
+            "address1": address_ref, "address2": "", "aptOrSuite": "",
+            "city": county, "country": "TW", "postalCode": "100",
+            "region": ""
+        },
+        "latitude": latitude, "longitude": longitude,
+        "reference": address_ref, "referenceType": "google_places",
+        "type": "google_places"
+    }
+    session.cookies.set(
+        "uev2.loc",
+        urllib.parse.quote(json.dumps(location_cookie, ensure_ascii=False)),
+        domain=".ubereats.com"
+    )
+    return True
+
+
 
 # 確保標準輸出支援 UTF-8
 if hasattr(sys.stdout, 'reconfigure'):
@@ -395,6 +435,7 @@ def fetch_single_store(store_item: dict, output_dir: str, time_prefix: str = "",
     store_id = get_md5_hash(store_url)
     
     session = requests.Session()
+    attach_delivery_location(session, store_item)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "*/*",

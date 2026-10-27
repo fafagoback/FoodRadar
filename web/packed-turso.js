@@ -232,7 +232,7 @@ function productView(product, store) {
     latitude: Number(store.latitude),
     longitude: Number(store.longitude),
     distance_km: store.distance_km ?? null,
-    crawled_time: releaseMeta.latest_processed_at || product.last_seen,
+    crawled_time: product.last_seen || releaseMeta.latest_processed_at,
     first_seen: product.first_seen,
     listing_started_at: product.listing_started_at || product.first_seen,
     original_price: originalPrice,

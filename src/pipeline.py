@@ -1,5 +1,6 @@
 """Use UberEat's archive and ETL contracts for a single delivery coordinate."""
 import contextlib
+from collections import Counter
 import gzip
 import hashlib
 import json
@@ -122,6 +123,33 @@ def build_snapshot(output, config):
     documents=[json.loads(p.read_text(encoding='utf-8')) for p in sorted((output/'menus').glob('*.json'))]
     counts=apply_snapshot(conn, documents, batch)
     conn.close()
+    # Distinguish successful menu downloads from *valid payable-price*
+    # observations. A run containing only rejected observations is not a
+    # successful price refresh; report the rejection signature explicitly.
+    from price_observation import price_observation_valid
+    audit = {
+        "captured_stores": len(documents),
+        "valid_price_stores": counts["stores"],
+        "raw_only_stores": counts["skipped_closed_stores"],
+        "is_open": dict(Counter(
+            "true" if doc.get("isOpen") is True else
+            "false" if doc.get("isOpen") is False else "missing"
+            for doc in documents)),
+        "menu_status": dict(Counter(str(doc.get("menu_status")) for doc in documents)),
+        "closed_message_present": sum(bool(str(doc.get("closedMessage") or "").strip()) for doc in documents),
+        "hours_spec_present": sum(bool(doc.get("openingHoursSpecification")) for doc in documents),
+        "tagline": dict(Counter(
+            "open" if str(doc.get("workingHoursTagline") or "").lower().startswith(("open ", "currently open", "營業中", "營業至", "營業到")) else
+            "opens_later" if str(doc.get("workingHoursTagline") or "").lower().startswith(("opens ", "opening ", "尚未營業", "休息中")) else
+            "other_or_empty"
+            for doc in documents)),
+    }
+    assert sum(bool(price_observation_valid(doc, batch)) for doc in documents) == counts["stores"]
+    print("PRICE_OBSERVATION_AUDIT=" + json.dumps(audit, ensure_ascii=False), flush=True)
+    report_path = output / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["price_observation_audit"] = audit
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     # Recompute legacy promotion/discount baselines before building the
     # published web DB and the persisted HF normalized checkpoint.
     sys.path.insert(0, str(ROOT/'scripts'))
