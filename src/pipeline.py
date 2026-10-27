@@ -26,6 +26,7 @@ def restore_history(config, rebuild_all=False):
     previous=ROOT/'data/latest.txt'
     local_batch=previous.read_text(encoding='utf-8').strip() if previous.exists() else ''
     conn=None
+    verified_manifest_paths=[]
     checkpoint_path=f'{folder}/state/latest.json'
     if not rebuild_all and not local_batch and checkpoint_path in files:
         checkpoint=json.loads(Path(hf_hub_download(config['hf_repo_id'],checkpoint_path,repo_type='dataset')).read_text(encoding='utf-8'))
@@ -65,6 +66,8 @@ def restore_history(config, rebuild_all=False):
             if len(docs)!=meta['store_count']:
                 raise ValueError('HF store count mismatch')
             apply_snapshot(conn,docs,batch)
+            if rebuild_all:
+                verified_manifest_paths.append(manifest_path + ':' + meta['sha256'])
             if not rebuild_all:
                 saved=sqlite3.connect(target/'serving.db')
                 conn.backup(saved)
@@ -81,6 +84,26 @@ def restore_history(config, rebuild_all=False):
             saved=sqlite3.connect(target/'serving.db')
             conn.backup(saved)
             saved.close()
+            # This attestation is written ONLY by an uninterrupted replay
+            # after each complete Raw archive passed SHA256 and store-count
+            # verification. The publisher may accept a deliberate catalogue
+            # shrink only with this evidence, never with an arbitrary flag.
+            if len(verified_manifest_paths) != len(manifests):
+                raise ValueError('Incomplete HF Raw replay: cannot authorize replacement')
+            evidence = {
+                'format': 'foodradar-full-raw-replay-v1',
+                'batch_id': local_batch,
+                'verified_manifest_count': len(verified_manifest_paths),
+                'manifest_digest': hashlib.sha256(
+                    '\\n'.join(verified_manifest_paths).encode()).hexdigest(),
+                'source_counts': {
+                    'stores': conn.execute('SELECT COUNT(*) FROM stores').fetchone()[0],
+                    'products': conn.execute('SELECT COUNT(*) FROM products').fetchone()[0],
+                    'crawl_batches': conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0],
+                },
+            }
+            (target/'verified-rebuild.json').write_text(
+                json.dumps(evidence,indent=2),encoding='utf-8')
             print(f'REBUILT_VALID_PRICE_HISTORY batch={local_batch} snapshots={len(manifests)}',flush=True)
         for path in files:
             if path.startswith(f'{folder}/Parquet/history/') and path.endswith('.parquet'):

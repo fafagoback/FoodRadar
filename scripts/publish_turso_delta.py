@@ -125,7 +125,32 @@ def plan_table(table, local_rows, published):
     return changed, deleted
 
 
-def publish(database, remote, apply=False):
+def verified_rebuild_evidence(path, local_meta, old_meta):
+    if not path:
+        return False
+    try:
+        proof = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError,ValueError) as exc:
+        raise ValueError('Full Raw replay proof missing or invalid') from exc
+    local_counts = json.loads(local_meta.get('source_counts','{}'))
+    previous_counts = json.loads(old_meta.get('source_counts','{}'))
+    required_count = int(local_counts.get('crawl_batches',0))
+    verified_count = proof.get('verified_manifest_count')
+    if (proof.get('format') != 'foodradar-full-raw-replay-v1'
+        or proof.get('batch_id') != json.loads(local_meta.get('latest_batch','null'))
+        or not isinstance(verified_count,int) or verified_count < 1
+        or verified_count != required_count
+        or verified_count < int(previous_counts.get('crawl_batches',0))
+        or proof.get('source_counts',{}).get('stores') != int(local_counts.get('stores',-1))
+        or proof.get('source_counts',{}).get('products') != int(local_counts.get('products',-1))
+        or not isinstance(proof.get('manifest_digest'),str)
+        or len(proof['manifest_digest']) != 64
+    ):
+        raise ValueError('Full Raw replay proof does not match packed release or prior archive coverage')
+    return True
+
+
+def publish(database, remote, apply=False, verified_rebuild_manifest=None):
     conn = sqlite3.connect(f'{Path(database).resolve().as_uri()}?mode=ro', uri=True)
     conn.row_factory = sqlite3.Row
     try:
@@ -138,13 +163,15 @@ def publish(database, remote, apply=False):
             raise ValueError('Refusing an existing database owned by another application')
         if old_meta and old_meta.get('schema_version') != local_meta['schema_version']:
             raise ValueError('Schema changes require a new versioned database')
+        trusted_rebuild = verified_rebuild_evidence(
+            verified_rebuild_manifest, local_meta, old_meta)
         # A historical Raw archive can be incomplete even when its checksum is
         # valid. Never turn a re-pack into a destructive mass purge of known
         # stores or products without a separately audited source of truth.
         if 'store_directory' in tables:
             remote_stores = int(remote.query('SELECT COUNT(*) AS count FROM store_directory')[0]['count'])
             local_stores = int(conn.execute('SELECT COUNT(*) FROM store_directory').fetchone()[0])
-            if remote_stores >= 100 and local_stores < remote_stores * 0.7:
+            if remote_stores >= 100 and local_stores < remote_stores * 0.7 and not trusted_rebuild:
                 raise ValueError(
                     f'Unsafe store shrink: {remote_stores} -> {local_stores}; '
                     'HF Raw replay may omit historical snapshots. Refusing publish.')
@@ -154,7 +181,7 @@ def publish(database, remote, apply=False):
             for kind in ('stores','products'):
                 before = int(before_counts.get(kind, 0))
                 after = int(after_counts.get(kind, 0))
-                if before >= 100 and after < before * 0.7:
+                if before >= 100 and after < before * 0.7 and not trusted_rebuild:
                     raise ValueError(
                         f'Unsafe {kind} shrink: {before} -> {after}; '
                         'do not replace a durable checkpoint with incomplete HF Raw.')
@@ -172,7 +199,8 @@ def publish(database, remote, apply=False):
             write_bytes += sum(len(json.dumps([cell(v) for v in row.values()]).encode()) for row in changed)
             stats[table] = {'upsert': len(changed), 'delete': len(deleted), 'total': len(local)}
         report = {'previous_batch': previous_batch, 'latest_batch': target_batch,
-                  'initialization': not bool(old_meta), 'delta_bytes': write_bytes,
+                  'initialization': not bool(old_meta),
+                  'verified_full_raw_rebuild': trusted_rebuild, 'delta_bytes': write_bytes,
                   'tables': stats, 'applied': False}
         if write_bytes > MAX_DELTA_BYTES:
             raise ValueError('Daily delta exceeds 250 MiB; refusing full replacement')
@@ -248,11 +276,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('database')
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--verified-rebuild-manifest',default=None)
     parser.add_argument('--report', default='delta-report.json')
     args = parser.parse_args()
     remote = Remote(os.environ['TURSO_DATABASE_URL'], os.environ['TURSO_AUTH_TOKEN'])
     try:
-        report = publish(args.database, remote, args.apply)
+        report = publish(args.database, remote, args.apply, args.verified_rebuild_manifest)
         Path(args.report).write_text(json.dumps(report, indent=2), encoding='utf-8')
         print(json.dumps(report))
     finally:

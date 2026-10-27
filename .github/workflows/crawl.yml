@@ -71,10 +71,15 @@ jobs:
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.FOODRADAR_TURSO_WRITE_TOKEN }}
+          FOODRADAR_REBUILD: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[rebuild-price-history]') && '1' || '0' }}
         run: |
           BATCH=$(cat data/latest.txt)
           python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
-          python scripts/publish_turso_delta.py "data/$BATCH/packed-serving.db" --apply --report delta-report.json
+          EXTRA=()
+          if [ "$FOODRADAR_REBUILD" = "1" ]; then
+            EXTRA=(--verified-rebuild-manifest "data/$BATCH/verified-rebuild.json")
+          fi
+          python scripts/publish_turso_delta.py "data/$BATCH/packed-serving.db" --apply "${EXTRA[@]}" --report delta-report.json
       - name: Verify Burger King discounted price in published web dataset
         run: python scripts/verify_burger_king_price.py
       - name: Persist fully rebuilt valid-price checkpoint after verified Turso write

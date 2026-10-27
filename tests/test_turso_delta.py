@@ -136,6 +136,24 @@ class DeltaTests(unittest.TestCase):
         published[(1,)]['rating']=4.4
         self.assertEqual(len(plan_table('store_directory',[row],published)[0]),1)
 
+    def test_verified_full_raw_replay_proof_is_required_for_deliberate_shrink(self):
+        from publish_turso_delta import verified_rebuild_evidence
+        import tempfile
+        local={'latest_batch':'"20261027144628"',
+               'source_counts':json.dumps({'stores':546,'products':22357,'crawl_batches':49})}
+        prior={'source_counts':json.dumps({'stores':2183,'products':109382,'crawl_batches':49})}
+        self.assertFalse(verified_rebuild_evidence(None,local,prior))
+        with tempfile.TemporaryDirectory() as temp:
+            evidence=Path(temp)/'proof.json'
+            proof={'format':'foodradar-full-raw-replay-v1','batch_id':'20261027144628',
+                   'verified_manifest_count':49,'manifest_digest':'a'*64,
+                   'source_counts':{'stores':546,'products':22357,'crawl_batches':49}}
+            evidence.write_text(json.dumps(proof))
+            self.assertTrue(verified_rebuild_evidence(evidence,local,prior))
+            proof['verified_manifest_count']=48
+            evidence.write_text(json.dumps(proof))
+            with self.assertRaisesRegex(ValueError,'Full Raw replay proof'):
+                verified_rebuild_evidence(evidence,local,prior)
 
 if __name__ == '__main__':
     unittest.main()
