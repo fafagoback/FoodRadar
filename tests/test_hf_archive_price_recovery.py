@@ -77,6 +77,19 @@ class ArchiveQuotePriceTests(unittest.TestCase):
         ])
         self.assertEqual(self.row()['archive_discount_pct'],0)
 
+    def test_duplicate_sku_with_conflicting_offer_prices_is_excluded(self):
+        one=old_quote('20261021091759',100)
+        category=copy.deepcopy(one['hasMenu']['hasMenuSection'][0])
+        category['name']='推薦商品'
+        category['hasMenuItem'][0]['offers']['price']=200
+        one['hasMenu']['hasMenuSection'].append(category)
+        self.assertNotIn(PID,canonical_menu_quotes(one,SID))
+        same=copy.deepcopy(one)
+        outcome=apply_archival_quote_references(self.conn,'20261027091759',[
+            ('20261021091759',[one]),('20261023091759',[same])
+        ])
+        self.assertEqual(outcome['archive_quote_candidates'],0)
+
     def test_restore_resets_old_suggestions_after_expiry(self):
         self.test_repeated_quotes_create_separate_nonverified_suggestion()
         apply_archival_quote_references(self.conn,'20261027091759',[])

@@ -56,6 +56,7 @@ def canonical_menu_quotes(doc, sid):
             if pid not in preferred or rank>preferred[pid][0]:
                 preferred[pid]=(rank,promo,qty)
     results={}
+    encountered_raw_prices=collections.defaultdict(set)
     for section in sections:
         category=html.unescape(str(section.get('name') or '一般'))
         for item in section.get('hasMenuItem') or []:
@@ -66,6 +67,11 @@ def canonical_menu_quotes(doc, sid):
             try:raw=float((item.get('offers') or {}).get('price') or 0)
             except (ValueError,TypeError):continue
             if not 0<raw<1000000:continue
+            # A SKU can be featured in several sections. If the actual offer
+            # prices disagree, the archive's list order cannot establish which
+            # price was payable. Exclude ambiguous quotes rather than invent
+            # price drops based on whichever category appears first.
+            encountered_raw_prices[pid].add(round(raw,2))
             inferred,qty=extract_promo_info(category,name,str(item.get('description') or ''))
             promo=str(item.get('promo_type') or inferred)
             try:qty=max(1,int(item.get('quantity') or qty))
@@ -74,7 +80,8 @@ def canonical_menu_quotes(doc, sid):
                 _,promo,qty=preferred[pid]
             unit=calculate_effective_price(raw,promo,qty)
             if 0<unit<1000000:results[pid]=round(unit,2)
-    return results
+    return {pid:price for pid,price in results.items()
+            if len(encountered_raw_prices[pid])==1}
 
 def apply_archival_quote_references(conn, latest_batch, historical_documents):
     """Pure/database implementation; historical_documents yields (batch, [docs])."""
