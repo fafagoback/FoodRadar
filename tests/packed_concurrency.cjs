@@ -26,6 +26,12 @@ function result(rows) {
 }
 globalThis.fetch = async (_url, opts) => {
   const sql = JSON.parse(opts.body).requests[0].stmt.sql;
+  if (sql.includes('from metadata')) {
+    return {ok:true,json:async()=>result([
+      {key:'latest_processed_at',value:JSON.stringify('2026-10-27T14:46:28+08:00')},
+      {key:'latest_batch',value:JSON.stringify('20261027144628')}
+    ])};
+  }
   if (sql.includes('from store_bundles')) {
     bundleSelects++;
     await new Promise(resolve => setTimeout(resolve, 20)); // force both callers to overlap
