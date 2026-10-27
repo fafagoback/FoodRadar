@@ -220,9 +220,12 @@ function productView(product, store) {
   // Only a validated product in the latest batch can be a current deal.
   // Price change decisions still belong exclusively to Python PriceChange.
   const isCurrent = isCurrentPriceObservation(product, store);
-  const currentDrop = isCurrent && Number(product.is_price_drop || 0) === 1;
-  const originalPrice = currentDrop && direction === 'down' ? refPrice : effective;
-  const historicalSaving = Number(product.discount_amount || 0);
+  const weekReference = Number(product.seven_day_reference_price || 0) > 0
+    ? Number(product.seven_day_reference_price) : null;
+  const weekPct = isCurrent ? Number(product.seven_day_discount_pct || 0) : 0;
+  const currentDrop = isCurrent && weekPct > 0 && weekReference > effective;
+  const originalPrice = currentDrop ? weekReference : effective;
+  const historicalSaving = Number(product.seven_day_discount_amount || 0);
   return {
     product_id: product.product_uuid,
     product_uuid: product.product_uuid,
@@ -251,14 +254,16 @@ function productView(product, store) {
     listing_started_at: product.listing_started_at || product.first_seen,
     original_price: originalPrice,
     reference_price: refPrice,
+    seven_day_reference_price: weekReference,
+    is_new_price_drop: isCurrent && Number(product.is_price_drop || 0) === 1,
     current_price: effective,
     price_direction: direction,
     price_change_amount: Number(product.price_change_amount || 0),
     price_change_percent: Number(product.price_change_percent || 0),
     is_price_drop: currentDrop ? 1 : 0,
-    discount_pct: currentDrop ? Number(product.discount_pct || 0) : 0,
+    discount_pct: currentDrop ? weekPct : 0,
     savings_amount: currentDrop ? historicalSaving : 0,
-    is_price_deal: currentDrop ? Number(product.is_price_deal || 0) : 0,
+    is_price_deal: currentDrop ? Number(product.seven_day_is_price_deal || 0) : 0,
     is_current_price_observation: isCurrent,
     status: product.status,
     is_open: (Number(product.is_open) === 1 && Number(store.is_open) === 1) ? 1 : 0

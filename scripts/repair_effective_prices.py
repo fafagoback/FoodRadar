@@ -3,6 +3,8 @@ import argparse
 import json
 import sqlite3
 import sys
+from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +100,52 @@ def repair(db_path):
                    WHERE store_uuid=? AND product_uuid=?""",
                 deal_updates
             )
+        # Main list: maximum verified effective unit price in the previous
+        # seven days, excluding the current batch. Legacy last-change fields
+        # remain intact for a supplementary "new drop" indication.
+        for col, ddl in (
+            ("seven_day_reference_price", "REAL"),
+            ("seven_day_discount_pct", "REAL NOT NULL DEFAULT 0"),
+            ("seven_day_discount_amount", "REAL NOT NULL DEFAULT 0"),
+            ("seven_day_is_price_deal", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if col not in columns:
+                conn.execute(f"ALTER TABLE products ADD COLUMN {col} {ddl}")
+        last_batch = conn.execute("SELECT MAX(processed_at) FROM crawl_batches").fetchone()[0]
+        histories = defaultdict(list)
+        if events_exist and last_batch:
+            start = (datetime.fromisoformat(last_batch) - timedelta(days=7)).isoformat()
+            for sid, pid, when, state in conn.execute(
+                """SELECT store_uuid,product_uuid,event_time,new_state
+                   FROM events WHERE event_time>=? AND event_time<?
+                     AND event_type IN ('NEW','PRICE_OBSERVED','PRICE_CHANGED','PROMOTION_CHANGED')
+                     AND product_uuid IS NOT NULL ORDER BY event_time,id""",
+                (start, last_batch)
+            ):
+                unit = verified_unit(state)
+                if unit is not None:
+                    histories[(sid, pid)].append((when, unit))
+        week_updates = []
+        week_deals = 0
+        for sid, pid, unit, last_seen in conn.execute(
+            "SELECT store_uuid,product_uuid,effective_price,last_seen FROM products"
+        ):
+            seven = PriceChange.seven_day_high(
+                histories.get((sid, pid), ()), last_batch, unit) if last_batch == last_seen else None
+            comparison = seven["comparison"] if seven else None
+            qualifies = bool(comparison and PriceChange.qualifies(comparison, 30))
+            week_deals += int(qualifies)
+            week_updates.append((
+                seven["reference"] if seven else None,
+                comparison["discount_pct"] if comparison and comparison["is_price_drop"] else 0,
+                comparison["savings"] if comparison and comparison["is_price_drop"] else 0,
+                int(qualifies), sid, pid))
+        conn.executemany(
+            """UPDATE products SET seven_day_reference_price=?,
+               seven_day_discount_pct=?,seven_day_discount_amount=?,
+               seven_day_is_price_deal=? WHERE store_uuid=? AND product_uuid=?""",
+            week_updates)
+        print(f"SEVEN_DAY_PRICE_REPAIR current_deals={week_deals} histories={len(histories)}",flush=True)
         errors = conn.execute(
             "SELECT COUNT(*) FROM products WHERE price>0 AND effective_price<=0"
         ).fetchone()[0]

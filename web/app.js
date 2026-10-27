@@ -622,7 +622,7 @@ function renderDiscounts() {
         <div class="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
           <div class="flex items-baseline justify-between">
             <div>
-              <div class="text-xs text-slate-400 line-through">前次實質單價 ${window.UBER_DATA_CONTRACT.unitMoney(item.original_price)}</div>
+              <div class="text-xs text-slate-400 line-through">近 7 天最高有效單價 ${window.UBER_DATA_CONTRACT.unitMoney(item.original_price)}</div>
               <div class="text-2xl font-black text-red-600 dark:text-red-400 font-mono flex items-baseline gap-1">
                 ${window.UBER_DATA_CONTRACT.unitMoney(item.current_price)}
                 <span class="text-xs font-normal text-slate-500 dark:text-slate-400">/ 實質單件</span>
@@ -632,7 +632,7 @@ function renderDiscounts() {
             <div class="text-right">
               <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold text-white badge-discount shadow-sm shadow-red-500/30">
                 <i data-lucide="trending-down" class="w-3.5 h-3.5"></i>
-                -${item.discount_pct}%
+                -${item.discount_pct}%（7日）
               </span>
               <div class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
                 每件省 ${window.UBER_DATA_CONTRACT.unitMoney(item.savings_amount)}

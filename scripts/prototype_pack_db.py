@@ -151,7 +151,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                     active_comparable_products += 1
                 if product["promo_type"] not in (None, "", "無"):
                     active_platform_promotions += 1
-                if int(product["is_price_drop"] or 0) == 1 and float(product["discount_pct"] or 0) >= 30:
+                if int(product["seven_day_is_price_deal"] or 0) == 1:
                     active_30pct_drops += 1
                 terms.add(f"f:price:{int(price // 50)}")
                 terms.add("f:catalog")
@@ -160,10 +160,10 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
                 if (product["promo_type"] not in (None, "", "無")
-                        or int(product["is_price_drop"] or 0) == 1):
+                        or float(product["seven_day_discount_pct"] or 0) > 0):
                     terms.add("f:promo")
-                if int(product["is_price_drop"] or 0) == 1:
-                    terms.add(f"f:discount:{int(float(product['discount_pct']) // 5)}")
+                if float(product["seven_day_discount_pct"] or 0) > 0:
+                    terms.add(f"f:discount:{int(float(product['seven_day_discount_pct']) // 5)}")
             for term in sorted(terms):
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
                 # One integer identifies store and product without a row-per-product

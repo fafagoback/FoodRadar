@@ -61,3 +61,11 @@
 - 抓取的原始 JSON 曾出現 `isOpen=true` 同時 `closedMessage="Delivery unavailable"`，舊版誤將其當成有效價格；重新播放 HF 原始批次時必須完整排除。
 - 同 UUID 商品可能同時出現在 `Featured items`、`Buy 1, get 1 free` 及一般分類，須收集所有分類的優惠證據，而非以首次出現為準。
 - 舊 `PRICE_CHANGED` 與 `PROMOTION_CHANGED` 事件可能來自不可外送時段；只更新前台篩選不足以修好走勢，必須用新版驗證器對原始快照整庫重建。
+
+
+## 七日低價主清單規則（2026-10-27）
+- 最新有效實質單價相較於本次之前 7 天內最高有效實質單價，降幅達 30% 才列入主清單。
+- 從驗證通過的 NEW、PRICE_OBSERVED、PRICE_CHANGED、PROMOTION_CHANGED 事件中計算，每一時間點只取一筆實質單價。
+- 歷史原價即使僅出現一次，只要有效也可作為七日基準；時間超過七天自然剔除。
+- reference_price、price_direction 繼續表示「前次 vs 本次」；seven_day_* 表示七日主清單，前端不能自行重新計算。
+- 最新批次沒抓到有效單價的商品絕不進入搜尋索引。

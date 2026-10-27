@@ -42,6 +42,31 @@ class PriceChange:
         }
 
     @staticmethod
+    def seven_day_high(observations, current_time, current_price, days=7):
+        """Compare current unit cost with maximum valid previous N-day unit cost."""
+        from datetime import datetime, timedelta
+        try:
+            now = datetime.fromisoformat(str(current_time))
+            current = round(float(current_price), 2)
+            if not isfinite(current) or current <= 0: return None
+        except (ValueError, TypeError, OverflowError):
+            return None
+        cutoff = now - timedelta(days=days)
+        unique = {}
+        for stamp, price in observations:
+            try:
+                when = datetime.fromisoformat(str(stamp))
+                value = round(float(price), 2)
+                if cutoff <= when < now and isfinite(value) and value > 0:
+                    unique[str(stamp)] = value
+            except (ValueError, TypeError, OverflowError):
+                continue
+        if not unique: return None
+        high = max(unique.values())
+        return {"reference": high, "observations": len(unique),
+                "comparison": PriceChange.compare(high, current)}
+
+    @staticmethod
     def qualifies(comparison: dict | None, min_percent: float = 0.0,
                   min_savings: float = 0.0) -> bool:
         """Use the same rule for every price-drop list, regardless of source."""

@@ -11,6 +11,23 @@ from export_static_snapshots import calculate_previous_discounts
 
 
 class PriceComparisonContractTests(unittest.TestCase):
+    def test_week_high_keeps_sustained_sale(self):
+        from datetime import datetime, timedelta, timezone
+        tz=timezone(timedelta(hours=8))
+        now=datetime(2026,10,27,18,0,tzinfo=tz)
+        samples=[
+            ((now-timedelta(days=6)).isoformat(), 100),
+            *[((now-timedelta(days=i)).isoformat(), 50) for i in range(1,6)]
+        ]
+        week=PriceChange.seven_day_high(samples,now.isoformat(),50)
+        self.assertEqual(week['reference'],100)
+        self.assertEqual(week['comparison']['discount_pct'],50)
+        self.assertEqual(PriceChange.seven_day_high(samples[:1],now.isoformat(),50)['reference'],100)
+        self.assertIsNone(PriceChange.seven_day_high(
+            [((now-timedelta(days=8)).isoformat(),100)],now.isoformat(),50))
+        self.assertIsNone(PriceChange.seven_day_high([(now.isoformat(),100)],now.isoformat(),50))
+
+
     def test_unit_rule_includes_all_drops_without_promo(self):
         self.assertIsNone(compare_effective_prices(None, 120))
         self.assertIsNone(compare_effective_prices(0, 120))
