@@ -60,6 +60,21 @@ const fs = require('node:fs');
     const promoText = (await page.locator('#promos-counter').innerText()).trim();
     const promo = Number(promoText.match(/^[\d,]+/)[0].replace(/,/g, ''));
     assert.equal(promo, home, '30% deal count must match between homepage and promotions');
+    // Platform offers are a DIFFERENT measure from price drops. Verify the
+    // nonzero platform count independently rather than celebrating a zero.
+    const platformExpectedText = coverage.match(/；([\d,]+) 件屬平台促銷/);
+    assert.ok(platformExpectedText, 'comparison coverage must disclose platform offers');
+    const platformExpected = Number(platformExpectedText[1].replace(/,/g, ''));
+    await filter.selectOption('平台優惠');
+    await page.waitForFunction(() => {
+      const counter = document.querySelector('#promos-counter');
+      return counter?.dataset.filterReady === 'true' &&
+             counter?.dataset.filterType === '平台優惠' &&
+             /^[\d,]+ 筆特惠$/.test(counter.textContent?.trim() || '');
+    }, null, { timeout: 90000 });
+    const platformCount = Number((await page.locator('#promos-counter').innerText()).trim().match(/^[\d,]+/)[0].replace(/,/g, ''));
+    assert.equal(platformCount, platformExpected, 'visible platform promotions must match current-batch packed metadata');
+    console.log('LIVE_PROMOTION_COUNTS '+JSON.stringify({newDrop30:home,existingPlatformOffers:platformCount}));
     const diagnosis = await page.evaluate(async () => {
       const m = await import('./packed-turso.js');
       const matches = await m.searchPacked({keyword:'麥香燻雞起司',limit:100});
