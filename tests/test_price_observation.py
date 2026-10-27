@@ -51,11 +51,11 @@ class PriceValidityTests(unittest.TestCase):
         events=self.conn.execute("SELECT event_type,new_state FROM events WHERE product_uuid=?",(PID,)).fetchall()
         types=[e['event_type'] for e in events]
         self.assertIn('NEW',types)
-        self.assertNotIn('PRICE_OBSERVED',types)
+        self.assertIn('PRICE_OBSERVED',types)
         self.assertNotIn('PRICE_CHANGED',types)
         observations=[json.loads(e['new_state']) for e in events if e['event_type'] in ('NEW','PRICE_OBSERVED','PRICE_CHANGED')]
         self.assertTrue(all(s['price_valid'] for s in observations if s['price']>0))
-        self.assertEqual([s['price'] for s in observations if s['price']>0],[210])
+        self.assertEqual([s['price'] for s in observations if s['price']>0],[210,210])
 
     def test_closed_hour_raw_cannot_create_or_mutate_database_rows(self):
         result=apply_snapshot(self.conn,[menu('20261014014059',300)],'20261014014059')
@@ -102,8 +102,8 @@ class PriceValidityTests(unittest.TestCase):
         apply_snapshot(self.conn,[menu('20261014014059',300)],'20261014014059')
         apply_snapshot(self.conn,[menu('20261020090813',210)],'20261020090813')
         events=self.conn.execute("SELECT event_type,event_time,new_state FROM events WHERE event_type IN ('NEW','PRICE_OBSERVED','PRICE_CHANGED')").fetchall()
-        self.assertEqual(len(events),1)
-        self.assertEqual(events[0]['event_type'],'NEW')
+        self.assertEqual(len(events),2)
+        self.assertEqual([event['event_type'] for event in events], ['NEW', 'PRICE_OBSERVED'])
         self.assertEqual(json.loads(events[0]['new_state'])['price'],210)
         self.assertTrue(json.loads(events[0]['new_state'])['price_valid'])
 

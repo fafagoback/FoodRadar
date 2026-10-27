@@ -562,6 +562,21 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     else:
                         counts["unchanged"] += 1
 
+                    # A verified unchanged price is still a new point on the
+                    # time series. Store a compact observation, not a copy of
+                    # the entire product row, to keep packed history affordable.
+                    # Changed prices and promotion changes already emit events.
+                    if (price_valid and not baseline and old["recent_prices"]
+                            and not price_novel
+                            and old["promo_type"] == promo and old["quantity"] == qty):
+                        events_batch.append((
+                            now, sid, pid, "PRICE_OBSERVED", None,
+                            json_dumps({
+                                "price": price, "promo_type": promo,
+                                "quantity": qty, "is_open": 1, "price_valid": True
+                            })
+                        ))
+
                     update_products_batch.append((*state.values(), now, ph, json_dumps(next_recent_prices), price_novel, reference_price, discount_amount, discount_pct, is_price_deal, price_direction, is_price_drop, price_change_amount, price_change_percent, listing_started_at, sid, pid))
                     old.update(state)
                     old["listing_started_at"] = listing_started_at

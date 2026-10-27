@@ -1827,6 +1827,25 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     }
   }
 
+  // The packed history may precede the currently verified price because
+  // older versions only recorded changes. Always include the latest valid
+  // product observation, even when the price has stayed flat since the
+  // previous event. Future crawls persist every valid observation.
+  if (currentProductLoaded && currentComparison) {
+    const at = String(currentComparison.crawled_time || '');
+    const price = Number(currentComparison.price);
+    const unit = Number(currentComparison.current_price);
+    if (at && Number.isFinite(price) && price > 0 && Number.isFinite(unit) && unit > 0) {
+      history.push({
+        crawled_time: at,
+        price,
+        eff_price: unit,
+        quantity: Number(currentComparison.quantity || 1),
+        promo_type: currentComparison.promo_type || '無'
+      });
+    }
+  }
+
   // One product and one crawl timestamp represent one price observation.
   // Guard both the table and chart even if a future event type slips through.
   const uniqueHistory = new Map();
