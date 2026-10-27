@@ -30,6 +30,7 @@ def main():
     totals=collections.Counter()
     per_batch=[]
     source_prices=collections.defaultdict(list)
+    legacy_quotes=collections.defaultdict(list)
     for manifest in manifests:
         batch=manifest.split('/')[-2]
         try:when=datetime.strptime(batch,'%Y%m%d%H%M%S')
@@ -59,7 +60,14 @@ def main():
             if hours is False:counts['schedule_closed']+=1
             if not valid and doc.get('isOpen') is True and not doc.get('closedMessage') and hours is not False:
                 counts['needs_manual_review']+=1
-            if not valid:continue
+            legacy_possible = bool(
+                not valid and doc.get('isOpen') is True
+                and str(doc.get('closedMessage') or '').strip().lower() == 'delivery unavailable'
+                and hours is True
+                and (doc.get('menu_status') == 'present')
+                and not tagline.startswith(('opens ', 'opening ', 'closed ', 'temporarily closed', 'currently closed', '休息中', '已打烊'))
+            )
+            if not valid and not legacy_possible:continue
             sid=str(doc.get('store_uuid') or '')
             # Match serving_state.apply_snapshot's cross-category canonical
             # promotion resolution: a SKU is counted ONCE per batch, with
@@ -83,8 +91,12 @@ def main():
             for pid,(_,raw,promo,qty) in skus.items():
                 unit=calculate_effective_price(raw,promo,qty)
                 if unit<=0:continue
-                source_prices[(sid,pid)].append((batch,round(unit,2)))
-                counts['valid_menu_items']+=1
+                if valid:
+                    source_prices[(sid,pid)].append((batch,round(unit,2)))
+                    counts['valid_menu_items']+=1
+                else:
+                    legacy_quotes[(sid,pid)].append((batch,round(unit,2)))
+                    counts['legacy_open_hours_quotes']+=1
         totals.update(counts)
         per_batch.append({'batch':batch,**counts})
         print('HF_HISTORY_BATCH_AUDIT='+json.dumps(per_batch[-1],ensure_ascii=False),flush=True)
@@ -98,6 +110,32 @@ def main():
         high=max(earlier)
         if now_price>0 and high>=now_price/0.7:
             qualified.append({'store':key[0],'product':key[1],'high':high,'current':now_price,'pct':round(100*(high-now_price)/high,2)})
+    legacy_proposals=[]
+    candidates_with_legacy=0
+    for key,(batch,now_price) in current.items():
+        options=legacy_quotes.get(key,[])
+        by_price=collections.defaultdict(set)
+        for t,p in options:
+            if t<batch:by_price[p].add(t)
+        corroborated=[p for p,observations in by_price.items() if len(observations)>=2]
+        if not corroborated:continue
+        candidates_with_legacy+=1
+        high=max(corroborated)
+        if high>0 and (high-now_price)/high>=.30:
+            legacy_proposals.append({
+                'store':key[0], 'product':key[1], 'archive_quote_high':high,
+                'current_verified':now_price,
+                'discount_pct':round(100*(high-now_price)/high,2),
+                'archive_batches':len(by_price[high]),
+                'previous_verified':max(
+                    [p for t,p in source_prices[key] if t<batch],default=None
+                )
+            })
+    print('HF_LEGACY_MENU_QUOTE_AUDIT='+json.dumps({
+        'products_with_2_legacy_quotes':candidates_with_legacy,
+        'legacy_high_30pct_candidates':len(legacy_proposals),
+        'sample':legacy_proposals[:12]
+    },ensure_ascii=False),flush=True)
     import sqlite3
     serving=ROOT/'data'/latest/'serving.db'
     if serving.exists():
