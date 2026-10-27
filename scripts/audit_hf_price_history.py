@@ -86,6 +86,24 @@ def main():
         high=max(earlier)
         if now_price>0 and high>=now_price/0.7:
             qualified.append({'store':key[0],'product':key[1],'high':high,'current':now_price,'pct':round(100*(high-now_price)/high,2)})
+    import sqlite3
+    serving=ROOT/'data'/latest/'serving.db'
+    if serving.exists():
+        con=sqlite3.connect(serving)
+        con.row_factory=sqlite3.Row
+        for suspect in qualified[:20]:
+            sid,pid=suspect['store'],suspect['product']
+            row=con.execute(
+              "SELECT product_name,price,promo_type,quantity,effective_price,seven_day_reference_price,seven_day_discount_pct,seven_day_is_price_deal,last_seen FROM products WHERE store_uuid=? AND product_uuid=?",
+              (sid,pid)).fetchone()
+            events=con.execute(
+              "SELECT event_time,event_type,new_state FROM events WHERE store_uuid=? AND product_uuid=? AND event_type IN ('NEW','PRICE_OBSERVED','PRICE_CHANGED','PROMOTION_CHANGED') ORDER BY id DESC LIMIT 9",
+              (sid,pid)).fetchall()
+            print('RAW_SQL_COMPARE='+json.dumps({
+               'raw':suspect,'stored':dict(row) if row else None,
+               'events':[{'time':e['event_time'],'type':e['event_type'],'state':json.loads(e['new_state'] or '{}')} for e in events]
+            },ensure_ascii=False),flush=True)
+        con.close()
     print('HF_SEVEN_DAY_RAW_AUDIT='+json.dumps({
         'window_start':window.isoformat(),'window_end':anchor.isoformat(),
         'batches':len(per_batch),'raw_stores':totals['raw_stores'],
