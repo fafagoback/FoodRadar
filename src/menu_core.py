@@ -435,7 +435,19 @@ def fetch_single_store(store_item: dict, output_dir: str, time_prefix: str = "",
     store_id = get_md5_hash(store_url)
     
     session = requests.Session()
-    attach_delivery_location(session, store_item)
+    if not attach_delivery_location(session, store_item):
+        # A missing delivery coordinate caused entire HF history batches to
+        # contain "Delivery unavailable" despite complete menu payloads.
+        # Never send getStoreV1 without the verified feed coordinate.
+        session.close()
+        return {
+            "status": "FAILED",
+            "store_name": store_item.get("name", "未命名店家"),
+            "store_id": store_id,
+            "store_url": store_url,
+            "total_items": 0,
+            "error": "Missing valid discovered_points delivery coordinate; refusing unlocated getStoreV1"
+        }
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "*/*",

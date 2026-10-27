@@ -374,7 +374,7 @@ function updateStatsUI(stats) {
       const days = (stats.seven_day_verified_dates || []).length;
       coverage.textContent = `本批有效商品 ${current.toLocaleString()} 件；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；七天內僅 ${days} 個採集日有通過驗證的價格；${promos.toLocaleString()} 件屬平台促銷。`;
       if (stats.seven_day_history_incomplete) {
-        coverage.textContent += ' 注意：七日歷史不足，0 筆不代表市場沒有特價。';
+        coverage.textContent += ' 注意：七日歷史日期不足，可能漏掉更早開始的低價商品；已列出的降價均有有效價格證據。';
       }
     }
   }

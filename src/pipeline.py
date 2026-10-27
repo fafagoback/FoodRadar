@@ -13,6 +13,31 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def assert_useful_price_batch(documents, batch):
+    """Do not overwrite a healthy published catalogue with a broken geo crawl.
+
+    Zero open stores may legitimately occur at night, but that is not a
+    verifiable current-price refresh. A daytime >90% closure response is the
+    signature of the previous missing-location-cookie bug.
+    """
+    from price_observation import price_observation_valid
+    total = len(documents)
+    valid = sum(bool(price_observation_valid(doc, batch)) for doc in documents)
+    banner = sum(bool(str(doc.get("closedMessage") or "").strip()) for doc in documents)
+    hour = int(batch[8:10])
+    if total >= 50 and valid == 0:
+        raise RuntimeError(
+            f"Unusable menu crawl: 0/{total} valid price stores; "
+            "rejecting batch and preserving previous published prices"
+        )
+    if total >= 100 and 9 <= hour <= 22 and valid * 20 < total and banner * 10 >= total * 9:
+        raise RuntimeError(
+            f"Suspected broken delivery-location capture: {valid}/{total} "
+            f"valid stores, {banner} closed messages; not publishing"
+        )
+    return valid
+
+
 def restore_history(config, rebuild_all=False):
     """Rebuild this point's Current/Events state on ephemeral Actions runners."""
     from huggingface_hub import HfApi, hf_hub_download
@@ -144,6 +169,8 @@ def build_snapshot(output, config):
     conn=sqlite3.connect(serving)
     conn.row_factory=sqlite3.Row
     documents=[json.loads(p.read_text(encoding='utf-8')) for p in sorted((output/'menus').glob('*.json'))]
+    # Run the release gate before mutating normalized prices / advancing batch.
+    assert_useful_price_batch(documents, batch)
     counts=apply_snapshot(conn, documents, batch)
     conn.close()
     # Distinguish successful menu downloads from *valid payable-price*
