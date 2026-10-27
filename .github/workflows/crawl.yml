@@ -67,6 +67,10 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/verify_bogo_raw_snapshots.py
+      - name: Audit latest verified price comparisons and nonzero deal eligibility
+        run: |
+          BATCH=$(cat data/latest.txt)
+          python scripts/audit_deal_pipeline.py "data/$BATCH/serving.db"
       - name: Publish only necessary Turso rows and verify before commit
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
