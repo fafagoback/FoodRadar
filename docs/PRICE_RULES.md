@@ -56,3 +56,8 @@
 - 只有本次與前次有效實質單價經 Python `PriceChange` 判定下降，才標示降價；持平為 0%。
 - 過去價格仍留存以供趨勢及下一次有效採集比較，不可用舊資料假裝今天有效。
 
+
+## 歷史誤判修復（2026-10-27）
+- 抓取的原始 JSON 曾出現 `isOpen=true` 同時 `closedMessage="Delivery unavailable"`，舊版誤將其當成有效價格；重新播放 HF 原始批次時必須完整排除。
+- 同 UUID 商品可能同時出現在 `Featured items`、`Buy 1, get 1 free` 及一般分類，須收集所有分類的優惠證據，而非以首次出現為準。
+- 舊 `PRICE_CHANGED` 與 `PROMOTION_CHANGED` 事件可能來自不可外送時段；只更新前台篩選不足以修好走勢，必須用新版驗證器對原始快照整庫重建。

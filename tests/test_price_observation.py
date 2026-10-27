@@ -96,6 +96,10 @@ class PriceValidityTests(unittest.TestCase):
         doc['closedMessage']='Temporarily closed'
         doc['workingHoursTagline']='Open until 10 PM'
         self.assertFalse(price_observation_valid(doc,'20261014014059'))
+        # Archived getStoreV1 snapshots showed isOpen=True even when the
+        # restaurant could not deliver. These must NEVER create price events.
+        doc['closedMessage']='Delivery unavailable'
+        self.assertFalse(price_observation_valid(doc,'20261014091759'))
 
     def test_baseline_valid_price_is_recorded_even_without_any_future_price_changes(self):
         apply_snapshot(self.conn,[menu('20261006091759',210)],'20261006091759')
