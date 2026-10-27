@@ -31,6 +31,10 @@ const fs = require('node:fs');
     const homeText = (await page.locator('#stat-big-discounts').innerText()).trim();
     assert.match(homeText, /^\d[\d,]*$/, 'dashboard must display a numeric count');
     const home = Number(homeText.replace(/,/g, ''));
+    const coverage = (await page.locator('#discounts-coverage').innerText()).trim();
+    assert.match(coverage, /本批有效商品 [\\d,]+ 件，其中 [\\d,]+ 件有前次有效單價可比較/,
+      'dashboard must disclose the valid comparison denominator, not only a zero');
+    console.log('DEAL_COMPARISON_COVERAGE ' + coverage);
 
     // The promotions filter belongs to a hidden tab; activate it as a real user does.
     const promotionsTab = page.locator('.nav-tab[data-target="tab-promos"]');

@@ -105,7 +105,7 @@ def repair(db_path):
             raise ValueError(f"{errors} invalid derived prices remain")
         conn.commit()
         print(f"PRICE_REPAIR total={count} corrected={len(updates)} invalid={errors} "
-              f"verified_deals={len(deal_updates)}", flush=True)
+              f"recomputed_price_flags={len(deal_updates)}", flush=True)
         return count, len(updates)
     finally:
         conn.close()

@@ -121,6 +121,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     from datetime import datetime, timedelta
     cutoff = (datetime.fromisoformat(latest_time) - timedelta(days=7)).isoformat()
     active_stores = active_products = 0
+    active_comparable_products = active_platform_promotions = active_30pct_drops = 0
     for store_id, store in enumerate(stores):
         sid = store["store_uuid"]
         products = list(src.execute("SELECT * FROM products WHERE store_uuid=? ORDER BY first_seen,product_uuid", (sid,)))
@@ -146,6 +147,12 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
             price = float(product["effective_price"] or product["price"] or 0)
             if searchable:
                 active_products += 1
+                if float(product["reference_price"] or 0) > 0:
+                    active_comparable_products += 1
+                if product["promo_type"] not in (None, "", "無"):
+                    active_platform_promotions += 1
+                if int(product["is_price_drop"] or 0) == 1 and float(product["discount_pct"] or 0) >= 30:
+                    active_30pct_drops += 1
                 terms.add(f"f:price:{int(price // 50)}")
                 terms.add("f:catalog")
                 if (product['listing_started_at'][:10] > baseline_time[:10]
@@ -209,6 +216,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     info = {"definition_version": "foodradar-daily-v1", "source_revision": source_meta.get("source_revision", "local"),
             "application": "FoodRadar", "schema_version": 1,
             "active_stores": active_stores, "active_products": active_products,
+            "active_comparable_products": active_comparable_products,
+            "active_platform_promotions": active_platform_promotions,
+            "active_30pct_drops": active_30pct_drops,
             "baseline_processed_at": baseline_time, "latest_processed_at": latest_time,
             "source_counts": {k: v['count'] for k,v in digests.items()},
             "latest_batch": source_meta.get("latest_batch", ""),

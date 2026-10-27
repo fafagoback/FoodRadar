@@ -337,6 +337,9 @@ async function loadFromTurso() {
     const discounts = APP_STATE.discounts || [];
     updateStatsUI({latest_batch:packed.meta.latest_batch,
       latest_batch_formatted:packed.meta.latest_processed_at || formatBatchDate(packed.meta.latest_batch),
+      active_products: Number(packed.meta.active_products || 0),
+      active_comparable_products: Number(packed.meta.active_comparable_products || 0),
+      active_platform_promotions: Number(packed.meta.active_platform_promotions || 0),
       total_monitored_stores:Number(counts.stores || packed.stores.length),
       total_monitored_products:Number(counts.products || packed.products.length),
       big_discounts_count:discounts.length,new_stores_count:(APP_STATE.filteredStores || []).length,
@@ -356,6 +359,17 @@ function updateStatsUI(stats) {
   APP_STATE.stats = stats;
   document.getElementById('batch-time-text').textContent = stats.latest_batch_formatted || stats.latest_batch || '已載入';
   document.getElementById('stat-big-discounts').textContent = (stats.big_discounts_count ?? 0).toLocaleString();
+  const coverage = document.getElementById('discounts-coverage');
+  if (coverage) {
+    if (stats.intelligence_unavailable) {
+      coverage.textContent = '無法驗證本批可比較價格，請稍後重試。';
+    } else {
+      const current = Number(stats.active_products || 0);
+      const comparable = Number(stats.active_comparable_products || 0);
+      const promos = Number(stats.active_platform_promotions || 0);
+      coverage.textContent = `本批有效商品 ${current.toLocaleString()} 件，其中 ${comparable.toLocaleString()} 件有前次有效單價可比較；${promos.toLocaleString()} 件屬平台促銷（不代表本次降價）。`;
+    }
+  }
   document.getElementById('stat-new-stores').textContent = (stats.new_stores_count ?? stats.total_stores ?? 0).toLocaleString();
   document.getElementById('stat-new-products').textContent = (stats.new_products_count ?? 0).toLocaleString();
   document.getElementById('stat-promotions').textContent = (stats.promotions_count ?? 0).toLocaleString();
