@@ -111,7 +111,10 @@ def repair(db_path):
         ):
             if col not in columns:
                 conn.execute(f"ALTER TABLE products ADD COLUMN {col} {ddl}")
-        last_batch = conn.execute("SELECT MAX(processed_at) FROM crawl_batches").fetchone()[0]
+        has_batches = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='crawl_batches'"
+        ).fetchone() is not None
+        last_batch = conn.execute("SELECT MAX(processed_at) FROM crawl_batches").fetchone()[0] if has_batches else None
         histories = defaultdict(list)
         if events_exist and last_batch:
             start = (datetime.fromisoformat(last_batch) - timedelta(days=7)).isoformat()
