@@ -5,7 +5,7 @@ Uber Eats 邊緣靜態快照導出引擎 (Stage 6: Export Static Snapshots to Ja
 【核心職責】:
 1. 嚴格驗證來源 JSON 菜單檔案的結構與完整性
 2. 執行本地 SQLite ETL (json_to_db) 並建立完整關聯
-3. 比較本次與同店同商品的上一筆有效實質單價（不限制天數）
+3. 比較本次與同店同商品前七天最高有效實質單價（七日低價）
 4. 匯出完全預先計算好的極速靜態 JSON 資料集至 web/data/:
    - stats.json: 大盤總覽統計與時間戳記
    - discounts.json: 今日大特價商品清單
@@ -135,9 +135,10 @@ def fatal_error(step_name: str, reason: str, expected: str = "", actual: str = "
     sys.exit(1)
 
 
-def calculate_previous_discounts(conn: sqlite3.Connection, latest_batch: str, min_discount_pct: float = 0.0, min_savings_twd: float = 0.0) -> List[Dict[str, Any]]:
-    """計算相較於前次快照營業中實質單價的降價商品"""
+def calculate_7day_discounts(conn: sqlite3.Connection, latest_batch: str, min_discount_pct: float = 0.0, min_savings_twd: float = 0.0) -> List[Dict[str, Any]]:
+    """使用同店同 SKU 前 7 天最高有效實質單價比較最新價格。"""
     cursor = conn.cursor()
+    cutoff=(datetime.strptime(latest_batch,'%Y%m%d%H%M%S')-timedelta(days=7)).strftime('%Y%m%d%H%M%S')
 
     # 檢查是否有任何前置歷史批次
     cursor.execute("SELECT COUNT(*) FROM crawl_batches WHERE crawled_time < ?", (latest_batch,))
@@ -153,10 +154,11 @@ def calculate_previous_discounts(conn: sqlite3.Connection, latest_batch: str, mi
             p0.quantity as prev_qty,
             p0.promo_type as prev_promo,
             p0.eff_price as prev_eff_price,
-            ROW_NUMBER() OVER (PARTITION BY p0.product_id, p0.store_id ORDER BY p0.crawled_time DESC) as rn
+            ROW_NUMBER() OVER (PARTITION BY p0.product_id, p0.store_id ORDER BY p0.eff_price DESC, p0.crawled_time DESC) as rn
         FROM products p0
-        WHERE p0.crawled_time < ?
+        WHERE p0.crawled_time >= ? AND p0.crawled_time < ?
           AND p0.price >= 1
+          AND p0.eff_price > 0
           AND p0.is_open = 1
     )
     SELECT 
@@ -187,7 +189,7 @@ def calculate_previous_discounts(conn: sqlite3.Connection, latest_batch: str, mi
       AND p1.price >= 1
       AND p1.is_open = 1;
     """
-    cursor.execute(query, (latest_batch, latest_batch))
+    cursor.execute(query, (cutoff, latest_batch, latest_batch))
     rows = cursor.fetchall()
 
     discounts = []
@@ -234,8 +236,9 @@ def calculate_previous_discounts(conn: sqlite3.Connection, latest_batch: str, mi
     return discounts
 
 
-# Compatibility alias: no seven-day cutoff is applied.
-calculate_7day_discounts = calculate_previous_discounts
+# Legacy import name remains supported, but now uses the same seven-day
+# rule as the website and the alert engine.
+calculate_previous_discounts = calculate_7day_discounts
 
 
 def extract_curated_catalog(conn: sqlite3.Connection, latest_batch: str, max_items: int = 4000) -> List[Dict[str, Any]]:
@@ -669,7 +672,7 @@ def compute_cross_snapshot_intelligence(
     """
     使用 DuckDB 對比最新 Parquet 與本地所有可取得的舊快照
     產出:
-    1. 本次與同店同商品上一筆有效單價的降價 (discounts)
+    1. 最新有效單價與同店同商品前七天最高有效單價的降價 (discounts)
     2. 全新進駐店家 (new_stores)
     3. 老店新菜 (new_products)
     4. 跨批次商品歷史價格走勢字典 (history_map)
@@ -693,7 +696,9 @@ def compute_cross_snapshot_intelligence(
         if ts.isdigit() and ts < batch_id:
             history_files.append((ts, str(path).replace('\\', '/')))
     history_files.sort()
-    # The previous valid observation can be older than seven batches.
+    # Only the same seven-day window used by the live serving-price engine.
+    cutoff_batch=(datetime.strptime(batch_id,'%Y%m%d%H%M%S')-timedelta(days=7)).strftime('%Y%m%d%H%M%S')
+    history_files=[(ts,path) for ts,path in history_files if ts>=cutoff_batch]
     all_downloaded_history_paths = history_files
     prev_batch_id, prev_parquet_path = all_downloaded_history_paths[-1] if all_downloaded_history_paths else (None, None)
 
@@ -704,7 +709,7 @@ def compute_cross_snapshot_intelligence(
     if prev_parquet_path and os.path.exists(prev_parquet_path):
         print(f"🔍 正在與歷史快照 (前置批次: {prev_batch_id}) 執行 DuckDB 湖倉極速差異分析...")
         
-        # 降價查詢 (相較前次快照實質單價)
+        # 降價查詢 (前七天最高有效實質單價)
         history_union_subquery = " UNION ALL ".join([f"SELECT product_id, store_id, crawled_time, eff_price, price, quantity, promo_type, is_open FROM '{p}'" for _, p in all_downloaded_history_paths])
         
         q_disc = f"""
@@ -716,7 +721,7 @@ def compute_cross_snapshot_intelligence(
                 price AS prev_raw_price,
                 quantity AS prev_qty,
                 promo_type AS prev_promo,
-                ROW_NUMBER() OVER (PARTITION BY product_id, store_id ORDER BY crawled_time DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY product_id, store_id ORDER BY eff_price DESC, crawled_time DESC) as rn
             FROM ({history_union_subquery})
             WHERE eff_price > 0 AND is_open = 1
         ),

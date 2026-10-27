@@ -209,8 +209,9 @@ class UberEatsAlertEngine:
         min_discount_pct: float,
         min_savings_twd: float
     ) -> List[Dict[str, Any]]:
-        """Compare each product with its own previous verified open-hours price."""
+        """Compare each SKU with its highest verified effective unit cost in 7 days."""
         cursor = conn.cursor()
+        cutoff=(datetime.strptime(latest_batch,'%Y%m%d%H%M%S')-timedelta(days=7)).strftime('%Y%m%d%H%M%S')
         query = """
         SELECT 
             p1.product_id,
@@ -231,19 +232,25 @@ class UberEatsAlertEngine:
             s.locality,
             s.street_address
         FROM products p1
-        JOIN products p0 ON p1.product_id = p0.product_id AND p1.store_id = p0.store_id
+        JOIN (
+            SELECT product_id, store_id, price, quantity, promo_type
+            FROM (
+                SELECT hist.product_id,hist.store_id,hist.price,hist.quantity,hist.promo_type,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY hist.product_id,hist.store_id
+                        ORDER BY hist.eff_price DESC,hist.crawled_time DESC
+                    ) AS rank_order
+                FROM products hist
+                WHERE hist.crawled_time >= ? AND hist.crawled_time < ?
+                  AND hist.price > 0 AND hist.eff_price > 0 AND hist.is_open = 1
+            ) candidates
+            WHERE rank_order = 1
+        ) p0 ON p1.product_id = p0.product_id AND p1.store_id = p0.store_id
         LEFT JOIN stores s ON p1.store_id = s.store_id AND p1.crawled_time = s.crawled_time
         WHERE p1.crawled_time = ?
           AND p1.price > 0 AND p1.is_open = 1
-          AND p0.price > 0 AND p0.is_open = 1
-          AND p0.crawled_time = (
-              SELECT MAX(hist.crawled_time) FROM products hist
-              WHERE hist.store_id = p1.store_id AND hist.product_id = p1.product_id
-                AND hist.crawled_time < p1.crawled_time
-                AND hist.price > 0 AND hist.is_open = 1
-          )
         """
-        cursor.execute(query, (latest_batch,))
+        cursor.execute(query, (cutoff,latest_batch,latest_batch))
         rows = cursor.fetchall()
 
         discounts = []

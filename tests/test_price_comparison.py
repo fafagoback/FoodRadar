@@ -1,4 +1,4 @@
-"""Cross-path regressions for the one previous-valid-unit-price rule."""
+"""Cross-path regressions for the seven-day maximum verified unit-price rule."""
 import sqlite3
 import sys
 import unittest
@@ -82,19 +82,24 @@ class PriceComparisonContractTests(unittest.TestCase):
         )
         self.db.execute("INSERT INTO crawl_batches VALUES(?)", (time,))
 
-    def test_alert_and_sqlite_export_ignore_7_day_cutoff_and_invalid_observations(self):
-        # Only valid predecessor is 20 days older; off-hours fake price excluded.
-        self.insert("old", "20261001063000", 180)
-        self.insert("old", "20261020063000", 999, valid=0)
+    def test_alert_and_sqlite_export_apply_seven_day_cutoff_and_ignore_invalid_observations(self):
+        # An older high outside seven days must NEVER be used as today's
+        # reference. Only the verified 10/26 in-hours price can qualify.
+        self.insert("old", "20261001063000", 400)
+        self.insert("old", "20261026063000", 180)
+        self.insert("old", "20261030063000", 999, valid=0)
         self.insert("old", "20261031063000", 120)
-        # A no-promo 90-percent drop is a valid decrease too.
-        self.insert("deep", "20261001063000", 1000)
+        # A no-promo 90-percent drop within seven days is valid.
+        self.insert("deep", "20261025063000", 1000)
         self.insert("deep", "20261031063000", 100)
+        # A long-ago high is excluded, even for a large drop.
+        self.insert("expired", "20261001063000", 500)
+        self.insert("expired", "20261031063000", 120)
         # Same price repeated is not a price drop.
-        self.insert("steady", "20261001063000", 120)
+        self.insert("steady", "20261027063000", 120)
         self.insert("steady", "20261031063000", 120)
         # Same product ID from another store must not be compared.
-        self.insert("old", "20261001063000", 10, store="store2")
+        self.insert("old", "20261026063000", 10, store="store2")
         self.insert("old", "20261031063000", 30, store="store2")
         self.db.commit()
 
@@ -113,16 +118,21 @@ class PriceComparisonContractTests(unittest.TestCase):
         self.assertEqual(snapshot["old"]["discount_pct"], 33.3)
         self.assertEqual(snapshot["deep"]["discount_pct"], 90.0)
 
-    def test_last_valid_observation_can_be_equal_even_if_older_price_differs(self):
-        for time, price in [("20261001063000", 180), ("20261021063000", 120),
+    def test_sustained_sale_is_still_discounted_when_last_observation_is_flat(self):
+        for time, price in [("20261026063000", 180), ("20261030063000", 120),
                             ("20261031063000", 120)]:
             self.insert("old", time, price)
         self.db.commit()
         alerts = UberEatsAlertEngine(db_path=":memory:")._detect_big_discounts(
-            self.db, "20261031063000", "20261021063000", 0, 0
+            self.db, "20261031063000", "20261030063000", 30, 0
         )
-        self.assertEqual(alerts, [])
-        self.assertEqual(calculate_previous_discounts(self.db, "20261031063000"), [])
+        self.assertEqual(len(alerts),1)
+        self.assertEqual(alerts[0]["original_price"],180)
+        self.assertEqual(alerts[0]["current_price"],120)
+        results=calculate_previous_discounts(self.db, "20261031063000",30,0)
+        self.assertEqual(len(results),1)
+        self.assertEqual(results[0]["original_price"],180)
+        self.assertEqual(results[0]["current_price"],120)
 
 
 if __name__ == "__main__":
