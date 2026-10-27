@@ -23,7 +23,7 @@ def main():
     api=HfApi(token=os.environ.get('HF_TOKEN'))
     folder=cfg['hf_folder'].strip('/')
     files=api.list_repo_files(repo_id=cfg['hf_repo_id'],repo_type='dataset')
-    latest=json.loads((ROOT/'data/latest.txt').read_text()[:14] or 'null') if False else (ROOT/'data/latest.txt').read_text().strip()
+    latest=(ROOT/'data/latest.txt').read_text().strip()
     anchor=datetime.strptime(latest,'%Y%m%d%H%M%S')
     window=anchor-timedelta(days=7)
     manifests=sorted(p for p in files if p.startswith(folder+'/snapshots/') and p.endswith('/complete.json'))
@@ -61,6 +61,10 @@ def main():
                 counts['needs_manual_review']+=1
             if not valid:continue
             sid=str(doc.get('store_uuid') or '')
+            # Match serving_state.apply_snapshot's cross-category canonical
+            # promotion resolution: a SKU is counted ONCE per batch, with
+            # BOGO precedence over a general "Featured items" duplicate.
+            skus={}
             for section in (doc.get('hasMenu') or {}).get('hasMenuSection') or []:
                 category=str(section.get('name') or '')
                 for item in section.get('hasMenuItem') or []:
@@ -68,11 +72,19 @@ def main():
                         pid,_=product_identity(item,sid)
                         raw=float((item.get('offers') or {}).get('price') or 0)
                         promo,qty=extract_promo_info(category,str(item.get('name') or ''),str(item.get('description') or ''))
-                        unit=calculate_effective_price(raw,promo,qty)
-                        if not raw>0 or not unit>0:continue
-                        source_prices[(sid,pid)].append((batch,round(unit,2)))
-                        counts['valid_menu_items']+=1
+                        promo=str(item.get('promo_type') or promo)
+                        qty=max(1,int(item.get('quantity') or qty))
+                        if raw<=0:continue
+                        previous=skus.get(pid)
+                        rank=(int(qty>1),promo)
+                        if previous is None or rank>previous[0]:
+                            skus[pid]=(rank,raw,promo,qty)
                     except (ValueError,TypeError,OverflowError):pass
+            for pid,(_,raw,promo,qty) in skus.items():
+                unit=calculate_effective_price(raw,promo,qty)
+                if unit<=0:continue
+                source_prices[(sid,pid)].append((batch,round(unit,2)))
+                counts['valid_menu_items']+=1
         totals.update(counts)
         per_batch.append({'batch':batch,**counts})
         print('HF_HISTORY_BATCH_AUDIT='+json.dumps(per_batch[-1],ensure_ascii=False),flush=True)
