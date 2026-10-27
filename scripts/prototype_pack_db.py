@@ -116,6 +116,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     stores = list(src.execute("SELECT * FROM stores ORDER BY first_seen,store_uuid"))
     baseline_time = src.execute('SELECT MIN(processed_at) FROM crawl_batches').fetchone()[0]
     latest_time = src.execute('SELECT MAX(processed_at) FROM crawl_batches').fetchone()[0]
+    if not latest_time:
+        raise ValueError("No completed crawl batch: cannot publish current prices")
     from datetime import datetime, timedelta
     cutoff = (datetime.fromisoformat(latest_time) - timedelta(days=7)).isoformat()
     active_stores = active_products = 0
@@ -131,9 +133,14 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
             product_gid += 1
             arr = row_array(product, pc)
             product_arrays.append([(store_id << 20) | local_index, arr])
+            # Keep the entire archive, but index ONLY this batch's validated
+            # store and product prices. Absent/off-hours items keep their
+            # previous last_seen and therefore disappear from current listings.
             searchable = (store["status"] == "active" and int(store["is_open"] or 0) == 1
+                          and store["last_seen"] == latest_time
                           and product["status"] == "active"
                           and int(product["is_open"] or 0) == 1
+                          and product["last_seen"] == latest_time
                           and float(product["effective_price"] or product["price"] or 0) > 0)
             terms = (store_terms | tokens(product["product_name"]) | tokens(product["category"]) | tokens(product["promo_type"])) if searchable else set()
             price = float(product["effective_price"] or product["price"] or 0)
@@ -161,7 +168,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
         pchunks = [product_arrays[i:i + max_items] for i in range(0, len(product_arrays), max_items)] or [[]]
         echunks = [[row_array(e, ec) for e in events[i:i + max_items]] for i in range(0, len(events), max_items)] or [[]]
         chunk_count = max(len(pchunks), len(echunks))
-        if store['status'] == 'active' and int(store['is_open'] or 0) == 1:
+        if (store['status'] == 'active' and int(store['is_open'] or 0) == 1
+                and store['last_seen'] == latest_time):
             active_stores += 1
         dst.execute("INSERT INTO store_directory VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             store_id, sid, store["name"], store["city"], store["locality"], store["rating"], store["review_count"], chunk_count,

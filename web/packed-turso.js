@@ -197,6 +197,16 @@ function dedupeProducts(products) {
   return out;
 }
 
+export function isCurrentPriceObservation(product, store, latestProcessedAt = releaseMeta.latest_processed_at) {
+  // last_seen is only advanced after the Python verified-open price gate.
+  const latest = String(latestProcessedAt || '');
+  return Boolean(latest &&
+    String(store?.last_seen || '') === latest &&
+    String(product?.last_seen || '') === latest &&
+    Number(store?.is_open) === 1 && Number(product?.is_open) === 1 &&
+    Number(product?.price) > 0);
+}
+
 function productView(product, store) {
   const price = Number(product.price || 0);
   // Derive true per-unit cost from the raw payable menu price and promotion.
@@ -207,19 +217,10 @@ function productView(product, store) {
   // This read adapter must not recompare reference_price with effective.
   const refPrice = Number(product.reference_price || 0) > 0 ? Number(product.reference_price) : null;
   const direction = product.price_direction || 'unknown';
-  // A historical price drop is not automatically a *current* deal. If a
-  // product has not had a verified open-hours price within the past 36 hours,
-  // do not keep promoting an old decline as a newly available discount.
-  // This is only a recency gate; Python PriceChange remains the sole engine
-  // that computes the amount/direction of a price change.
-  const lastVerifiedMs = Date.parse(String(product.last_seen || ''));
-  const latestBatchMs = Date.parse(String(releaseMeta.latest_processed_at || ''));
-  const referenceNow = Math.max(Date.now(), Number.isFinite(latestBatchMs) ? latestBatchMs : 0);
-  const isFresh = Number.isFinite(lastVerifiedMs) &&
-    lastVerifiedMs <= referenceNow + 60000 &&
-    referenceNow - lastVerifiedMs <= 36 * 60 * 60 * 1000;
-  const historicalDrop = Number(product.is_price_drop || 0);
-  const currentDrop = isFresh && historicalDrop === 1;
+  // Only a validated product in the latest batch can be a current deal.
+  // Price change decisions still belong exclusively to Python PriceChange.
+  const isCurrent = isCurrentPriceObservation(product, store);
+  const currentDrop = isCurrent && Number(product.is_price_drop || 0) === 1;
   const originalPrice = currentDrop && direction === 'down' ? refPrice : effective;
   const historicalSaving = Number(product.discount_amount || 0);
   return {
@@ -258,7 +259,7 @@ function productView(product, store) {
     discount_pct: currentDrop ? Number(product.discount_pct || 0) : 0,
     savings_amount: currentDrop ? historicalSaving : 0,
     is_price_deal: currentDrop ? Number(product.is_price_deal || 0) : 0,
-    is_current_price_observation: isFresh,
+    is_current_price_observation: isCurrent,
     status: product.status,
     is_open: (Number(product.is_open) === 1 && Number(store.is_open) === 1) ? 1 : 0
   };
@@ -295,11 +296,14 @@ async function bundlesForStores(storeIds) {
 
 export async function getStoresInLocation(location) {
   if (!location?.enabled) return null;
-  const key = JSON.stringify([Number(location.latitude), Number(location.longitude), Number(location.radiusKm)]);
+  const meta = await metadata();
+  const latest = String(meta.latest_processed_at || '').replace(/'/g, "''");
+  if (!latest) return { key: '', storeIds: new Set(), stores: [] };
+  const key = JSON.stringify([meta.latest_batch, Number(location.latitude), Number(location.longitude), Number(location.radiusKm)]);
   if (locationStoresCache.key === key) return locationStoresCache;
   const lat = Number(location.latitude), lon = Number(location.longitude), r = Number(location.radiusKm);
   const { dy, dx } = locationBounds(lat, r);
-  const rows = await sql(`select * from store_directory where status='active' and is_open=1 and latitude between ${lat - dy} and ${lat + dy} and longitude between ${lon - dx} and ${lon + dx} order by rating desc nulls last, review_count desc limit 50000`);
+  const rows = await sql(`select * from store_directory where status='active' and is_open=1 and last_seen='${latest}' and latitude between ${lat - dy} and ${lat + dy} and longitude between ${lon - dx} and ${lon + dx} order by rating desc nulls last, review_count desc limit 50000`);
   const allStores = rows.map(r => ({
     store_id: Number(r.store_id),
     store_uuid: r.store_uuid,
@@ -395,7 +399,8 @@ async function productsFromRefs(refs, location, limit = 50000, accepts = () => t
         for (const pair of chunk.products || []) {
           if (indexes.has(offset)) {
             const p = Object.fromEntries(cols.map((c, j) => [c, pair[1][j]]));
-            if (store.status === 'active' && Number(store.is_open) === 1 && p.status === 'active' && Number(p.is_open) === 1 && Number.isFinite(Number(p.price)) && Number(p.price) > 0) {
+            if (store.status === 'active' && p.status === 'active' &&
+                Number.isFinite(Number(p.price)) && isCurrentPriceObservation(p, store)) {
               const view = productView(p, store);
               if (accepts(view)) out.push(view);
             }
@@ -417,7 +422,9 @@ export async function directory(location, limit = 50000) {
     return locInfo.stores;
   }
   const meta = await metadata();
-  const active = meta.definition_version ? "and status='active' and is_open=1" : '';
+  const latest = String(meta.latest_processed_at || '').replace(/'/g, "''");
+  if (!latest) return [];
+  const active = meta.definition_version ? "and status='active' and is_open=1 and last_seen='" + latest + "'" : '';
   const rows = await sql(`select * from store_directory where name != '' ${active} order by rating desc nulls last, review_count desc limit ${limit}`);
   const stores = rows.map(r => ({
     store_id: Number(r.store_id),
@@ -443,8 +450,11 @@ export async function directory(location, limit = 50000) {
 
 export async function searchStores({ keyword = '', location = null, newOnly = false, limit = 50000 } = {}) {
   if (cfg().SINGLE_POINT) limit = -1;
+  const meta = await metadata();
+  const latest = String(meta.latest_processed_at || '').replace(/'/g, "''");
+  if (!latest) return [];
   const keywords = String(keyword || '').trim().split(/\s+/).map(normalize).filter(Boolean);
-  let where = "name != '' and status='active' and is_open=1";
+  let where = "name != '' and status='active' and is_open=1 and last_seen='" + latest + "'";
   for (const word of keywords) {
     // Each token must match, but may appear in a different store field.
     // instr avoids treating user-entered % and _ as SQL LIKE wildcards.
@@ -463,7 +473,6 @@ export async function searchStores({ keyword = '', location = null, newOnly = fa
     where += ` and latitude between ${lat - dy} and ${lat + dy} and longitude between ${lon - dx} and ${lon + dx}`;
   }
   if (newOnly) {
-    const meta = await metadata();
     if (!meta.latest_processed_at || !meta.definition_version) return [];
     const anchor = new Date(meta.latest_processed_at || Date.now());
     anchor.setDate(anchor.getDate() - 7);
@@ -511,7 +520,8 @@ async function sampleProducts(stores, location, limit = 50000) {
       if (!store || !inLocation(store, location)) continue;
       for (const pair of chunk.products || []) {
         const p = Object.fromEntries(cols.map((c, i) => [c, pair[1][i]]));
-        if (store.status === 'active' && Number(store.is_open) === 1 && p.status === 'active' && Number(p.is_open) === 1 && Number.isFinite(Number(p.price)) && Number(p.price) > 0) out.push(productView(p, store));
+        if (store.status === 'active' && p.status === 'active' &&
+            Number.isFinite(Number(p.price)) && isCurrentPriceObservation(p, store)) out.push(productView(p, store));
         if (out.length >= limit) return dedupeProducts(out);
       }
     }
@@ -566,6 +576,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
   const k = normalize(keyword), c = normalize(city);
   const accepts = p =>
     p.status === 'active' && Number(p.is_open) === 1 &&
+    p.is_current_price_observation === true &&
     (!k || matchesWords(`${p.product_name}${p.store_name}${p.category_name}`, keyword)) &&
     (!c || matchesWords(`${p.city}${p.locality}${p.street_address}`, city)) &&
     (minDiscount === null || Number(p.discount_pct || 0) >= Number(minDiscount)) &&
@@ -639,8 +650,8 @@ export async function packedCurrentProduct(storeUuid, productUuid) {
     for (const pair of chunk.products || []) {
       const item = Object.fromEntries(cols.map((name, index) => [name, pair[1][index]]));
       if (String(item.product_uuid) === String(productUuid)) {
-        if (store.status !== 'active' || Number(store.is_open) !== 1 ||
-            item.status !== 'active' || Number(item.is_open) !== 1) return null;
+        if (store.status !== 'active' || item.status !== 'active' ||
+            !isCurrentPriceObservation(item, store)) return null;
         return productView(item, store);
       }
     }

@@ -184,9 +184,22 @@ def _event(conn: sqlite3.Connection, now: str, sid: str, pid: str | None, kind: 
     )
 
 
-def refresh_product_search(conn: sqlite3.Connection) -> None:
+def refresh_product_search(conn: sqlite3.Connection, latest_observation_at: str | None = None) -> None:
+    """Index only this completed batch's verified product observations."""
+    if latest_observation_at is None:
+        row = conn.execute("SELECT MAX(processed_at) FROM crawl_batches").fetchone()
+        latest_observation_at = row[0] if row else None
     conn.execute("DELETE FROM product_search")
-    conn.execute("INSERT INTO product_search SELECT p.store_uuid,p.product_uuid,s.name,p.product_name,p.category FROM products p JOIN stores s USING(store_uuid) WHERE p.status='active'")
+    if latest_observation_at:
+        conn.execute(
+            """INSERT INTO product_search
+               SELECT p.store_uuid,p.product_uuid,s.name,p.product_name,p.category
+               FROM products p JOIN stores s USING(store_uuid)
+               WHERE p.status='active' AND s.status='active'
+                 AND p.is_open=1 AND s.is_open=1
+                 AND p.last_seen=? AND s.last_seen=? AND p.effective_price>0""",
+            (latest_observation_at, latest_observation_at)
+        )
 
 
 def ensure_schema_and_migrations(conn: sqlite3.Connection) -> None:
@@ -693,7 +706,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         cutoff = (datetime.fromisoformat(now) - timedelta(days=event_retention_days)).isoformat()
         conn.execute("DELETE FROM events WHERE event_time < ?", (cutoff,))
     if refresh_search:
-        refresh_product_search(conn)
+        refresh_product_search(conn, now)
     conn.execute("INSERT OR REPLACE INTO crawl_batches VALUES(?,?,?,?,?,?)", (batch_id, now, counts["stores"], counts["products"], counts["fallback_stores"], counts["fallback_products"]))
     conn.execute("INSERT OR REPLACE INTO metadata VALUES('latest_batch',?)", (batch_id,))
     conn.commit()
