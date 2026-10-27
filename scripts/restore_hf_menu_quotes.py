@@ -63,7 +63,6 @@ def canonical_menu_quotes(doc, sid):
             name=html.unescape(str(item.get('name') or '')).strip()
             if not name:continue
             pid,_=product_identity(item,sid)
-            if pid in results:continue
             try:raw=float((item.get('offers') or {}).get('price') or 0)
             except (ValueError,TypeError):continue
             if not 0<raw<1000000:continue
@@ -72,6 +71,7 @@ def canonical_menu_quotes(doc, sid):
             # price was payable. Exclude ambiguous quotes rather than invent
             # price drops based on whichever category appears first.
             encountered_raw_prices[pid].add(round(raw,2))
+            if pid in results:continue
             inferred,qty=extract_promo_info(category,name,str(item.get('description') or ''))
             promo=str(item.get('promo_type') or inferred)
             try:qty=max(1,int(item.get('quantity') or qty))
