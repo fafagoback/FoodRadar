@@ -1,0 +1,56 @@
+"""End-to-end 7-day maximum price baseline for a sustained sale."""
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'src'))
+sys.path.insert(0,str(ROOT/'scripts'))
+sys.path.insert(0,str(ROOT/'tests'))
+
+from serving_state import apply_snapshot
+from repair_effective_prices import repair
+from test_price_observation import menu
+
+
+class SevenDayDealTests(unittest.TestCase):
+    def test_sustained_half_price_is_still_a_deal_days_later(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db=Path(temp)/'serving.db'
+            conn=sqlite3.connect(db)
+            conn.row_factory=sqlite3.Row
+            try:
+                # Same SKU, same operating-hours menu, one higher regular
+                # observation six days ago, then five days of unchanged sale.
+                for batch,price in (
+                    ('20261021091759',100),
+                    ('20261022091759',50),
+                    ('20261023091759',50),
+                    ('20261024091759',50),
+                    ('20261026091759',50),
+                    ('20261027091759',50),
+                ):
+                    apply_snapshot(conn,[menu(batch,price)],batch)
+                repair(db)
+                row=conn.execute('SELECT * FROM products').fetchone()
+                self.assertEqual(row['seven_day_reference_price'],100)
+                self.assertEqual(row['seven_day_discount_pct'],50)
+                self.assertEqual(row['seven_day_discount_amount'],50)
+                self.assertEqual(row['seven_day_is_price_deal'],1)
+                # This sale is old: the conventional last-crawl comparator
+                # is flat, but the new week-high comparator stays 50% down.
+                self.assertEqual(row['discount_pct'],0)
+                self.assertEqual(row['is_price_drop'],0)
+                apply_snapshot(conn,[menu('20261028092000',50)],'20261028092000')
+                repair(db)
+                row=conn.execute('SELECT * FROM products').fetchone()
+                self.assertEqual(row['seven_day_discount_pct'],0)
+                self.assertEqual(row['seven_day_is_price_deal'],0)
+            finally:
+                conn.close()
+
+
+if __name__=='__main__':
+    unittest.main()
