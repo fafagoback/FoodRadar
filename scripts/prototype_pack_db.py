@@ -125,11 +125,12 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     seven_day_reference_products = 0
     verified_history_days = sorted(set(
         str(t)[:10] for (t,) in src.execute(
-            """SELECT DISTINCT e.event_time FROM events e
-               JOIN crawl_batches b ON substr(e.event_time,1,10)=substr(b.processed_at,1,10)
-               WHERE e.event_time>=? AND e.event_time<?
-                 AND e.event_type IN ('NEW','PRICE_OBSERVED','PRICE_CHANGED','PROMOTION_CHANGED')
-                 AND e.new_state LIKE '%"price_valid":true%'""",
+            """SELECT DISTINCT event_time FROM events
+               WHERE event_time>=? AND event_time<?
+                 AND event_type IN ('NEW','PRICE_OBSERVED','PRICE_CHANGED','PROMOTION_CHANGED')
+                 AND json_valid(new_state)
+                 AND json_extract(new_state,'$.price_valid')=1
+                 AND json_extract(new_state,'$.is_open')=1""",
             (cutoff,latest_time))))
     for store_id, store in enumerate(stores):
         sid = store["store_uuid"]
