@@ -11,6 +11,18 @@ const fs = require('node:fs');
     page.on('pageerror', error => errors.push(String(error)));
     const url = process.env.FOODRADAR_SITE || 'https://fafagoback.github.io/FoodRadar/';
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    // Verify the ACTUALLY DEPLOYED GitHub Pages release, not just the CI build.
+    const manifest = await page.evaluate(async () => {
+      const response = await fetch('version.json?_t=' + Date.now(), {cache:'no-store'});
+      if (!response.ok) throw new Error('Live version.json HTTP ' + response.status);
+      return response.json();
+    });
+    const expectedCommit = process.env.GITHUB_SHA || '';
+    assert.ok(expectedCommit, 'GitHub Actions must provide GITHUB_SHA');
+    assert.equal(manifest.commit, expectedCommit, 'Live Pages are not running the tested commit');
+    assert.ok(String(manifest.version || '').includes(expectedCommit.slice(0,12)),
+      'Live version ID must change when the source commit changes');
+    console.log('LIVE_PAGES_RELEASE_VERIFIED ' + JSON.stringify(manifest));
     await page.waitForFunction(() => {
       const value = document.querySelector('#stat-big-discounts')?.textContent?.trim();
       return value && /^\d[\d,]*$/.test(value);
