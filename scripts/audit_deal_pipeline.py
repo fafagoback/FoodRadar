@@ -18,6 +18,8 @@ def report(path):
     latest=con.execute('SELECT MAX(processed_at) FROM crawl_batches').fetchone()[0]
     current=con.execute("""SELECT p.store_uuid,p.product_uuid,p.product_name,p.price,p.effective_price,
         p.promo_type,p.quantity,p.discount_pct,p.reference_price,p.is_price_drop,p.is_price_deal,
+        p.seven_day_reference_price,p.seven_day_discount_pct,
+        p.seven_day_discount_amount,p.seven_day_is_price_deal,
         p.last_seen,s.last_seen AS store_last_seen,s.name AS store_name,s.is_open AS store_open
         FROM products p JOIN stores s USING(store_uuid)
         WHERE p.last_seen=? AND s.last_seen=? AND p.is_open=1 AND s.is_open=1
@@ -40,11 +42,51 @@ def report(path):
             histories[key][-1]=sample
         else:histories[key].append(sample)
         counter_dates[sample[0][:10]]+=1
-    examples=[]; discrepancies=[]
+    examples=[]; discrepancies=[]; week_discrepancies=[]
+    seven_day_examples=[]
     for p in current:
         counters['current_products']+=1
         key=p['store_uuid'],p['product_uuid']
         hist=histories.get(key,[])
+        # Verify the PUBLISHED seven-day comparison independently of the
+        # legacy previous-crawl comparison. Previously this audit could pass
+        # while every seven_day_* field was silently zero or stale.
+        week=PriceChange.seven_day_high(hist,latest,p['effective_price'])
+        expected_ref=week['reference'] if week else None
+        calc=week['comparison'] if week else None
+        expected_pct=calc['discount_pct'] if calc and calc['is_price_drop'] else 0.0
+        expected_savings=calc['savings'] if calc and calc['is_price_drop'] else 0.0
+        expected_deal=int(PriceChange.qualifies(calc,30))
+        actual_ref=p['seven_day_reference_price']
+        ref_ok=((expected_ref is None and actual_ref is None) or
+                (expected_ref is not None and actual_ref is not None and
+                 abs(float(expected_ref)-float(actual_ref))<=0.02))
+        if expected_ref is not None:counters['seven_day_comparable']+=1
+        else:counters['seven_day_no_reference']+=1
+        if expected_deal:
+            counters['seven_day_verified_deal30']+=1
+            if len(seven_day_examples)<12:
+                seven_day_examples.append({
+                    'store':p['store_name'],'product':p['product_name'],
+                    'seven_day_high':expected_ref,'current':p['effective_price'],
+                    'percent':expected_pct
+                })
+        if p['seven_day_is_price_deal']:counters['stored_seven_day_deal30']+=1
+        if (not ref_ok or
+            abs(float(p['seven_day_discount_pct'] or 0)-expected_pct)>.02 or
+            abs(float(p['seven_day_discount_amount'] or 0)-expected_savings)>.02 or
+            int(p['seven_day_is_price_deal'] or 0)!=expected_deal):
+            if len(week_discrepancies)<12:
+                week_discrepancies.append({
+                    'store':p['store_name'],'product':p['product_name'],
+                    'history':hist[-6:],
+                    'expected':{'reference':expected_ref,'pct':expected_pct,
+                                'savings':expected_savings,'deal30':expected_deal},
+                    'stored':{'reference':actual_ref,
+                              'pct':p['seven_day_discount_pct'],
+                              'savings':p['seven_day_discount_amount'],
+                              'deal30':p['seven_day_is_price_deal']}
+                })
         if len(hist)<2:
             counters['no_prior_valid_observation']+=1
         else:
@@ -75,13 +117,16 @@ def report(path):
         if p['reference_price'] is not None:counters['stored_reference_exists']+=1
     output={'batch':latest,'current_products':len(current),
       'comparisons':dict(counters),'valid_event_count_by_date':dict(sorted(counter_dates.items())),
-      'qualified_examples':examples,'discrepancies':discrepancies}
+      'qualified_examples':examples,'seven_day_examples':seven_day_examples,
+      'discrepancies':discrepancies,'seven_day_discrepancies':week_discrepancies}
     print('FOODRADAR_DEAL_PIPELINE_AUDIT='+json.dumps(output,ensure_ascii=False),flush=True)
     # This warning makes a logical 0 distinct from a real market with no price changes.
     if not counters['has_prior_valid_observation']:
         print('FOODRADAR_WARNING_NO_PRICE_COMPARISON_BASELINES: No product can become a valid current price drop.',flush=True)
     if discrepancies:
-        raise ValueError('Published discount flags disagree with the two most recent valid prices.')
+        raise ValueError('Published previous-crawl discount flags disagree with verified history.')
+    if week_discrepancies:
+        raise ValueError('Published seven-day maximum-price flags disagree with verified history.')
     con.close()
     return output
 
