@@ -123,6 +123,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     active_stores = active_products = 0
     active_comparable_products = active_platform_promotions = active_30pct_drops = 0
     seven_day_reference_products = 0
+    archive_reference_products = archive_30pct_candidates = 0
     verified_history_days = sorted(set(
         str(t)[:10] for (t,) in src.execute(
             """SELECT DISTINCT event_time FROM events
@@ -165,6 +166,11 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                     active_platform_promotions += 1
                 if int(product["seven_day_is_price_deal"] or 0) == 1:
                     active_30pct_drops += 1
+                if float(product["archive_reference_price"] or 0) > 0:
+                    archive_reference_products += 1
+                if int(product["archive_is_price_deal"] or 0) == 1:
+                    archive_30pct_candidates += 1
+                    terms.add(f"f:archive_discount:{int(float(product['archive_discount_pct']) // 5)}")
                 terms.add(f"f:price:{int(price // 50)}")
                 terms.add("f:catalog")
                 if (product['listing_started_at'][:10] > baseline_time[:10]
@@ -230,6 +236,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
             "active_stores": active_stores, "active_products": active_products,
             "active_comparable_products": active_comparable_products,
             "seven_day_reference_products": seven_day_reference_products,
+            "archive_reference_products": archive_reference_products,
+            "archive_30pct_candidates": archive_30pct_candidates,
             "seven_day_verified_dates": verified_history_days,
             "seven_day_history_incomplete": len(verified_history_days) < 3,
             "active_platform_promotions": active_platform_promotions,

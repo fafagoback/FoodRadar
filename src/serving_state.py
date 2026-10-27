@@ -113,6 +113,11 @@ CREATE TABLE IF NOT EXISTS products(
   seven_day_discount_pct REAL NOT NULL DEFAULT 0,
   seven_day_discount_amount REAL NOT NULL DEFAULT 0,
   seven_day_is_price_deal INTEGER NOT NULL DEFAULT 0,
+  archive_reference_price REAL,
+  archive_discount_pct REAL NOT NULL DEFAULT 0,
+  archive_discount_amount REAL NOT NULL DEFAULT 0,
+  archive_evidence_count INTEGER NOT NULL DEFAULT 0,
+  archive_is_price_deal INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(store_uuid, product_uuid),
   FOREIGN KEY(store_uuid) REFERENCES stores(store_uuid)
 );
@@ -235,6 +240,11 @@ def ensure_schema_and_migrations(conn: sqlite3.Connection) -> None:
         ("seven_day_discount_pct", "REAL NOT NULL DEFAULT 0"),
         ("seven_day_discount_amount", "REAL NOT NULL DEFAULT 0"),
         ("seven_day_is_price_deal", "INTEGER NOT NULL DEFAULT 0"),
+        ("archive_reference_price", "REAL"),
+        ("archive_discount_pct", "REAL NOT NULL DEFAULT 0"),
+        ("archive_discount_amount", "REAL NOT NULL DEFAULT 0"),
+        ("archive_evidence_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("archive_is_price_deal", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in product_columns:
             conn.execute(f"ALTER TABLE products ADD COLUMN {name} {definition}")

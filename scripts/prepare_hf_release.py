@@ -14,4 +14,8 @@ restore_history(json.loads((ROOT/'config.json').read_text(encoding='utf-8')),
                 rebuild_all=os.environ.get('FOODRADAR_REBUILD_VALID_PRICE_HISTORY') == '1')
 batch = (ROOT/'data/latest.txt').read_text(encoding='utf-8').strip()
 repair(ROOT/'data'/batch/'serving.db')
+from restore_hf_menu_quotes import restore_archive_price_references
+restore_archive_price_references(
+    ROOT/'data'/batch/'serving.db',
+    json.loads((ROOT/'config.json').read_text(encoding='utf-8')), batch)
 build_web_db(ROOT/'data'/batch/'serving.db',ROOT/'data'/batch/'packed-serving.db')

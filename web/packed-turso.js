@@ -256,6 +256,11 @@ function productView(product, store) {
     reference_price: refPrice,
     seven_day_reference_price: weekReference,
     is_new_price_drop: isCurrent && Number(product.is_price_drop || 0) === 1,
+    archive_reference_price: isCurrent ? Number(product.archive_reference_price || 0) : 0,
+    archive_discount_pct: isCurrent ? Number(product.archive_discount_pct || 0) : 0,
+    archive_savings_amount: isCurrent ? Number(product.archive_discount_amount || 0) : 0,
+    archive_evidence_count: isCurrent ? Number(product.archive_evidence_count || 0) : 0,
+    archive_is_price_deal: isCurrent ? Number(product.archive_is_price_deal || 0) : 0,
     current_price: effective,
     price_direction: direction,
     price_change_amount: Number(product.price_change_amount || 0),
@@ -541,7 +546,7 @@ export async function loadPackedDashboard(location) {
   return { meta, stores, products };
 }
 
-export async function searchPacked({ keyword = '', city = '', promo = false, newOnly = false, minDiscount = null, location = null, limit = 50000 } = {}) {
+export async function searchPacked({ keyword = '', city = '', promo = false, newOnly = false, minDiscount = null, minArchiveDiscount = null, location = null, limit = 50000 } = {}) {
   if (cfg().SINGLE_POINT) limit = Infinity;
   const meta = await metadata();
   if (newOnly && !meta.definition_version) return [];
@@ -572,6 +577,18 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
     groups.push([...union]);
   }
 
+  if (minArchiveDiscount !== null) {
+    const minBand = Math.floor(Number(minArchiveDiscount) / 5);
+    const quoteTerms = [];
+    for (let n = minBand; n <= 20; n++) quoteTerms.push(`f:archive_discount:${n}`);
+    await fetchBuckets(await Promise.all(quoteTerms.map(t => bucketId(t, count))));
+    const quoteRefs = new Set();
+    for (const t of quoteTerms) {
+      const bid = await bucketId(t, count);
+      for (const ref of (bucketCache.get(bid) || {})[t] || []) quoteRefs.add(ref);
+    }
+    groups.push([...quoteRefs]);
+  }
   if (!groups.length) {
     const catalog = await posting('f:catalog', count);
     if (!catalog.length && !meta.definition_version) return sampleProducts(await directory(location, 50), location, Math.min(limit, 2000));
@@ -585,6 +602,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
     (!k || matchesWords(`${p.product_name}${p.store_name}${p.category_name}`, keyword)) &&
     (!c || matchesWords(`${p.city}${p.locality}${p.street_address}`, city)) &&
     (minDiscount === null || Number(p.discount_pct || 0) >= Number(minDiscount)) &&
+    (minArchiveDiscount === null || Number(p.archive_discount_pct || 0) >= Number(minArchiveDiscount)) &&
     (!newOnly || (String(p.listing_started_at || p.first_seen || '').slice(0,10) > String(meta.baseline_processed_at || '').slice(0,10)));
   return productsFromRefs(intersect(groups), location, limit, accepts);
 

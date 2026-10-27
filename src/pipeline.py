@@ -205,6 +205,8 @@ def build_snapshot(output, config):
     sys.path.insert(0, str(ROOT/'scripts'))
     from repair_effective_prices import repair
     repair(serving)
+    from restore_hf_menu_quotes import restore_archive_price_references
+    restore_archive_price_references(serving, config, batch)
     print(f"VALID_OPEN_STORES={counts['stores']} RAW_ONLY_CLOSED_STORES={counts['skipped_closed_stores']}", flush=True)
     subprocess.run([sys.executable,str(ROOT/'scripts/build_web_db.py'),
                     str(serving),str(output/'packed-serving.db')],check=True)
