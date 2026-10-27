@@ -433,6 +433,31 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         # The shared store-open gate already rejected off-hours observations.
         store_price_valid = True
         sections = (doc.get("hasMenu") or {}).get("hasMenuSection") or []
+        # A SKU may appear both in a normal category and in the live BOGO
+        # category. Selecting the first occurrence makes prices jump when
+        # getStoreV1 changes section order. Gather all explicit promo-category
+        # evidence first, then apply it consistently to each deduplicated SKU.
+        preferred_promos = {}
+        for candidate_section in sections:
+            candidate_category = html.unescape(str(candidate_section.get("name") or "一般"))
+            for candidate_item in candidate_section.get("hasMenuItem") or []:
+                candidate_name = html.unescape(str(candidate_item.get("name") or "")).strip()
+                if not candidate_name:
+                    continue
+                candidate_pid, _ = product_identity(candidate_item, sid)
+                inferred, inferred_qty = extract_promo_info(
+                    candidate_category, candidate_name,
+                    str(candidate_item.get("description") or ""))
+                candidate_promo = str(candidate_item.get("promo_type") or inferred)
+                candidate_qty = max(1, _num(candidate_item.get("quantity"), int, inferred_qty))
+                if candidate_promo == "無":
+                    continue
+                # Quantity-changing offers rank over descriptive sale labels.
+                # Resolve ties by stable text, never by API category order.
+                rank = (int(candidate_qty > 1), candidate_promo)
+                prior = preferred_promos.get(candidate_pid)
+                if prior is None or rank > prior[0]:
+                    preferred_promos[candidate_pid] = (rank, candidate_promo, candidate_qty)
         store_product_keys: set[str] = set()
         for sec in sections:
             category = html.unescape(str(sec.get("name") or "一般"))
@@ -458,6 +483,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 inferred_promo, inferred_qty = extract_promo_info(category, name, desc)
                 observed_promo = str(item.get("promo_type") or inferred_promo)
                 observed_qty = max(1, _num(item.get("quantity"), int, inferred_qty))
+                preferred = preferred_promos.get(pid)
+                if preferred is not None:
+                    observed_promo, observed_qty = preferred[1], preferred[2]
                 # Never replace the last verified price/promotion with an
                 # unpurchasable closed-hours menu snapshot.
                 price = observed_price if price_valid else (float(old["price"]) if old and old["recent_prices"] else 0.0)

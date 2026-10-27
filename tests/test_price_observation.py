@@ -199,6 +199,37 @@ class PriceValidityTests(unittest.TestCase):
         doc['workingHoursTagline']=''
         self.assertFalse(price_observation_valid(doc,'20261014014059')) # Unknown: raw only
 
+    def test_same_sku_in_normal_and_bogo_sections_is_order_independent(self):
+        """A category carousel/order swap must never invent a 50% price jump."""
+        import copy
+        first = menu('20261026091759',100)
+        regular = first['hasMenu']['hasMenuSection'][0]
+        regular['name'] = '所有商品'
+        featured = copy.deepcopy(regular)
+        featured['name'] = '買1送1'
+        first['hasMenu']['hasMenuSection'] = [regular, featured]
+        apply_snapshot(self.conn,[first],'20261026091759')
+        row = self.conn.execute(
+            'SELECT price,promo_type,quantity,effective_price FROM products').fetchone()
+        self.assertEqual(tuple(row),(100,'買1送1',2,50))
+
+        swapped = menu('20261027091759',100)
+        swapped['hasMenu']['hasMenuSection'] = [copy.deepcopy(featured),copy.deepcopy(regular)]
+        apply_snapshot(self.conn,[swapped],'20261027091759')
+        row = self.conn.execute(
+            'SELECT price,promo_type,quantity,effective_price,discount_pct,is_price_drop FROM products').fetchone()
+        self.assertEqual(tuple(row),(100,'買1送1',2,50,0,0))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='PRICE_CHANGED'").fetchone()[0],0)
+
+        # A genuine disappearance of the promotional category remains a rise.
+        ended = menu('20261028091759',100)
+        ended['hasMenu']['hasMenuSection'][0]['name'] = '所有商品'
+        apply_snapshot(self.conn,[ended],'20261028091759')
+        row = self.conn.execute(
+            'SELECT effective_price,reference_price,price_direction FROM products').fetchone()
+        self.assertEqual(tuple(row),(100,50,'up'))
+
 
 if __name__=='__main__':
     unittest.main()
