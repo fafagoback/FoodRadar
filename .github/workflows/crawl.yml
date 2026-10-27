@@ -125,6 +125,14 @@ jobs:
   live-site-acceptance:
     name: Verify deployed website
     needs: crawl
+    # The published Pages URL always points at the newest release. A slow
+    # Chromium install for an older SHA must be cancelled once a newer
+    # deployment queues its acceptance job, not reported as a price failure.
+    # Keep this lock separate from the crawl/Turso publisher so browser
+    # installation never blocks newer database releases.
+    concurrency:
+      group: foodradar-live-qa-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
