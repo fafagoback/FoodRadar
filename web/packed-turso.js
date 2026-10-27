@@ -207,7 +207,20 @@ function productView(product, store) {
   // This read adapter must not recompare reference_price with effective.
   const refPrice = Number(product.reference_price || 0) > 0 ? Number(product.reference_price) : null;
   const direction = product.price_direction || 'unknown';
-  const originalPrice = direction === 'down' ? refPrice : effective;
+  // A historical price drop is not automatically a *current* deal. If a
+  // product has not had a verified open-hours price within the past 36 hours,
+  // do not keep promoting an old decline as a newly available discount.
+  // This is only a recency gate; Python PriceChange remains the sole engine
+  // that computes the amount/direction of a price change.
+  const lastVerifiedMs = Date.parse(String(product.last_seen || ''));
+  const latestBatchMs = Date.parse(String(releaseMeta.latest_processed_at || ''));
+  const referenceNow = Math.max(Date.now(), Number.isFinite(latestBatchMs) ? latestBatchMs : 0);
+  const isFresh = Number.isFinite(lastVerifiedMs) &&
+    lastVerifiedMs <= referenceNow + 60000 &&
+    referenceNow - lastVerifiedMs <= 36 * 60 * 60 * 1000;
+  const historicalDrop = Number(product.is_price_drop || 0);
+  const currentDrop = isFresh && historicalDrop === 1;
+  const originalPrice = currentDrop && direction === 'down' ? refPrice : effective;
   const historicalSaving = Number(product.discount_amount || 0);
   return {
     product_id: product.product_uuid,
@@ -241,10 +254,11 @@ function productView(product, store) {
     price_direction: direction,
     price_change_amount: Number(product.price_change_amount || 0),
     price_change_percent: Number(product.price_change_percent || 0),
-    is_price_drop: Number(product.is_price_drop || 0),
-    discount_pct: Number(product.discount_pct || 0),
-    savings_amount: historicalSaving,
-    is_price_deal: Number(product.is_price_deal || 0),
+    is_price_drop: currentDrop ? 1 : 0,
+    discount_pct: currentDrop ? Number(product.discount_pct || 0) : 0,
+    savings_amount: currentDrop ? historicalSaving : 0,
+    is_price_deal: currentDrop ? Number(product.is_price_deal || 0) : 0,
+    is_current_price_observation: isFresh,
     status: product.status,
     is_open: (Number(product.is_open) === 1 && Number(store.is_open) === 1) ? 1 : 0
   };

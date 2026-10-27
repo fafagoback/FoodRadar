@@ -1877,6 +1877,9 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         ? `目前實質單價 ${unitFmt(shownPrice)}（尚無前次可比較紀錄）`
         : '目前沒有可比較的實質單價紀錄';
     }
+    if (currentProductLoaded && currentComparison.crawled_time) {
+      priceChangeEl.textContent += `｜最後有效採集 ${formatBatchDate(currentComparison.crawled_time)}`;
+    }
   }
 
   const tbody = document.getElementById('modal-history-tbody');
