@@ -8,6 +8,18 @@ async function main() {
   const client = await import('data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64'));
   const normalize = client.normalizePriceHistoryEvents;
   assert.equal(typeof normalize, 'function');
+  // Current means observed in the EXACT latest verified batch, not 36
+  // hours ago. Stored old discounts must not be advertised as current.
+  const current = client.isCurrentPriceObservation;
+  assert.equal(typeof current, 'function');
+  const stamp = '2026-10-27T14:46:28+08:00';
+  const store = { last_seen: stamp, is_open: 1 };
+  const product = { last_seen: stamp, is_open: 1, price: 1080 };
+  assert.equal(current(product, store, stamp), true);
+  assert.equal(current({...product, last_seen:'2026-10-27T09:35:52+08:00'}, store, stamp), false);
+  assert.equal(current(product, {...store, last_seen:'2026-10-26T18:30:00+08:00'}, stamp), false);
+  assert.equal(current({...product, is_open:0}, store, stamp), false);
+  assert.equal(current(product, store, ''), false);
 
   const state = (price, more = {}) => JSON.stringify({
     price, effective_price: price, is_open: 1, price_valid: true, promo_type: '無', quantity: 1, ...more

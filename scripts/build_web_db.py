@@ -1,7 +1,8 @@
-"""Build a stable web projection; Raw and normalized history remain on HF/runner.
+"""Build a current-price web projection while keeping Raw/history on HF/runner.
 
-Daily observation timestamps and internal price-observation bookkeeping are not
-duplicated inside every web bundle. The web uses the release observation time.
+A product must retain its actual last verified price observation timestamp:
+rewriting last_seen to first_seen breaks latest-batch membership and causes
+old prices to appear as current deals, or current prices to disappear.
 """
 import argparse
 import sqlite3
@@ -16,10 +17,10 @@ def build_web_db(source, target):
     dst = sqlite3.connect(projection)
     src.backup(dst)
     src.close()
-    # first_seen is stable; last_seen is derived from release metadata for rows
-    # observed this batch. Preserve the true timestamp for missing rows.
+    # Preserve exact last_seen for store and product independently, including
+    # unchanged valid prices. Membership in the latest successful batch is
+    # determined by these timestamps, not by any elapsed-time grace period.
     for table in ('stores', 'products'):
-        dst.execute(f'UPDATE {table} SET last_seen=first_seen WHERE missing_streak=0')
         dst.execute(f'UPDATE {table} SET missing_streak=0')
     dst.execute("UPDATE products SET recent_prices='[]',price_novel_vs_previous_3=0")
     # Keep the previous verified unit price for flat/rising and small drops too.

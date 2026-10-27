@@ -68,12 +68,16 @@ class PackedUpdateTests(unittest.TestCase):
             build_web_db(root/'state.db',root/'a.db')
             apply_snapshot(conn,docs,'20261007063000')
             build_web_db(root/'state.db',root/'b.db')
-            # The second crawl supplies the first comparison baseline, so the
-            # product bundle gains reference_price=100 exactly once. Store and
-            # search indexes must remain unchanged.
-            for table in ('store_directory','search_buckets'):
-                with contextlib.closing(sqlite3.connect(root/'a.db')) as a, contextlib.closing(sqlite3.connect(root/'b.db')) as b:
-                    self.assertEqual(a.execute(f'SELECT * FROM {table}').fetchall(),b.execute(f'SELECT * FROM {table}').fetchall(),table)
+            # The product remains searchable when its price is unchanged, but
+            # the current snapshot time advances; old date-stamping tricks
+            # must never erase that verified observation.
+            with contextlib.closing(sqlite3.connect(root/'a.db')) as a, contextlib.closing(sqlite3.connect(root/'b.db')) as b:
+                self.assertEqual(a.execute('SELECT * FROM search_buckets').fetchall(),
+                                 b.execute('SELECT * FROM search_buckets').fetchall())
+                self.assertEqual(a.execute('SELECT last_seen FROM store_directory').fetchone()[0],
+                                 '2026-10-06T06:30:00+08:00')
+                self.assertEqual(b.execute('SELECT last_seen FROM store_directory').fetchone()[0],
+                                 '2026-10-07T06:30:00+08:00')
             self.assertEqual(conn.execute('SELECT reference_price,discount_pct FROM products').fetchone()[:], (100,0))
             # New identities sort before the old UUID but must append to IDs,
             # and a new product must leave the existing product ref unchanged.
@@ -85,6 +89,69 @@ class PackedUpdateTests(unittest.TestCase):
             self.assertEqual(report['products'],3)
             with contextlib.closing(sqlite3.connect(root/'c.db')) as c:
                 self.assertEqual(c.execute('SELECT store_id FROM store_directory WHERE store_uuid=?',(sid,)).fetchone()[0],0)
+
+    def test_stale_discount_vanishes_from_next_batch_even_if_row_is_active(self):
+        import json
+        import msgpack
+        import zstandard
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), contextlib.ExitStack() as stack:
+            root = Path(tmp)
+            conn = sqlite3.connect(root/'state.db')
+            conn.row_factory = sqlite3.Row
+            stack.callback(conn.close)
+            sid = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+            old_pid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            live_pid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+            original = document(sid, [old_pid, live_pid])
+            original['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['offers']['price'] = 180
+            apply_snapshot(conn, [original], '20261025063000')
+            dropped = document(sid, [old_pid, live_pid])
+            dropped['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['offers']['price'] = 90
+            apply_snapshot(conn, [dropped], '20261026063000')
+            self.assertEqual(conn.execute('SELECT is_price_drop FROM products WHERE product_uuid=?',
+                                          (old_pid,)).fetchone()[0], 1)
+            # The store is valid today, but the discounted item is missing
+            # from the currently observed menu. Its old record stays active
+            # for the normal multi-crawl missing/reappearance policy.
+            apply_snapshot(conn, [document(sid, [live_pid])], '20261027063000')
+            stale = conn.execute('SELECT status,is_price_drop,last_seen FROM products WHERE product_uuid=?',
+                                 (old_pid,)).fetchone()
+            self.assertEqual((stale['status'], stale['is_price_drop']), ('active', 1))
+            self.assertEqual(stale['last_seen'], '2026-10-26T06:30:00+08:00')
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0], 1)
+            build_web_db(root/'state.db', root/'packed.db')
+            with contextlib.closing(sqlite3.connect(root/'packed.db')) as packed:
+                metadata = dict((k, json.loads(v)) for k,v in packed.execute('SELECT key,value FROM metadata'))
+                self.assertEqual(metadata['active_products'], 1)
+                self.assertEqual(metadata['latest_processed_at'], '2026-10-27T06:30:00+08:00')
+                tokens = {}
+                for payload, in packed.execute('SELECT payload FROM search_buckets'):
+                    for term, refs in msgpack.unpackb(zstandard.ZstdDecompressor().decompress(payload), raw=False).items():
+                        tokens.setdefault(term, []).extend(refs)
+                self.assertEqual(tokens.get('f:catalog'), [1])  # Only the live product is searchable.
+                self.assertFalse(any(key.startswith('f:discount:') for key in tokens))
+                self.assertIsNotNone(conn.execute('SELECT 1 FROM products WHERE product_uuid=?',(old_pid,)).fetchone())
+
+    def test_closed_store_cannot_show_yesterdays_catalog(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), contextlib.ExitStack() as stack:
+            root = Path(tmp)
+            conn = sqlite3.connect(root/'state.db')
+            conn.row_factory = sqlite3.Row
+            stack.callback(conn.close)
+            old_sid = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+            fresh_sid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            pid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+            apply_snapshot(conn, [document(old_sid,[pid])], '20261026063000')
+            closed = document(old_sid,[pid])
+            closed['isOpen'] = False
+            apply_snapshot(conn, [closed, document(fresh_sid,[pid])], '20261027063000')
+            build_web_db(root/'state.db',root/'packed.db')
+            with contextlib.closing(sqlite3.connect(root/'packed.db')) as packed:
+                meta = {k:json.loads(v) for k,v in packed.execute('SELECT key,value FROM metadata')}
+                self.assertEqual(meta['active_stores'],1)
+                self.assertEqual(meta['active_products'],1)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0],1)
 
 
 if __name__ == '__main__':
