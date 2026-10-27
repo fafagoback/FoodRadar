@@ -122,6 +122,15 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     cutoff = (datetime.fromisoformat(latest_time) - timedelta(days=7)).isoformat()
     active_stores = active_products = 0
     active_comparable_products = active_platform_promotions = active_30pct_drops = 0
+    seven_day_reference_products = 0
+    verified_history_days = sorted(set(
+        str(t)[:10] for (t,) in src.execute(
+            """SELECT DISTINCT e.event_time FROM events e
+               JOIN crawl_batches b ON substr(e.event_time,1,10)=substr(b.processed_at,1,10)
+               WHERE e.event_time>=? AND e.event_time<?
+                 AND e.event_type IN ('NEW','PRICE_OBSERVED','PRICE_CHANGED','PROMOTION_CHANGED')
+                 AND e.new_state LIKE '%"price_valid":true%'""",
+            (cutoff,latest_time))))
     for store_id, store in enumerate(stores):
         sid = store["store_uuid"]
         products = list(src.execute("SELECT * FROM products WHERE store_uuid=? ORDER BY first_seen,product_uuid", (sid,)))
@@ -149,6 +158,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                 active_products += 1
                 if float(product["reference_price"] or 0) > 0:
                     active_comparable_products += 1
+                if float(product["seven_day_reference_price"] or 0) > 0:
+                    seven_day_reference_products += 1
                 if product["promo_type"] not in (None, "", "無"):
                     active_platform_promotions += 1
                 if int(product["seven_day_is_price_deal"] or 0) == 1:
@@ -217,6 +228,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
             "application": "FoodRadar", "schema_version": 1,
             "active_stores": active_stores, "active_products": active_products,
             "active_comparable_products": active_comparable_products,
+            "seven_day_reference_products": seven_day_reference_products,
+            "seven_day_verified_dates": verified_history_days,
+            "seven_day_history_incomplete": len(verified_history_days) < 3,
             "active_platform_promotions": active_platform_promotions,
             "active_30pct_drops": active_30pct_drops,
             "baseline_processed_at": baseline_time, "latest_processed_at": latest_time,

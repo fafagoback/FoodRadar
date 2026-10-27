@@ -32,7 +32,7 @@ const fs = require('node:fs');
     assert.match(homeText, /^\d[\d,]*$/, 'dashboard must display a numeric count');
     const home = Number(homeText.replace(/,/g, ''));
     const coverage = (await page.locator('#discounts-coverage').innerText()).trim();
-    assert.match(coverage, /本批有效商品 [\d,]+ 件，其中 [\d,]+ 件有前次有效單價可比較/,
+    assert.match(coverage, /本批有效商品 [\d,]+ 件；[\d,]+ 件有前次有效單價，[\d,]+ 件有七日有效價格基準/,
       'dashboard must disclose the valid comparison denominator, not only a zero');
     console.log('DEAL_COMPARISON_COVERAGE ' + coverage);
 

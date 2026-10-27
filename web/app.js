@@ -339,6 +339,9 @@ async function loadFromTurso() {
       latest_batch_formatted:packed.meta.latest_processed_at || formatBatchDate(packed.meta.latest_batch),
       active_products: Number(packed.meta.active_products || 0),
       active_comparable_products: Number(packed.meta.active_comparable_products || 0),
+      seven_day_reference_products: Number(packed.meta.seven_day_reference_products || 0),
+      seven_day_verified_dates: packed.meta.seven_day_verified_dates || [],
+      seven_day_history_incomplete: Boolean(packed.meta.seven_day_history_incomplete),
       active_platform_promotions: Number(packed.meta.active_platform_promotions || 0),
       total_monitored_stores:Number(counts.stores || packed.stores.length),
       total_monitored_products:Number(counts.products || packed.products.length),
@@ -367,7 +370,12 @@ function updateStatsUI(stats) {
       const current = Number(stats.active_products || 0);
       const comparable = Number(stats.active_comparable_products || 0);
       const promos = Number(stats.active_platform_promotions || 0);
-      coverage.textContent = `本批有效商品 ${current.toLocaleString()} 件，其中 ${comparable.toLocaleString()} 件有前次有效單價可比較；${promos.toLocaleString()} 件屬平台促銷（不代表本次降價）。`;
+      const week = Number(stats.seven_day_reference_products || 0);
+      const days = (stats.seven_day_verified_dates || []).length;
+      coverage.textContent = `本批有效商品 ${current.toLocaleString()} 件；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；七天內僅 ${days} 個採集日有通過驗證的價格；${promos.toLocaleString()} 件屬平台促銷。`;
+      if (stats.seven_day_history_incomplete) {
+        coverage.textContent += ' 注意：七日歷史不足，0 筆不代表市場沒有特價。';
+      }
     }
   }
   document.getElementById('stat-new-stores').textContent = (stats.new_stores_count ?? stats.total_stores ?? 0).toLocaleString();
