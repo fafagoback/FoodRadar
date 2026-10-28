@@ -234,8 +234,8 @@ function productView(product, store) {
   const isCurrent = isCurrentPriceObservation(product, store);
   const weekReference = Number(product.seven_day_reference_price || 0) > 0
     ? Number(product.seven_day_reference_price) : null;
-  const weekPct = isCurrent ? Number(product.seven_day_discount_pct || 0) : 0;
-  const currentDrop = isCurrent && weekPct > 0 && weekReference > effective;
+  const weekPct = menuCurrent ? Number(product.seven_day_discount_pct || 0) : 0;
+  const currentDrop = menuCurrent && weekPct > 0 && weekReference > effective;
   const originalPrice = currentDrop ? weekReference : effective;
   const historicalSaving = Number(product.seven_day_discount_amount || 0);
   return {
@@ -268,6 +268,7 @@ function productView(product, store) {
     reference_price: refPrice,
     seven_day_reference_price: weekReference,
     is_new_price_drop: isCurrent && Number(product.is_price_drop || 0) === 1,
+    is_verified_delivery_deal: currentDrop && isCurrent,
     archive_reference_price: isCurrent ? Number(product.archive_reference_price || 0) : 0,
     archive_discount_pct: isCurrent ? Number(product.archive_discount_pct || 0) : 0,
     archive_savings_amount: isCurrent ? Number(product.archive_discount_amount || 0) : 0,
