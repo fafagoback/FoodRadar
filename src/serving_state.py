@@ -540,11 +540,21 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 if isinstance(previous_quotes, str):
                     try: previous_quotes = json_loads(previous_quotes)
                     except (TypeError, ValueError): previous_quotes = []
-                quote_history = [[t, v] for t, v in previous_quotes
-                                 if isinstance(t, str) and cutoff <= t < now
-                                 and isinstance(v, (int, float)) and 0 < v < 1_000_000]
+                # Retain RAW evidence with each comparison point:
+                # [timestamp, effective_unit, original_list_price, promo, quantity].
+                # Pre-existing two-field points remain readable but are NOT
+                # falsely labelled as "no promotion" / inferred list prices.
+                quote_history = [
+                    point for point in previous_quotes
+                    if isinstance(point, (list, tuple)) and len(point) >= 2
+                    and isinstance(point[0], str) and cutoff <= point[0] < now
+                    and isinstance(point[1], (int, float)) and 0 < point[1] < 1_000_000
+                ]
                 if quote_price_valid and quote[1] is not None:
-                    quote_history.append([now, round(quote[1], 2)])
+                    quote_history.append([
+                        now, round(quote[1], 2), round(quote[0], 2),
+                        quote[2] or "無", quote[3]
+                    ])
                 quote_history_batch.append((json_dumps(quote_history), sid, pid))
                 state = {
                     "product_name": name, "category": category, "description": desc,
