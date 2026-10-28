@@ -153,11 +153,11 @@ def repair(db_path):
                 # closed shop's last captured menu is only a catalogue value,
                 # never proof of a newly changed purchasable unit price.
                 current_was_open = any(
-                    isinstance(row,(list,tuple)) and len(row)==2
+                    isinstance(row,(list,tuple)) and len(row)>=2
                     and row[0] == last_batch
                     and abs(float(row[1])-float(raw_quote_unit))<0.011
                     for row in quote_history
-                    if isinstance(row,(list,tuple)) and len(row)==2
+                    if isinstance(row,(list,tuple)) and len(row)>=2
                 )
                 seven = (PriceChange.seven_day_high(
                     quote_history, last_batch, raw_quote_unit)
