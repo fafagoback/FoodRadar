@@ -120,3 +120,23 @@ def menu_catalog_valid(doc: dict, batch_id: str) -> bool:
             except (TypeError, ValueError, OverflowError):
                 continue
     return False
+
+def menu_price_observation_valid(doc: dict, batch_id: str) -> bool:
+    """A menu quote may enter price history only when the shop was OPEN.
+
+    Delivery-unavailable is irrelevant here. A reported isOpen=True does not
+    override the shop's actual local opening schedule or an "Opens..." label.
+    When opening hours are unknown, require an explicit opening signal.
+    """
+    if doc.get('menu_status') == 'inactive_account' or doc.get('isOpen') is not True:
+        return False
+    tagline = str(doc.get('workingHoursTagline') or '').strip().lower()
+    if tagline.startswith(('opens ', 'opening ', 'closed', 'temporarily closed',
+                           'currently closed', '未營業', '尚未營業', '休息中',
+                           '已打烊', '暫停營業')):
+        return False
+    schedule = _schedule_open(doc, observed_at(doc, batch_id))
+    if schedule is not None:
+        return schedule
+    return tagline.startswith(('open ', 'currently open', '24 hours',
+                               '24 小時', '營業中', '營業至', '營業到'))
