@@ -25,7 +25,7 @@ class PriceReleaseGuards(unittest.TestCase):
 
     def test_complete_closed_batch_is_not_publishable(self):
         docs=[{'isOpen':True,'closedMessage':'Delivery unavailable'} for _ in range(100)]
-        with self.assertRaisesRegex(RuntimeError,'0/100 valid'):
+        with self.assertRaisesRegex(RuntimeError,'0/100 open-hours'):
             assert_useful_price_batch(docs,'20261027183000')
 
     def test_daytime_mass_delivery_failure_not_publishable(self):
