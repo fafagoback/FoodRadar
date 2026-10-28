@@ -127,3 +127,7 @@ GitHub Actions (.github/workflows/crawl.yml)
 - 注意：平台 UUID 變化、採集盲區、營業時間及漏抓可能影響「首次被觀測」之意義；不應將 `first_seen` 解釋成現實世界的開幕日期。
 
 **2026-10-28 配送／菜單分離修正：** 商品目錄的存在與搜尋不以「當前可下單」為必要條件。`menu_quote_*` 保存最近菜單標價與優惠單價，`delivery_available` 是單獨資訊；正式七日降價仍以經確認可外送的有效實質價判斷。完整 HF RAW 重播可將舊時因 `Delivery unavailable` 而被隱藏的菜單恢復。
+
+### 2026-10-28 正式 RAW 菜單比價修復
+
+價格比較與配送狀態分離。每批取得的有效菜單報價，不因 `Delivery unavailable` 或當次打烊被刪除；`products.menu_quote_history` 保存七日內同店同商品的每批實質單價，`repair_effective_prices.py` 使用「最新菜單價 vs 前七天最高菜單實質單價」填入正式 `seven_day_*` 欄位，`prototype_pack_db.py` 建立正式降價索引。配送是否可下單只影響獨立標示，不能冒充已確認優惠。網站走勢圖直接讀取保存的菜單單價，並由 `audit_deal_pipeline.py` 獨立核對已存計算結果。需從所有已驗證完整性的 HF RAW 重播，不能只換搜尋條件。
