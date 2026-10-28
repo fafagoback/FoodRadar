@@ -374,7 +374,7 @@ function updateStatsUI(stats) {
       const promos = Number(stats.active_platform_promotions || 0);
       const week = Number(stats.seven_day_reference_products || 0);
       const days = (stats.seven_day_verified_dates || []).length;
-      coverage.textContent = `本批有效商品 ${current.toLocaleString()} 件；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；七天內僅 ${days} 個採集日有通過驗證的價格；${promos.toLocaleString()} 件屬平台促銷。`;
+      coverage.textContent = `本批可見菜單商品 ${current.toLocaleString()} 件（含暫不可外送）；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；七天內僅 ${days} 個採集日有通過驗證的價格；${promos.toLocaleString()} 件屬平台促銷。`;
       if (stats.seven_day_history_incomplete) {
         coverage.textContent += ' 注意：七日有效採集日期不足；歷史菜單參考價另列，並非當時可外送價格。';
       }
@@ -1767,6 +1767,7 @@ function renderGlobalProducts() {
               </span>
             ` : ''}
             ${distanceBadge(p)}
+            ${p.delivery_available === false ? '<span class="text-[11px] font-medium px-2 py-0.5 rounded bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300">菜單參考價・暫不可外送</span>' : ''}
             ${hasQtyPromo ? `
               <span class="text-[11px] text-slate-400 dark:text-slate-500 font-mono">
                 (標價 ${window.UBER_DATA_CONTRACT.money(p.price)} 共 ${promoInfo.totalQty} 件)
@@ -1780,7 +1781,7 @@ function renderGlobalProducts() {
             <i data-lucide="line-chart" class="w-3.5 h-3.5"></i>走勢
           </button>
           <a href="${escapeHtml(safeOrderUrl(p.order_action_url || '#'))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([String(p.order_action_url || ''), String(p.product_name), String(p.store_name)]))}" class="text-xs text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1 active:scale-95 transition-transform">
-            下單 <i data-lucide="arrow-up-right" class="w-3.5 h-3.5"></i>
+            ${p.delivery_available === false ? "查看菜單" : "下單"} <i data-lucide="arrow-up-right" class="w-3.5 h-3.5"></i>
           </a>
         </div>
       </div>
