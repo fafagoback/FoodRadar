@@ -16,6 +16,82 @@ permissions:
   pages: write
   id-token: write
 jobs:
+  publish-site:
+    name: Publish website without waiting for crawler
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: foodradar-pages-fast-release
+      cancel-in-progress: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install minimal database verification dependency
+        run: pip install 'requests>=2.32,<3'
+      - name: Configure verified read-only site and release manifest
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: |
+          python scripts/configure_web.py
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from datetime import datetime, timezone, timedelta
+          sha = os.environ['GITHUB_SHA']
+          timestamp = datetime.now(timezone(timedelta(hours=8)))
+          manifest = {
+              'version': 'web-' + sha[:12],
+              'buildTime': timestamp.strftime('%Y-%m-%d %H:%M:%S +08:00'),
+              'commit': sha,
+              'batch': 'web-only',
+          }
+          Path('web/version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + chr(10), encoding='utf-8')
+          print('Website-only release:', manifest['version'])
+          PY
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/data-contract.js
+          if grep -q 'id="archive-quote-section"' web/index.html; then
+            echo 'Retired HF quote section still exists' >&2
+            exit 1
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - uses: actions/deploy-pages@v4
+        id: deployment
+      - name: Verify published site no longer contains archived menu quotes
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from urllib.request import Request, urlopen
+          base = 'https://fafagoback.github.io/FoodRadar/'
+          expected = os.environ['GITHUB_SHA']
+          for attempt in range(10):
+              try:
+                  url = base + '?_release=' + expected[:12] + '&attempt=' + str(attempt)
+                  with urlopen(Request(url, headers={'Cache-Control':'no-cache'}), timeout=20) as response:
+                      html = response.read().decode('utf-8')
+                  with urlopen(base + 'version.json?_release=' + expected[:12] + '&attempt=' + str(attempt), timeout=20) as response:
+                      manifest = json.load(response)
+                  if manifest.get('commit') == expected and 'archive-quote-section' not in html and 'HF 歷史菜單參考價' not in html:
+                      print('LIVE_PAGE_CONFIRMED_REMOVED', manifest['version'])
+                      break
+                  print('Waiting for current Pages release:', manifest.get('commit'), attempt + 1)
+              except Exception as error:
+                  print('Live release verification retry:', type(error).__name__, str(error)[:200])
+              if attempt == 9:
+                  raise SystemExit('Live Pages deployment was not verified')
+              time.sleep(6)
+          PY
   crawl:
     # Limit only the database publisher. Browser QA must not monopolize the
     # release lock or block deployment of a newer commit.
@@ -130,13 +206,17 @@ jobs:
             delta-report.json
           retention-days: 3
       - uses: actions/configure-pages@v5
+        if: github.event_name != 'push'
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'push'
         with:
           path: web
       - uses: actions/deploy-pages@v4
+        if: github.event_name != 'push'
         id: deployment
   live-site-acceptance:
     name: Verify deployed website
+    if: github.event_name != 'push'
     needs: crawl
     # The published Pages URL always points at the newest release. A slow
     # Chromium install for an older SHA must be cancelled once a newer
