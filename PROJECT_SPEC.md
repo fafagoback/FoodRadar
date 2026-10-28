@@ -23,7 +23,7 @@
 
 - 同 UUID 店家當天或日後再次被抓到，保留原 `first_seen`，不重算新店。
 - 目前程式對店家有 `STORE_REAPPEARED` 事件，但**即使消失超過 60 天再出現，也不算新店**。這是現行約定；不要擅自把商品的 60 天規則套用到店家。
-- `first_seen` 只在店家首次**有效營業中觀測**時建立；HF Raw 的非營業時段快照不視為首次發現。「第一次爬到」不等於新開幕，亦不保證與同名店／更換 UUID 的店家可跨 ID 去重。
+- `first_seen` 只在店家首次**有效營業時段菜單觀測**時建立；即使目前無法外送，仍可首次發現菜單。HF Raw 的非營業時段快照不視為首次發現。「第一次爬到」不等於新開幕，亦不保證與同名店／更換 UUID 的店家可跨 ID 去重。
 - 新店的店家身份使用正規化 Uber Eats 店家 UUID。
 
 ### 2.3 老店新菜（首頁及「老店新菜推薦」）
@@ -35,7 +35,7 @@
 **排除條件：**
 - 新店首次觀測當日整份菜單不算「老店新菜」。
 - 同商品短暫失蹤、未滿 60 天回來，不算新菜。
-- 店家及商品需 `active`、`is_open=1`，商品有效價格大於 0。
+- 店家及商品需 `active`，商品需有最近取得的菜單報價；下單／配送狀態不應讓既有菜單消失。
 - 商品識別鍵為 `(store_uuid, product_uuid)`；若平台變更商品 ID，即使名稱相同仍可能被視為新商品。
 
 **60 天的技術細節：** 「下架」要先經過連續缺席門檻（預設 3 次符合條件的缺席觀測）才成為 `inactive`；60 天以歷史 `last_seen` 與本次重新觀測時間相減，不是以實際店家下架日計算。重新上架會改 `listing_started_at`，但永久 `first_seen` 不變。
@@ -50,8 +50,8 @@
 - `reference_price`、`price_direction`、`is_price_drop`、`price_change_amount`、`price_change_percent`、`discount_pct` 屬**上次有效價 → 本次**的輔助變價資訊，**不得用來取代七日特價主清單**；例如第 4 次 100→50，第 5、6 次 50→50，後兩次的單次變價為持平，但七日特價仍是 50%。
 - 實質單價依可支付標價與促銷件數計算；買一送一、第二件半價等換成每件成本。平台直接標示折扣的菜單價已為付款價，不重複打折。
 - HF Raw 完整保存，包括非營業時段無法下單的菜單報價；僅當時經驗證為有效的歷史觀測可進入正式七日比較。無法驗證但有多次支持的歷史菜單價，只能放在**另列的參考報價**，不能偽裝成可下單的降價。
-- 同時要求 `store/product active`、`is_open=1`、`last_seen==latest_processed_at`；舊批次曾有促銷，不代表目前有效。
-- 平台促銷（促銷標籤或優惠組合）與實際七日降價是不同概念；「全庫商品搜尋」只列目前有效商品。歷史覆蓋不足需顯示有效採集日、具可比對價格的商品數。
+- **已驗證特價**同時要求 `store/product active`、當批已確認可外送，且 `last_seen==latest_processed_at`；舊批次曾有促銷，不代表目前有效。
+- 平台促銷（促銷標籤或優惠組合）與實際七日降價是不同概念；「全庫商品搜尋」列出 `active` 的**最後已知菜單商品**，即使店家目前打烊或暫不能外送，也不得因此刪除搜尋索引；介面要標註「最近菜單價・非即時」或「菜單參考價・暫不可外送」。歷史覆蓋不足需顯示有效採集日、具可比對價格的商品數。
 
 ### 2.5 可重現的七日特價範例
 
@@ -67,13 +67,13 @@
 
 1. `src/crawl.py` 掃描此配送座標的店家，將同次 feed 依正規化店家 UUID 去重，抓取逐店菜單；任何店家抓取失敗即拒絕發布不完整快照。HF Raw 完整封存所有成功抓取的店家與菜單（含非營業時段）。
 2. `src/pipeline.py:restore_history` 優先從 Hugging Face 永久 normalized state 還原先前 `serving.db`（驗證 SHA-256、SQLite integrity 與批次一致性），再補入新於 checkpoint 的已完成 Raw 快照。
-3. `src/price_observation.py` 統一校驗採集當下是否營業：必須 `isOpen=True`、不能有關店訊息、營業時段不能矛盾。缺少營業時間表時須有明確營業中文字訊號。未通過者只留 HF Raw，**不得新增／更新正式 stores、products、events、first_seen 或歷史價格**；僅用暫存 seen marker 防止假下架。
-4. `src/serving_state.py` 只對驗證通過的資料，以店家 UUID、商品複合 UUID 查詢含 inactive 的歷史資料。存在則更新狀態但不重設 `first_seen`；不存在才插入並產生 `STORE_NEW` 或 `NEW` 事件。
+3. `src/price_observation.py` **分開**驗證：`menu_catalog_valid()` 允許營業時間正常、菜單存在、但 `closedMessage=Delivery unavailable` 的商品進入一般商品資料庫；`price_observation_valid()` 只准確認可外送的報價進入正式降價基準。真正非營業時段的 RAW 不更新當次菜單或價格，保留先前最後已知商品。
+4. `src/serving_state.py` 對有效菜單報價（無論是否可外送），以店家 UUID、商品複合 UUID 查詢含 inactive 的歷史資料。存在則更新狀態但不重設 `first_seen`；不存在才插入並產生 `STORE_NEW` 或 `NEW` 事件。
 4. 店家缺席會累積 `missing_streak`，達預設門檻成 `inactive`；回歸產生 `STORE_REAPPEARED`，不重設首次日期。
 5. 商品在可見且已驗證營業的店家菜單內缺席累積 `missing_streak`，達門檻成 `inactive`；滿 60 天再觀測時標記季節性回歸並更新本輪上架日期。
 6. `scripts/prototype_pack_db.py` 從歷史 state 建立查詢用 Packed DB：新店保留 `first_seen`；新商品以 `listing_started_at` 的七日視窗、基準日和店家首次日期產生 `f:new` 索引。
 7. 靜態 JSON 及衍生 Parquet 採用同一營業判斷，防止另一條 ETL 路徑重新寫入髒資料。
-8. Turso 使用只寫入必要差異的發布程序，驗證後才提交；原始快照與僅含有效營業觀測的永久 state 保存在 HF。既有髒資料如需重播 HF Raw 重建，**必須先確認歷史 Raw 完整**；若候選店家或商品較既有持久資料減少超過 30%（基準筆數至少 100），發布器會拒絕覆蓋，以免因 Raw 不完整大規模刪除原本有效的資料。
+8. Turso 使用只寫入必要差異的發布程序，驗證後才提交；原始快照、最後已知菜單報價及獨立的可外送價格驗證狀態保存在 HF。既有髒資料如需重播 HF Raw 重建，**必須先確認歷史 Raw 完整**；若候選店家或商品較既有持久資料減少超過 30%（基準筆數至少 100），發布器會拒絕覆蓋，以免因 Raw 不完整大規模刪除原本有效的資料。
 
 ## 4. 正式系統架構
 
@@ -125,3 +125,5 @@ GitHub Actions (.github/workflows/crawl.yml)
 - GitHub secrets：`HF_TOKEN`、`FOODRADAR_TURSO_DATABASE_URL`、`FOODRADAR_TURSO_WRITE_TOKEN`、`FOODRADAR_TURSO_READONLY_TOKEN`。請勿把寫入 token 放入網頁。
 - `publish_existing` 可由現有 HF Raw 重建／重試發布而不重新爬取。
 - 注意：平台 UUID 變化、採集盲區、營業時間及漏抓可能影響「首次被觀測」之意義；不應將 `first_seen` 解釋成現實世界的開幕日期。
+
+**2026-10-28 配送／菜單分離修正：** 商品目錄的存在與搜尋不以「當前可下單」為必要條件。`menu_quote_*` 保存最近菜單標價與優惠單價，`delivery_available` 是單獨資訊；正式七日降價仍以經確認可外送的有效實質價判斷。完整 HF RAW 重播可將舊時因 `Delivery unavailable` 而被隱藏的菜單恢復。
