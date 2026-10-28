@@ -104,6 +104,10 @@ def menu_catalog_valid(doc: dict, batch_id: str) -> bool:
     """
     if doc.get('menu_status') == 'inactive_account':
         return False
+    # An explicitly open store with an empty menu still constitutes a real
+    # observation (and can establish actual product removal).
+    if price_observation_valid(doc, batch_id):
+        return True
     sections = (doc.get('hasMenu') or {}).get('hasMenuSection') or []
     for section in sections:
         for item in section.get('hasMenuItem') or []:
