@@ -628,7 +628,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
 // PRICE_CHANGED / CONTENT_CHANGED event emitted by the same crawl.
 export function normalizePriceHistoryEvents(events) {
   // A promotion change can change unit cost even when the raw menu price is stable.
-  const priority = { BASELINE: 0, NEW: 1, PRICE_OBSERVED: 2, PROMOTION_CHANGED: 3, PRICE_CHANGED: 4, MENU_QUOTE: 5 };
+  const priority = { MENU_QUOTE: 0, BASELINE: 0, NEW: 1, PRICE_OBSERVED: 2, PROMOTION_CHANGED: 3, PRICE_CHANGED: 4 };
   const priceEvents = (events || []).filter(e =>
     Object.prototype.hasOwnProperty.call(priority, e.event_type));
 
@@ -717,8 +717,11 @@ export async function packedHistory(storeUuid, productUuid) {
       for (const [at, unit] of quotes) {
         if (!at || !(Number(unit) > 0)) continue;
         events.push({event_time:at, event_type:'MENU_QUOTE',
-          new_state:JSON.stringify({price:Number(unit),quantity:1,promo_type:'無',
-            menu_quote_valid:true,price_valid:false,delivery_available:false})});
+          new_state:JSON.stringify({price:Number(unit),quantity:1,
+            // Quote history stores UNIT COST only: original label price and
+            // historic promotion are unknown. Never invent 'no promotion'.
+            effective_unit_only:true,menu_quote_valid:true,price_valid:false,
+            delivery_available:false})});
       }
     }
     for (const event of chunk.events || []) {
