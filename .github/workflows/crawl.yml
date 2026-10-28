@@ -59,6 +59,10 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[rebuild-price-history]') && '1' || '0' }}
         run: python scripts/prepare_hf_release.py
+      - name: Inspect original HF RAW for 士林 楊桃甘露 price and promo
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/audit_yuchi_yangtao_raw.py
       - name: Audit all HF raw price sources from the last seven days
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
