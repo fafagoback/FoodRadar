@@ -32,6 +32,11 @@ def assert_useful_price_batch(documents, batch):
             "rejecting batch and preserving previous published prices"
         )
     if total >= 100 and 9 <= hour <= 22 and valid * 20 < total and banner * 10 >= total * 9:
+        if menu_stores * 20 < total:
+            raise RuntimeError(
+                f"Suspected broken delivery-location capture: only {menu_stores}/{total} "
+                "usable menu stores; preserving previous catalogue"
+            )
         print(f"DELIVERY_UNAVAILABLE_WARNING verified={valid}/{total} menu_catalog={menu_stores}/{total} banners={banner}", flush=True)
     return valid
 
