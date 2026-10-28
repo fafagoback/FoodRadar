@@ -35,7 +35,8 @@ class PriceReleaseGuards(unittest.TestCase):
         docs += [{'isOpen':True,'workingHoursTagline':'Open until 10 PM',
                   'openingHoursSpecification':[
                     {'dayOfWeek':['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
-                     'opens':'00:00','closes':'00:00'}]} for _ in range(2)]
+                     'opens':'00:00','closes':'00:00'}],
+                  'hasMenu':{'hasMenuSection':[{'hasMenuItem':[{'name':'飯','offers':{'price':100}}]}]}} for _ in range(2)]
         with self.assertRaisesRegex(RuntimeError,'delivery-location'):
             assert_useful_price_batch(docs,'20261027183000')
 
@@ -43,7 +44,8 @@ class PriceReleaseGuards(unittest.TestCase):
         docs=[{'isOpen':True,'workingHoursTagline':'Open until 10 PM',
                'openingHoursSpecification':[
                  {'dayOfWeek':['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
-                  'opens':'00:00','closes':'00:00'}]} for _ in range(504)]
+                  'opens':'00:00','closes':'00:00'}],
+               'hasMenu':{'hasMenuSection':[{'hasMenuItem':[{'name':'飯','offers':{'price':100}}]}]}} for _ in range(504)]
         docs += [{'isOpen':True,'closedMessage':'Delivery unavailable'} for _ in range(78)]
         self.assertEqual(assert_useful_price_batch(docs,'20261027193552'),504)
 
