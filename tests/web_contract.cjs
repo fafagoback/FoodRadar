@@ -67,8 +67,8 @@ assert.equal(run('calculateEffectivePromo', 100, '', 2).discountText, '', 'multi
 const packed = fs.readFileSync('scripts/prototype_pack_db.py', 'utf8');
 assert.ok(!packed.includes('int(product["quantity"] or 1) > 1 or product["promo_type"]'), 'bundled products must not be indexed as platform promotions');
 const reader = fs.readFileSync('web/packed-turso.js', 'utf8');
-assert.ok(reader.includes('const effective = window.UBER_DATA_CONTRACT.unitPrice(price, product.promo_type, product.quantity);'),
-  'packed reader uses actual unit cost, not raw list price or a legacy double-discount');
+assert.ok(reader.includes('const effective = window.UBER_DATA_CONTRACT.unitPrice(price, promo, quantity);'),
+  'packed reader computes unit price from actual menu quote or verified price');
 assert.ok(reader.includes("const direction = product.price_direction || 'unknown';"),
   'packed reader must rely on backend direction');
 assert.ok(!reader.includes('compareUnitPrices(') && !source.includes('compareUnitPrices('),
