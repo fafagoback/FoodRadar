@@ -67,6 +67,12 @@ assert.equal(run('calculateEffectivePromo', 100, '', 2).discountText, '', 'multi
 const packed = fs.readFileSync('scripts/prototype_pack_db.py', 'utf8');
 assert.ok(!packed.includes('int(product["quantity"] or 1) > 1 or product["promo_type"]'), 'bundled products must not be indexed as platform promotions');
 const reader = fs.readFileSync('web/packed-turso.js', 'utf8');
+assert.ok(reader.includes('Number(p.menu_quote_price || p.price) > 0'),
+  'all-product reader must accept menu quotes even when delivery is unavailable or the store has closed');
+assert.ok(!reader.includes('isCurrentPriceObservation(p, store))'),
+  'menu-search reader must never use the strict payable-price gate');
+assert.ok(reader.includes('is_menu_catalog_available: price > 0'),
+  'menu availability must be carried separately from verified price eligibility');
 assert.ok(reader.includes('const effective = window.UBER_DATA_CONTRACT.unitPrice(price, promo, quantity);'),
   'packed reader computes unit price from actual menu quote or verified price');
 assert.ok(reader.includes("const direction = product.price_direction || 'unknown';"),
