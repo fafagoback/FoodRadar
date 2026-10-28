@@ -64,7 +64,7 @@ def report(path):
               'seven_day_examples':examples,'seven_day_discrepancies':mismatches}
     print('FOODRADAR_DEAL_PIPELINE_AUDIT='+json.dumps(output,ensure_ascii=False),flush=True)
     if mismatches:
-        raise ValueError('Published menu-price discount fields differ from RAW quote history.')
+        raise ValueError('Published seven-day menu-price discount fields differ from RAW quote history.')
     return output
 
 
