@@ -95,25 +95,24 @@ def price_observation_valid(doc: dict, batch_id: str) -> bool:
 
 
 def menu_catalog_valid(doc: dict, batch_id: str) -> bool:
-    """A restaurant's open-hours menu remains valid when delivery is unavailable.
+    """Was a real, priced menu captured? Delivery/closing hours are independent.
 
-    This is a menu/price-quote gate, NOT proof that an order can be placed.
-    Verified payable prices still use the stricter price_observation_valid.
+    The Uber getStoreV1 response can contain usable menu quotations even when
+    delivery is unavailable or the restaurant has closed for the night.
+    These quotes are valid for historical MENU comparison, not a guarantee
+    that a customer can currently order at the displayed price.
     """
-    if price_observation_valid(doc, batch_id):
-        return True
-    if doc.get('isOpen') is not True or doc.get('menu_status') != 'present':
+    if doc.get('menu_status') == 'inactive_account':
         return False
-    if str(doc.get('closedMessage') or '').strip().lower() != 'delivery unavailable':
-        return False
-    tagline = str(doc.get('workingHoursTagline') or '').strip().lower()
-    if tagline.startswith(('opens ', 'opening ', 'closed', 'temporarily closed',
-                           'currently closed', '未營業', '尚未營業', '休息中', '已打烊', '暫停營業')):
-        return False
-    hours = _schedule_open(doc, observed_at(doc, batch_id))
-    if hours is False:
-        return False
-    if hours is True:
-        return True
-    return tagline.startswith(('open ', 'currently open', '24 hours',
-                               '24 小時', '營業中', '營業至', '營業到'))
+    sections = (doc.get('hasMenu') or {}).get('hasMenuSection') or []
+    for section in sections:
+        for item in section.get('hasMenuItem') or []:
+            if not str(item.get('name') or '').strip():
+                continue
+            try:
+                price = float((item.get('offers') or {}).get('price') or 0)
+                if 0 < price < 1_000_000:
+                    return True
+            except (TypeError, ValueError, OverflowError):
+                continue
+    return False
