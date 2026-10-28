@@ -32,6 +32,8 @@ def main():
     source_prices=collections.defaultdict(list)
     legacy_quotes=collections.defaultdict(list)
     product_labels={}
+    raw_quote_history=collections.defaultdict(list)
+    raw_batch_statistics=[]
     for manifest in manifests:
         batch=manifest.split('/')[-2]
         try:when=datetime.strptime(batch,'%Y%m%d%H%M%S')
@@ -49,8 +51,32 @@ def main():
                     stream=tar.extractfile(member)
                     if stream is not None: docs.append(json.load(stream))
         if len(docs)!=meta['store_count']:raise ValueError('Raw archive count mismatch: '+batch)
+        raw_quote_this_batch={}
+        raw_quoted_stores=set()
         for doc in docs:
             counts['raw_stores']+=1
+            sid_raw=str(doc.get('store_uuid') or doc.get('@id') or '')
+            store_quotes={}
+            for sec in (doc.get('hasMenu') or {}).get('hasMenuSection') or []:
+                category_raw=str(sec.get('name') or '')
+                for item in sec.get('hasMenuItem') or []:
+                    try:
+                        name=str(item.get('name') or '').strip()
+                        if not name:continue
+                        pid,_=product_identity(item,sid_raw)
+                        price=float((item.get('offers') or {}).get('price') or 0)
+                        if not 0<price<1000000:continue
+                        promo,qty=extract_promo_info(category_raw,name,str(item.get('description') or ''))
+                        promo=str(item.get('promo_type') or promo)
+                        qty=max(1,int(item.get('quantity') or qty))
+                        unit=calculate_effective_price(price,promo,qty)
+                        if not 0<unit<1000000:continue
+                        rank=(int(qty>1),promo)
+                        prior=store_quotes.get(pid)
+                        if prior is None or rank>prior[0]:store_quotes[pid]=(rank,round(unit,2))
+                    except (ValueError,TypeError,OverflowError):pass
+            if store_quotes:raw_quoted_stores.add(sid_raw)
+            for pid,(_,unit) in store_quotes.items():raw_quote_this_batch[(sid_raw,pid)]=unit
             valid=price_observation_valid(doc,batch)
             if valid:counts['valid_stores']+=1
             if doc.get('isOpen') is not True:counts['isopen_not_true']+=1
@@ -103,9 +129,47 @@ def main():
                 else:
                     legacy_quotes[(sid,pid)].append((batch,round(unit,2)))
                     counts['legacy_open_hours_quotes']+=1
+        # Independent menu-quote audit: a delivery failure does NOT invalidate
+        # an extracted positive menu quote. Calculate actual 7-day comparability
+        # from one unique store/product quote per batch, excluding the current batch.
+        comparable=0
+        prior_samples=0
+        positive_drops=0
+        large_drops=0
+        for key,unit in raw_quote_this_batch.items():
+            prior=[p for date,p in raw_quote_history[key] if window<=datetime.strptime(date,'%Y%m%d%H%M%S')<when]
+            if not prior:continue
+            comparable+=1
+            prior_samples+=len(prior)
+            high=max(prior)
+            if unit<high:
+                positive_drops+=1
+                if (high-unit)/high>=0.30:large_drops+=1
+        quote_audit={'batch':batch,'raw_stores':len(docs),
+                     'stores_with_priced_menu':len(raw_quoted_stores),
+                     'raw_unique_priced_skus':len(raw_quote_this_batch),
+                     'seven_day_comparable_skus':comparable,
+                     'positive_price_drops':positive_drops,
+                     'thirty_pct_price_drops':large_drops,
+                     'prior_quote_samples':prior_samples}
+        raw_batch_statistics.append(quote_audit)
+        print('HF_RAW_QUOTE_COMPARE_BATCH='+json.dumps(quote_audit,ensure_ascii=False),flush=True)
+        for key,unit in raw_quote_this_batch.items():raw_quote_history[key].append((batch,unit))
         totals.update(counts)
         per_batch.append({'batch':batch,**counts})
         print('HF_HISTORY_BATCH_AUDIT='+json.dumps(per_batch[-1],ensure_ascii=False),flush=True)
+    by_day=collections.defaultdict(lambda:collections.Counter())
+    for b in raw_batch_statistics:
+        k=b['batch'][:8]
+        for name in ('raw_stores','stores_with_priced_menu','raw_unique_priced_skus','seven_day_comparable_skus','positive_price_drops','thirty_pct_price_drops'):
+            by_day[k][name]+=b[name]
+        by_day[k]['batches']+=1
+    for day,stat in sorted(by_day.items()):
+        d=dict(stat)
+        d['day']=day
+        d['menu_ingest_store_pct']=round(100*d['stores_with_priced_menu']/d['raw_stores'],2) if d['raw_stores'] else 0
+        d['price_comparable_pct']=round(100*d['seven_day_comparable_skus']/d['raw_unique_priced_skus'],2) if d['raw_unique_priced_skus'] else 0
+        print('HF_RAW_DAILY_INGEST_COMPARE='+json.dumps(d,ensure_ascii=False),flush=True)
     current={k:v[-1] for k,v in source_prices.items() if v and v[-1][0]==latest}
     qualified=[]
     prior_available=0
