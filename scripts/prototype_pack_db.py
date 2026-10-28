@@ -126,12 +126,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     archive_reference_products = archive_30pct_candidates = 0
     verified_history_days = sorted(set(
         str(t)[:10] for (t,) in src.execute(
-            """SELECT DISTINCT event_time FROM events
-               WHERE event_time>=? AND event_time<?
-                 AND event_type IN ('NEW','PRICE_OBSERVED','PRICE_CHANGED','PROMOTION_CHANGED')
-                 AND json_valid(new_state)
-                 AND json_extract(new_state,'$.price_valid')=1
-                 AND json_extract(new_state,'$.is_open')=1""",
+            """SELECT processed_at FROM crawl_batches
+               WHERE processed_at>=? AND processed_at<=? AND products_seen>0""",
             (cutoff,latest_time))))
     for store_id, store in enumerate(stores):
         sid = store["store_uuid"]
@@ -158,15 +154,15 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
             price = float(product["menu_quote_effective_price"] or product["effective_price"] or product["price"] or 0)
             if searchable:
                 active_products += 1
-                if current_verified and float(product["reference_price"] or 0) > 0:
+                if current_menu and float(product["seven_day_reference_price"] or 0) > 0:
                     active_comparable_products += 1
-                if current_verified and float(product["seven_day_reference_price"] or 0) > 0:
+                if current_menu and float(product["seven_day_reference_price"] or 0) > 0:
                     seven_day_reference_products += 1
                 if current_verified:
                     current_verified_products += 1
-                    if (product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無"):
-                        active_platform_promotions += 1
-                if current_verified and int(product["seven_day_is_price_deal"] or 0) == 1:
+                if current_menu and (product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無"):
+                    active_platform_promotions += 1
+                if current_menu and int(product["seven_day_is_price_deal"] or 0) == 1:
                     active_30pct_drops += 1
                 if current_verified and float(product["archive_reference_price"] or 0) > 0:
                     archive_reference_products += 1
@@ -179,10 +175,10 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'][:10] > store['first_seen'][:10]
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
-                if current_verified and ((product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無")
+                if current_menu and ((product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無")
                         or float(product["seven_day_discount_pct"] or 0) > 0):
                     terms.add("f:promo")
-                if current_verified and float(product["seven_day_discount_pct"] or 0) > 0:
+                if current_menu and float(product["seven_day_discount_pct"] or 0) > 0:
                     terms.add(f"f:discount:{int(float(product['seven_day_discount_pct']) // 5)}")
             for term in sorted(terms):
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
