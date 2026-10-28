@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS products(
   archive_evidence_count INTEGER NOT NULL DEFAULT 0,
   archive_is_price_deal INTEGER NOT NULL DEFAULT 0,
   menu_quote_price REAL,
+  menu_quote_history TEXT NOT NULL DEFAULT '[]',
   menu_quote_effective_price REAL,
   menu_quote_promo_type TEXT,
   menu_quote_quantity INTEGER,
@@ -249,6 +250,7 @@ def ensure_schema_and_migrations(conn: sqlite3.Connection) -> None:
         ("archive_evidence_count", "INTEGER NOT NULL DEFAULT 0"),
         ("archive_is_price_deal", "INTEGER NOT NULL DEFAULT 0"),
         ("menu_quote_price", "REAL"),
+        ("menu_quote_history", "TEXT NOT NULL DEFAULT '[]'"),
         ("menu_quote_effective_price", "REAL"),
         ("menu_quote_promo_type", "TEXT"),
         ("menu_quote_quantity", "INTEGER"),
@@ -315,6 +317,10 @@ class ServingStateCache:
             value["recent_prices"] = [float(v) for v in json_loads(value.get("recent_prices") or "[]")]
         except Exception:
             value["recent_prices"] = []
+        try:
+            value["menu_quote_history"] = json_loads(value.get("menu_quote_history") or "[]")
+        except (ValueError, TypeError):
+            value["menu_quote_history"] = []
         return self._remember(self.products, key, value)
 
     def put_product(self, key: tuple[str, str], value: dict[str, Any]) -> None:
@@ -361,6 +367,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
     changed_store_keys: set[str] = set()
     seen_product_rows: list[tuple[str, str]] = []
     changed_product_rows: list[tuple[str, str]] = []
+    quote_history_batch: list[tuple[str, str, str]] = []
 
     def flush_snapshot_batches() -> None:
         if insert_stores_batch:
@@ -381,6 +388,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         if seen_product_rows:
             conn.executemany("INSERT OR IGNORE INTO snapshot_seen_products VALUES(?,?)", seen_product_rows)
             seen_product_rows.clear()
+        if quote_history_batch:
+            conn.executemany("UPDATE products SET menu_quote_history=? WHERE store_uuid=? AND product_uuid=?", quote_history_batch)
+            quote_history_batch.clear()
         if changed_product_rows:
             conn.executemany("INSERT OR IGNORE INTO pending_product_changes VALUES(?,?)", changed_product_rows)
             changed_product_rows.clear()
@@ -517,9 +527,24 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 promo = observed_promo if price_valid else (str(old["promo_type"]) if old else "無")
                 qty = observed_qty if price_valid else (int(old["quantity"]) if old else 1)
                 effective = calculate_effective_price(price, promo, qty)
-                quote = (observed_price if observed_price > 0 else None,
-                         calculate_effective_price(observed_price, observed_promo, observed_qty) if observed_price > 0 else None,
-                         observed_promo, observed_qty, int(bool(store_price_valid)))
+                quote_unit = calculate_effective_price(observed_price, observed_promo, observed_qty) if observed_price > 0 else 0
+                quote = (observed_price if 0 < observed_price < 1_000_000 else None,
+                         quote_unit if 0 < quote_unit < 1_000_000 else None,
+                         observed_promo, observed_qty, int(bool(price_valid)))
+                # Store a rolling week of distinct raw MENU prices; unlike payable
+                # price events, this series survives "Delivery unavailable" and
+                # night-time closing. Use exactly one observation per SKU/batch.
+                cutoff = (datetime.fromisoformat(now) - timedelta(days=7)).isoformat()
+                previous_quotes = (old or {}).get("menu_quote_history") or []
+                if isinstance(previous_quotes, str):
+                    try: previous_quotes = json_loads(previous_quotes)
+                    except (TypeError, ValueError): previous_quotes = []
+                quote_history = [[t, v] for t, v in previous_quotes
+                                 if isinstance(t, str) and cutoff <= t < now
+                                 and isinstance(v, (int, float)) and 0 < v < 1_000_000]
+                if quote[1] is not None:
+                    quote_history.append([now, round(quote[1], 2)])
+                quote_history_batch.append((json_dumps(quote_history), sid, pid))
                 state = {
                     "product_name": name, "category": category, "description": desc,
                     "price": price, "quantity": qty, "promo_type": promo,
@@ -552,6 +577,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         "price_change_amount": 0,
                         "price_change_percent": 0,
                         "menu_quote_price": quote[0],
+                        "menu_quote_history": quote_history,
                         "menu_quote_effective_price": quote[1],
                         "menu_quote_promo_type": quote[2],
                         "menu_quote_quantity": quote[3],
@@ -615,6 +641,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         or old.get("is_price_drop") != is_price_drop
                         or old.get("price_change_amount") != price_change_amount
                         or old.get("price_change_percent") != price_change_percent
+                        or old.get("menu_quote_history") != quote_history
                         or (old.get("menu_quote_price"), old.get("menu_quote_effective_price"),
                             old.get("menu_quote_promo_type"), old.get("menu_quote_quantity"),
                             old.get("delivery_available", 1)) != quote
@@ -673,6 +700,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     old["is_price_drop"] = is_price_drop
                     old["price_change_amount"] = price_change_amount
                     old["price_change_percent"] = price_change_percent
+                    old["menu_quote_history"] = quote_history
                     old.update(zip(("menu_quote_price", "menu_quote_effective_price",
                                     "menu_quote_promo_type", "menu_quote_quantity",
                                     "delivery_available"), quote))
