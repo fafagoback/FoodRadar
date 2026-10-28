@@ -628,7 +628,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
 // PRICE_CHANGED / CONTENT_CHANGED event emitted by the same crawl.
 export function normalizePriceHistoryEvents(events) {
   // A promotion change can change unit cost even when the raw menu price is stable.
-  const priority = { MENU_QUOTE: 0, BASELINE: 0, NEW: 1, PRICE_OBSERVED: 2, PROMOTION_CHANGED: 3, PRICE_CHANGED: 4 };
+  const priority = { MENU_QUOTE: 5, BASELINE: 0, NEW: 1, PRICE_OBSERVED: 2, PROMOTION_CHANGED: 3, PRICE_CHANGED: 4 };
   const priceEvents = (events || []).filter(e =>
     Object.prototype.hasOwnProperty.call(priority, e.event_type));
 
@@ -663,7 +663,17 @@ export function normalizePriceHistoryEvents(events) {
     if (state.menu_quote_valid !== true && state.is_open !== 1 && state.is_open !== true) continue;
     if (!(Number(state.price) > 0)) continue;
     const previous = byTime.get(time);
-    if (!previous || priority[event.event_type] > priority[previous.event_type]) {
+    // Prefer complete original HF evidence over sparse event snapshots.
+    // A legacy unit-only quote is lower confidence than a verified event.
+    const rank = event.event_type === 'MENU_QUOTE' && state.effective_unit_only === true
+      ? 0 : priority[event.event_type];
+    let priorRank = -1;
+    if (previous) {
+      const priorState = JSON.parse(previous.new_state || previous.old_state || '{}');
+      priorRank = previous.event_type === 'MENU_QUOTE' &&
+        priorState.effective_unit_only === true ? 0 : priority[previous.event_type];
+    }
+    if (!previous || rank > priorRank) {
       byTime.set(time, event);
     }
   }
@@ -714,14 +724,23 @@ export async function packedHistory(storeUuid, productUuid) {
       let quotes = [];
       try { quotes = JSON.parse(product.menu_quote_history || '[]'); }
       catch (_) { quotes = []; }
-      for (const [at, unit] of quotes) {
+      for (const point of quotes) {
+        if (!Array.isArray(point) || point.length < 2) continue;
+        const [at, unit, rawPrice, promoType, count] = point;
         if (!at || !(Number(unit) > 0)) continue;
+        const hasRawEvidence = point.length >= 5 &&
+          Number(rawPrice) > 0 && String(promoType || '').trim() !== '';
+        // The packed history carries exact original RAW list price + promo
+        // when present, rather than inventing a $29 menu item from a $58 BOGO.
         events.push({event_time:at, event_type:'MENU_QUOTE',
-          new_state:JSON.stringify({price:Number(unit),quantity:1,
-            // Quote history stores UNIT COST only: original label price and
-            // historic promotion are unknown. Never invent 'no promotion'.
-            effective_unit_only:true,menu_quote_valid:true,price_valid:false,
-            delivery_available:false})});
+          new_state:JSON.stringify({
+            price:hasRawEvidence ? Number(rawPrice) : Number(unit),
+            quantity:hasRawEvidence ? Number(count || 1) : 1,
+            promo_type:hasRawEvidence ? promoType : null,
+            effective_unit_only:!hasRawEvidence,
+            menu_quote_valid:true,price_valid:false,
+            delivery_available:false
+          })});
       }
     }
     for (const event of chunk.events || []) {
