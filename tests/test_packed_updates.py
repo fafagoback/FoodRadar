@@ -103,12 +103,12 @@ class PackedUpdateTests(unittest.TestCase):
             old=document(sid,[pid])
             old['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['offers']['price']=100
             old['closedMessage']='Delivery unavailable'
-            old['isOpen']=False
+            old['isOpen']=True  # open-hours menu, delivery is still unavailable
             apply_snapshot(con,[old],'20261022090000')
             current=document(sid,[pid])
             current['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['offers']['price']=50
             current['closedMessage']='Delivery unavailable'
-            current['isOpen']=False
+            current['isOpen']=True
             apply_snapshot(con,[current],'20261023090000')
             con.close()
             repair(file)
