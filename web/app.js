@@ -557,52 +557,8 @@ async function fetchDiscounts(page = 1) {
 
   APP_STATE.discounts = items;
   renderDiscounts();
-  await fetchArchivePriceCandidates({
-    keyword: discountSearch.trim(), minPercent: discountMinPct,
-    minSavings: discountMinSavings, category: discountCategory, requestId
-  });
 }
 
-
-async function fetchArchivePriceCandidates({keyword, minPercent, minSavings, category, requestId}) {
-  const grid = document.getElementById('archive-quote-grid');
-  const summary = document.getElementById('archive-quote-count');
-  if (!grid || !summary) return;
-  try {
-    const client = await getPackedTursoClient();
-    let items = await client.searchPacked({
-      keyword, minArchiveDiscount: minPercent,
-      location: APP_STATE.locationFilter, limit: 50000
-    });
-    if (requestId !== discountsSearchSequence) return;
-    items = items.filter(x => x.is_current_price_observation &&
-      Number(x.archive_is_price_deal) === 1 &&
-      Number(x.archive_savings_amount) >= minSavings &&
-      (category === '全部' || (x.category_name || '').includes(category)) &&
-      Number(x.archive_evidence_count) >= 2 &&
-      !Number(x.is_price_deal));
-    items.sort((a,b) => b.archive_discount_pct - a.archive_discount_pct);
-    summary.textContent = `另有 ${items.length} 件使用舊菜單報價推算（不能證明當時可外送）`;
-    grid.innerHTML = items.map(item => `
-      <article class="radar-card rounded-xl border border-amber-300/50 dark:border-amber-800/60 bg-white dark:bg-slate-900 p-4 space-y-2">
-        <div class="flex justify-between gap-2 items-start">
-          <div class="min-w-0">
-            <div class="text-xs text-slate-500">${escapeHtml(item.store_name)}</div>
-            <div class="font-semibold text-sm text-slate-900 dark:text-slate-100">${escapeHtml(item.product_name)}</div>
-          </div>
-          <span class="shrink-0 text-xs font-semibold rounded-md bg-amber-100 text-amber-800 px-2 py-1">菜單參考 -${Number(item.archive_discount_pct).toFixed(1)}%</span>
-        </div>
-        <p class="text-xs text-slate-500">舊菜單報價 ${window.UBER_DATA_CONTRACT.unitMoney(item.archive_reference_price)} · 本批有效單價 ${window.UBER_DATA_CONTRACT.unitMoney(item.current_price)}</p>
-        <p class="text-xs text-amber-700 dark:text-amber-400">至少 ${item.archive_evidence_count} 批舊菜單有相同報價；舊批次因外送位置問題，價格僅供參考，非已驗證特價。</p>
-        <a class="inline-flex text-xs text-blue-600 dark:text-blue-400 underline" target="_blank" rel="noopener noreferrer" href="${escapeHtml(safeOrderUrl(item.order_action_url))}">查看目前菜單</a>
-      </article>`).join('');
-  } catch (error) {
-    if (requestId !== discountsSearchSequence) return;
-    summary.textContent = '歷史菜單參考價目前無法查詢';
-    grid.innerHTML = '';
-    console.warn('Archive menu quote query failed',error);
-  }
-}
 
 function changeDiscountsPage(page) {
   fetchDiscounts(page);
