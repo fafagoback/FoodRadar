@@ -74,6 +74,28 @@ async function main() {
   closed.new_state = state(300, {price_valid:false});
   assert.equal(normalize([...events,closed]).length,4, 'closed-hours events never enter price graph');
 
+  // Historical quotes rebuilt from HF RAW carry price, promo and quantity;
+  // they must replace misleading old unit-only and sparse verified events.
+  const rawStamp = '2026-10-25T08:27:58+08:00';
+  const rawQuote = {
+    event_type:'MENU_QUOTE', event_time:rawStamp,
+    new_state:JSON.stringify({price:58,quantity:2,promo_type:'買1送1',
+      effective_unit_only:false,menu_quote_valid:true,price_valid:false})
+  };
+  const oldPriceEvent = event(8888, 'PRICE_OBSERVED', rawStamp, 58);
+  const enriched = normalize([oldPriceEvent,rawQuote]);
+  assert.equal(enriched.length,1);
+  assert.equal(enriched[0].event_type,'MENU_QUOTE');
+  assert.deepEqual(JSON.parse(enriched[0].new_state),
+    {price:58,quantity:2,promo_type:'買1送1',
+      effective_unit_only:false,menu_quote_valid:true,price_valid:false});
+  const legacyQuote = {...rawQuote, new_state:JSON.stringify({
+    price:29,quantity:1,effective_unit_only:true,
+    menu_quote_valid:true,price_valid:false})};
+  assert.equal(normalize([oldPriceEvent,legacyQuote])[0].event_type,'PRICE_OBSERVED');
+  assert.ok(moduleSource.includes('const [at, unit, rawPrice, promoType, count] = point;'),
+    'packed history must unpack the original RAW list price and promotion');
+
   const app = fs.readFileSync('web/app.js', 'utf8');
   const start = app.indexOf('function formatBatchDate(');
   assert.ok(start >= 0);
