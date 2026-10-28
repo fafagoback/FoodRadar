@@ -32,7 +32,7 @@ const fs = require('node:fs');
     assert.match(homeText, /^\d[\d,]*$/, 'dashboard must display a numeric count');
     const home = Number(homeText.replace(/,/g, ''));
     const coverage = (await page.locator('#discounts-coverage').innerText()).trim();
-    assert.match(coverage, /本批有效商品 [\d,]+ 件；[\d,]+ 件有前次有效單價，[\d,]+ 件有七日有效價格基準/,
+    assert.match(coverage, /可搜尋最近取得的菜單商品 [\d,]+ 件，其中本批可確認外送價格 [\d,]+ 件；[\d,]+ 件有前次有效單價，[\d,]+ 件有七日有效價格基準/,
       'dashboard must disclose the valid comparison denominator, not only a zero');
     console.log('DEAL_COMPARISON_COVERAGE ' + coverage);
 
@@ -117,13 +117,12 @@ const fs = require('node:fs');
         valid:JSON.parse(e.new_state || e.old_state || '{}').price_valid}))};
     });
     console.log('NOODLE_VALID_HISTORY '+JSON.stringify(noodle));
-    // The product may be absent from the search index when its store is closed.
-    // Absence is correct under the verified-open ingestion rule; never force
-    // stale closed-hour menu items into the live site just to satisfy a test.
+    // Closed stores can retain their last known menu, but *verified* price
+    // history must not incorporate closed-hour menu quotes.
     if (noodle.found) {
-      assert.ok(noodle.events.length > 0, 'Searchable product has in-hours history');
-      assert.ok(noodle.events.every(e => e.valid === true && Number(e.price) !== 300),
-        'Closed-hours 300 must not show up as a price observation');
+      const verified = noodle.events.filter(e => e.valid === true);
+      assert.ok(verified.every(e => Number(e.price) !== 300),
+        'Closed-hours 300 must not show up as a verified price observation');
     }
 
     // Regression reported for 鬆餅家士林店: 89 BOGO (unit 44.5) -> 55 plain.
