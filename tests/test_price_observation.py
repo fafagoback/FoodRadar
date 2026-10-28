@@ -72,14 +72,47 @@ class PriceValidityTests(unittest.TestCase):
         # The prior 300 quote is a comparable historical menu price even
         # though it was not a validated payable / delivery price.
         last=self.conn.execute('SELECT menu_quote_history FROM products').fetchone()[0]
-        self.assertEqual([v for _,v in json.loads(last)],[300,210])
+        self.assertEqual([v for _,v in json.loads(last)],[210])  # 01:40 closed 300 excluded
 
         late=menu('20261015014059',999)
         apply_snapshot(self.conn,[late],'20261015014059')
         row=self.conn.execute('SELECT price,menu_quote_price,delivery_available FROM products').fetchone()
         self.assertEqual(tuple(row),(210,999,0))
+        self.assertEqual([v for _,v in json.loads(self.conn.execute(
+            'SELECT menu_quote_history FROM products').fetchone()[0])],[210])
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM events WHERE event_type='PRICE_CHANGED'").fetchone()[0],0)
+
+    def test_yuchi_shilin_overnight_bogo_is_not_new_discount(self):
+        from price_observation import menu_price_observation_valid
+        from repair_effective_prices import repair
+        # Same product UUID, 55 NTD list price in regular category every time.
+        # BOGO category exists only in OPEN-hours snapshots.
+        def yuchi(batch, bogo, is_open, opens):
+            d=menu(batch,55)
+            d['isOpen']=True  # Uber's flag was stale even at 08:42.
+            d['closedMessage']='Delivery unavailable'
+            d['workingHoursTagline']='Open until 1:00 AM' if is_open else 'Opens 9:30 AM'
+            d['openingHoursSpecification']=[{
+                'dayOfWeek':['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
+                'opens':'09:30','closes':'01:00'}]
+            d['hasMenu']['hasMenuSection'][0]['name']='台灣50年經典'
+            if bogo:
+                sec={'name':'Buy 1, get 1 free','hasMenuItem':[
+                    dict(d['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0])]}
+                d['hasMenu']['hasMenuSection'].insert(0,sec)
+            self.assertEqual(menu_price_observation_valid(d,batch),is_open)
+            return d
+        for batch, promo, open_hour in [
+            ('20261021084227',False,False),
+            ('20261022233044',True,True),
+            ('20261025082758',False,False),
+            ('20261025223028',True,True),
+            ('20261027235841',True,True)]:
+            apply_snapshot(self.conn,[yuchi(batch,promo,open_hour,'09:30')],batch)
+        p=self.conn.execute("SELECT menu_quote_price,menu_quote_effective_price,menu_quote_history FROM products").fetchone()
+        self.assertEqual((p[0],p[1]),(55,27.5))
+        self.assertEqual([v for _,v in json.loads(p[2])],[27.5,27.5,27.5])
 
     def test_conflicting_isopen_and_missing_hours_are_rejected(self):
         doc=menu('20261014014059',300)
