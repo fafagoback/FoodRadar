@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
 
-from price_observation import price_observation_valid
+from price_observation import price_observation_valid, menu_catalog_valid
 from serving_state import apply_snapshot
 from test_packed_updates import document
 
@@ -100,6 +100,32 @@ class PriceValidityTests(unittest.TestCase):
         # restaurant could not deliver. These must NEVER create price events.
         doc['closedMessage']='Delivery unavailable'
         self.assertFalse(price_observation_valid(doc,'20261014091759'))
+
+    def test_delivery_unavailable_keeps_menu_visible_without_verified_discount(self):
+        doc = menu('20261023091759', 120)
+        doc['closedMessage'] = 'Delivery unavailable'
+        self.assertFalse(price_observation_valid(doc, '20261023091759'))
+        self.assertTrue(menu_catalog_valid(doc, '20261023091759'))
+        counts = apply_snapshot(self.conn, [doc], '20261023091759')
+        self.assertEqual((counts['stores'], counts['products']), (1, 1))
+        row = self.conn.execute('SELECT price,menu_quote_price,menu_quote_effective_price,delivery_available FROM products').fetchone()
+        self.assertEqual(tuple(row), (0, 120, 120, 0))
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0], 1)
+        event = self.conn.execute("SELECT new_state FROM events WHERE event_type='NEW'").fetchone()
+        self.assertFalse(json.loads(event[0])['price_valid'])
+
+        available = menu('20261024091759', 90)
+        apply_snapshot(self.conn, [available], '20261024091759')
+        row = self.conn.execute('SELECT price,menu_quote_price,delivery_available,discount_pct FROM products').fetchone()
+        self.assertEqual(tuple(row), (90, 90, 1, 0))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE event_type='PRICE_CHANGED'").fetchone()[0], 0)
+
+    def test_delivery_banner_does_not_override_real_closure(self):
+        doc = menu('20261023014059', 500)
+        doc['closedMessage'] = 'Delivery unavailable'
+        self.assertFalse(menu_catalog_valid(doc, '20261023014059'))
+        result = apply_snapshot(self.conn, [doc], '20261023014059')
+        self.assertEqual(result['stores'], 0)
 
     def test_baseline_valid_price_is_recorded_even_without_any_future_price_changes(self):
         apply_snapshot(self.conn,[menu('20261006091759',210)],'20261006091759')
