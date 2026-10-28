@@ -31,8 +31,17 @@ def report(path):
             history = json.loads(p['menu_quote_history'] or '[]')
         except (TypeError,ValueError):
             history = []
-        week = PriceChange.seven_day_high(
+        # Catalogue records collected while CLOSED are not valid latest
+        # price-comparison observations; require an OPEN-hours quote at latest.
+        quoted_at_latest = any(
+            isinstance(point,(list,tuple)) and len(point)==2
+            and point[0] == latest
+            and abs(float(point[1])-float(p['menu_quote_effective_price'])) < .011
+            for point in history
+            if isinstance(point,(list,tuple)) and len(point)==2)
+        week = (PriceChange.seven_day_high(
             history,latest,p['menu_quote_effective_price'])
+            if quoted_at_latest else None)
         expected = PriceChange.persisted_seven_day(week)
         if week:
             result['comparable_menu_quotes'] += 1
