@@ -130,14 +130,32 @@ def repair(db_path):
                     histories[(sid, pid)].append((when, unit))
         week_updates = []
         week_deals = 0
+        comparable_menu_quotes = 0
+        current_menu_quotes = 0
         seen_sql = "last_seen" if "last_seen" in columns else "NULL AS last_seen"
-        for sid, pid, unit, last_seen in conn.execute(
-            f"SELECT store_uuid,product_uuid,effective_price,{seen_sql} FROM products"
+        has_quote_history = "menu_quote_history" in columns
+        quote_columns = (",menu_quote_effective_price,menu_quote_history"
+                         if has_quote_history else ",NULL AS menu_quote_effective_price,NULL AS menu_quote_history")
+        for sid, pid, unit, last_seen, raw_quote_unit, quote_json in conn.execute(
+            f"SELECT store_uuid,product_uuid,effective_price,{seen_sql}{quote_columns} FROM products"
         ):
-            seven = PriceChange.seven_day_high(
-                histories.get((sid, pid), ()), last_batch, unit) if last_batch == last_seen else None
-            # The published deal list uses the highest VERIFIED unit price
-            # inside the prior seven days, not the previous-crawl movement.
+            # Published seven-day comparisons use a separate rolling series of
+            # RAW menu price observations. Delivery status is metadata, not
+            # evidence that the API's returned menu price did not exist.
+            # Never mix a previous verified-price event with a RAW quote in
+            # the same reference-price series.
+            if last_batch == last_seen and raw_quote_unit and float(raw_quote_unit) > 0:
+                current_menu_quotes += 1
+                try:
+                    quote_history = json.loads(quote_json or '[]')
+                except (ValueError, TypeError):
+                    quote_history = []
+                seven = PriceChange.seven_day_high(
+                    quote_history, last_batch, raw_quote_unit)
+            else:
+                seven = None
+            if seven is not None:
+                comparable_menu_quotes += 1
             week_fields = PriceChange.persisted_seven_day(seven)
             week_deals += week_fields["seven_day_is_price_deal"]
             week_updates.append((
@@ -145,6 +163,9 @@ def repair(db_path):
                 week_fields["seven_day_discount_pct"],
                 week_fields["seven_day_discount_amount"],
                 week_fields["seven_day_is_price_deal"], sid, pid))
+        print(f"RAW_MENU_SEVEN_DAY_COMPARISON current_quotes={current_menu_quotes} "
+              f"comparable_quotes={comparable_menu_quotes} "
+              f"discounts_30pct={week_deals}", flush=True)
         conn.executemany(
             """UPDATE products SET seven_day_reference_price=?,
                seven_day_discount_pct=?,seven_day_discount_amount=?,
