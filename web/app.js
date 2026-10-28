@@ -371,11 +371,10 @@ function updateStatsUI(stats) {
       coverage.textContent = '無法驗證本批可比較價格，請稍後重試。';
     } else {
       const current = Number(stats.active_products || 0);
-      const comparable = Number(stats.active_comparable_products || 0);
       const promos = Number(stats.active_platform_promotions || 0);
       const week = Number(stats.seven_day_reference_products || 0);
       const days = (stats.seven_day_verified_dates || []).length;
-      coverage.textContent = `可搜尋最近取得的菜單商品 ${current.toLocaleString()} 件，其中本批可確認外送價格 ${Number(stats.current_verified_products || 0).toLocaleString()} 件；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；最近七天有 ${days} 個菜單價格採集日；${promos.toLocaleString()} 件屬平台促銷。`;
+      coverage.textContent = `可搜尋最近取得的菜單商品 ${current.toLocaleString()} 件，其中最近採集批次確認可外送 ${Number(stats.current_verified_products || 0).toLocaleString()} 件；${week.toLocaleString()} 件具有七日價格比較基準；最近七天有 ${days} 個菜單價格採集日；${promos.toLocaleString()} 件屬平台促銷。`;
       if (stats.seven_day_history_incomplete) {
         coverage.textContent += ' 注意：七日菜單價格紀錄不足，降價為菜單報價比較，並非外送下單保證。';
       }
@@ -390,7 +389,7 @@ function updateStatsUI(stats) {
     for (const id of ['stat-big-discounts', 'stat-new-stores', 'stat-new-products', 'stat-promotions']) document.getElementById(id).textContent = '待同步';
   }
   document.getElementById('stat-total-stores').textContent = `總監控 ${(stats.total_monitored_stores || stats.total_stores || 0).toLocaleString()} 間`;
-  document.getElementById('stat-total-products').textContent = `總菜品 ${(stats.total_monitored_products || stats.total_products || 0).toLocaleString()} 項`;
+  document.getElementById('stat-total-products').textContent = `歷史累積 ${(stats.total_monitored_products || stats.total_products || 0).toLocaleString()} 項（含已下架）`;
 }
 
 // -----------------------------------------------------------------------------
@@ -652,7 +651,7 @@ function renderDiscounts() {
             </div>
           </div>
 
-          ${item.delivery_available !== true ? '<p class="text-xs font-medium text-amber-700 dark:text-amber-400">菜單報價降幅・目前未確認可外送，價格及優惠以 Uber Eats 為準</p>' : '<p class="text-xs text-emerald-700 dark:text-emerald-400">目前已確認可外送的菜單報價</p>'}
+          ${item.delivery_available !== true ? '<p class="text-xs font-medium text-amber-700 dark:text-amber-400">菜單報價降幅・目前未確認可外送，價格及優惠以 Uber Eats 為準</p>' : '<p class="text-xs text-emerald-700 dark:text-emerald-400">最近採集時確認可外送的菜單報價（非即時）</p>'}
           ${hasPromo ? `
             <div class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
               <i data-lucide="gift" class="w-3 h-3"></i>
@@ -1863,7 +1862,8 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   // older versions only recorded changes. Always include the latest valid
   // product observation, even when the price has stayed flat since the
   // previous event. Future crawls persist every valid observation.
-  if (currentProductLoaded && currentComparison) {
+  if (currentProductLoaded && currentComparison &&
+      currentComparison.is_current_menu_observation === true) {
     const at = String(currentComparison.crawled_time || '');
     const price = Number(currentComparison.price);
     const unit = Number(currentComparison.current_price);
@@ -1907,7 +1907,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
       const currentPromo = String(weekly.promo_type || '無');
       const promoDetail = currentPromo !== '無'
         ? `；目前 ${currentPromo}，原始標價 ${unitFmt(weekly.price)}` : '';
-      priceChangeEl.textContent = `近七日最高實質單價 ${unitFmt(weekly.seven_day_reference_price)} → 最新實質單價 ${unitFmt(weekly.current_price)}（${difference > 0 ? '實質單價下降 '+Number(weekly.discount_pct).toFixed(1)+'%' : '沒有下降'}${promoDetail}；${weekly.delivery_available === true ? '目前確認可外送' : '未確認可外送'}）`;
+      priceChangeEl.textContent = `近七日最高實質單價 ${unitFmt(weekly.seven_day_reference_price)} → 最新實質單價 ${unitFmt(weekly.current_price)}（${difference > 0 ? '實質單價下降 '+Number(weekly.discount_pct).toFixed(1)+'%' : '沒有下降'}${promoDetail}；${weekly.delivery_available === true ? '最近採集時確認可外送（非即時）' : '最近採集時未確認可外送'}）`;
     } else if (compared) {
       const delta = Number(compared.price_change_amount);
       const percent = Math.abs(Number(compared.price_change_percent)).toFixed(1);
