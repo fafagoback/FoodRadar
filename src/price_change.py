@@ -53,8 +53,12 @@ class PriceChange:
             return None
         cutoff = now - timedelta(days=days)
         unique = {}
-        for stamp, price in observations:
+        for point in observations:
+            # Older history rows contain [time, unit]; new HF RAW rows add
+            # [original_list_price, promo_type, quantity]. The comparison
+            # ALWAYS reads the same unit-cost field in position 1.
             try:
+                stamp, price = point[0], point[1]
                 when = datetime.fromisoformat(str(stamp))
                 value = round(float(price), 2)
                 if cutoff <= when < now and isfinite(value) and value > 0:
