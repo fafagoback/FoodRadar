@@ -375,9 +375,9 @@ function updateStatsUI(stats) {
       const promos = Number(stats.active_platform_promotions || 0);
       const week = Number(stats.seven_day_reference_products || 0);
       const days = (stats.seven_day_verified_dates || []).length;
-      coverage.textContent = `可搜尋最近取得的菜單商品 ${current.toLocaleString()} 件，其中本批可確認外送價格 ${Number(stats.current_verified_products || 0).toLocaleString()} 件；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；七天內僅 ${days} 個採集日有通過驗證的價格；${promos.toLocaleString()} 件屬平台促銷。`;
+      coverage.textContent = `可搜尋最近取得的菜單商品 ${current.toLocaleString()} 件，其中本批可確認外送價格 ${Number(stats.current_verified_products || 0).toLocaleString()} 件；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；最近七天有 ${days} 個菜單價格採集日；${promos.toLocaleString()} 件屬平台促銷。`;
       if (stats.seven_day_history_incomplete) {
-        coverage.textContent += ' 注意：七日有效採集日期不足；歷史菜單參考價另列，並非當時可外送價格。';
+        coverage.textContent += ' 注意：七日菜單價格紀錄不足，降價為菜單報價比較，並非外送下單保證。';
       }
     }
   }
@@ -678,7 +678,7 @@ function renderDiscounts() {
         <div class="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
           <div class="flex items-baseline justify-between">
             <div>
-              <div class="text-xs text-slate-400 line-through">近 7 天最高有效單價 ${window.UBER_DATA_CONTRACT.unitMoney(item.original_price)}</div>
+              <div class="text-xs text-slate-400 line-through">近 7 天最高菜單單價 ${window.UBER_DATA_CONTRACT.unitMoney(item.original_price)}</div>
               <div class="text-2xl font-black text-red-600 dark:text-red-400 font-mono flex items-baseline gap-1">
                 ${window.UBER_DATA_CONTRACT.unitMoney(item.current_price)}
                 <span class="text-xs font-normal text-slate-500 dark:text-slate-400">/ 實質單件</span>
@@ -696,6 +696,7 @@ function renderDiscounts() {
             </div>
           </div>
 
+          ${item.delivery_available !== true ? '<p class="text-xs font-medium text-amber-700 dark:text-amber-400">菜單報價降幅・目前未確認可外送，價格及優惠以 Uber Eats 為準</p>' : '<p class="text-xs text-emerald-700 dark:text-emerald-400">目前已確認可外送的菜單報價</p>'}
           ${hasPromo ? `
             <div class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
               <i data-lucide="gift" class="w-3 h-3"></i>
@@ -710,7 +711,7 @@ function renderDiscounts() {
             </button>
 
             <a href="${escapeHtml(safeOrderUrl(orderUrl))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([orderUrl, item.product_name, item.store_name]))}" class="px-3 py-2 text-xs font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-1.5 active:scale-95">
-              <span>前往下單</span>
+              <span>${item.delivery_available === true ? '前往下單' : '查看菜單'}</span>
               <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
             </a>
           </div>
