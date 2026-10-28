@@ -1904,7 +1904,10 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
       && currentComparison.price_direction !== 'unknown' ? currentComparison : null;
     if (weekly) {
       const difference = Number(weekly.seven_day_reference_price) - Number(weekly.current_price);
-      priceChangeEl.textContent = `近七日最高菜單價 ${unitFmt(weekly.seven_day_reference_price)} → 最新菜單價 ${unitFmt(weekly.current_price)}（${difference > 0 ? '降幅 '+Number(weekly.discount_pct).toFixed(1)+'%' : '沒有降價'}；${weekly.delivery_available === true ? '目前確認可外送' : '未確認可外送'}）`;
+      const currentPromo = String(weekly.promo_type || '無');
+      const promoDetail = currentPromo !== '無'
+        ? `；目前 ${currentPromo}，原始標價 ${unitFmt(weekly.price)}` : '';
+      priceChangeEl.textContent = `近七日最高實質單價 ${unitFmt(weekly.seven_day_reference_price)} → 最新實質單價 ${unitFmt(weekly.current_price)}（${difference > 0 ? '實質單價下降 '+Number(weekly.discount_pct).toFixed(1)+'%' : '沒有下降'}${promoDetail}；${weekly.delivery_available === true ? '目前確認可外送' : '未確認可外送'}）`;
     } else if (compared) {
       const delta = Number(compared.price_change_amount);
       const percent = Math.abs(Number(compared.price_change_percent)).toFixed(1);
