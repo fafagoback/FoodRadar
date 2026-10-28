@@ -401,12 +401,14 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
             continue
         seen_stores.add(sid)
         # Delivery availability cannot erase an existing open-hours menu.
-        is_open = int(menu_catalog_valid(doc, batch_id))
-        conn.execute("INSERT OR REPLACE INTO snapshot_seen_stores VALUES(?,?)", (sid, is_open))
-        if not is_open:
+        catalog_seen = int(menu_catalog_valid(doc, batch_id))
+        conn.execute("INSERT OR REPLACE INTO snapshot_seen_stores VALUES(?,?)", (sid, catalog_seen))
+        if not catalog_seen:
             counts["skipped_closed_stores"] += 1
             continue
 
+        # is_open means business hours, not whether a closed shop exposed a menu.
+        is_open = int(menu_price_observation_valid(doc, batch_id))
         counts["fallback_stores"] += int(sfallback)
         counts["stores"] += 1
         if counts["stores"] > 1 and counts["stores"] % 100 == 1:
@@ -490,10 +492,11 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     continue
                 # Quantity-changing offers rank over descriptive sale labels.
                 # Resolve ties by stable text, never by API category order.
-                rank = (int(candidate_qty > 1), candidate_promo)
+                candidate_price = _num((candidate_item.get("offers") or {}).get("price"), float, 0)
+                rank = (int(candidate_qty > 1), int(candidate_price > 0), candidate_promo)
                 prior = preferred_promos.get(candidate_pid)
                 if prior is None or rank > prior[0]:
-                    preferred_promos[candidate_pid] = (rank, candidate_promo, candidate_qty)
+                    preferred_promos[candidate_pid] = (rank, candidate_promo, candidate_qty, candidate_price)
         store_product_keys: set[str] = set()
         for sec in sections:
             category = html.unescape(str(sec.get("name") or "一般"))
@@ -512,7 +515,6 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
 
                 old = state_cache.get_product(key)
                 observed_price = _num((item.get("offers") or {}).get("price"), float, 0)
-                price_valid = store_price_valid and observed_price > 0
                 desc = str(item.get("description") or "")
                 # Original Restaurant JSON describes offers in section/name/
                 # description; it does not carry ETL-only promo_type fields.
@@ -522,6 +524,11 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 preferred = preferred_promos.get(pid)
                 if preferred is not None:
                     observed_promo, observed_qty = preferred[1], preferred[2]
+                    # A SKU can have different list prices in its promotional
+                    # section; never combine BOGO terms with the first category's price.
+                    if preferred[3] > 0:
+                        observed_price = preferred[3]
+                price_valid = store_price_valid and observed_price > 0
                 # Never replace the last verified price/promotion with an
                 # unpurchasable closed-hours menu snapshot.
                 price = observed_price if price_valid else (float(old["price"]) if old and old["recent_prices"] else 0.0)
