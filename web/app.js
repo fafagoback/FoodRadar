@@ -338,6 +338,7 @@ async function loadFromTurso() {
     updateStatsUI({latest_batch:packed.meta.latest_batch,
       latest_batch_formatted:packed.meta.latest_processed_at || formatBatchDate(packed.meta.latest_batch),
       active_products: Number(packed.meta.active_products || 0),
+      current_verified_products: Number(packed.meta.current_verified_products || 0),
       active_comparable_products: Number(packed.meta.active_comparable_products || 0),
       seven_day_reference_products: Number(packed.meta.seven_day_reference_products || 0),
       archive_30pct_candidates: Number(packed.meta.archive_30pct_candidates || 0),
@@ -374,7 +375,7 @@ function updateStatsUI(stats) {
       const promos = Number(stats.active_platform_promotions || 0);
       const week = Number(stats.seven_day_reference_products || 0);
       const days = (stats.seven_day_verified_dates || []).length;
-      coverage.textContent = `本批可見菜單商品 ${current.toLocaleString()} 件（含暫不可外送）；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；七天內僅 ${days} 個採集日有通過驗證的價格；${promos.toLocaleString()} 件屬平台促銷。`;
+      coverage.textContent = `可搜尋最近取得的菜單商品 ${current.toLocaleString()} 件，其中本批可確認外送價格 ${Number(stats.current_verified_products || 0).toLocaleString()} 件；${comparable.toLocaleString()} 件有前次有效單價，${week.toLocaleString()} 件有七日有效價格基準；七天內僅 ${days} 個採集日有通過驗證的價格；${promos.toLocaleString()} 件屬平台促銷。`;
       if (stats.seven_day_history_incomplete) {
         coverage.textContent += ' 注意：七日有效採集日期不足；歷史菜單參考價另列，並非當時可外送價格。';
       }
@@ -1768,6 +1769,7 @@ function renderGlobalProducts() {
             ` : ''}
             ${distanceBadge(p)}
             ${p.delivery_available === false ? '<span class="text-[11px] font-medium px-2 py-0.5 rounded bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300">菜單參考價・暫不可外送</span>' : ''}
+            ${p.delivery_available === null ? '<span class="text-[11px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">最近菜單價・非即時</span>' : ''}
             ${hasQtyPromo ? `
               <span class="text-[11px] text-slate-400 dark:text-slate-500 font-mono">
                 (標價 ${window.UBER_DATA_CONTRACT.money(p.price)} 共 ${promoInfo.totalQty} 件)
@@ -1781,7 +1783,7 @@ function renderGlobalProducts() {
             <i data-lucide="line-chart" class="w-3.5 h-3.5"></i>走勢
           </button>
           <a href="${escapeHtml(safeOrderUrl(p.order_action_url || '#'))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([String(p.order_action_url || ''), String(p.product_name), String(p.store_name)]))}" class="text-xs text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1 active:scale-95 transition-transform">
-            ${p.delivery_available === false ? "查看菜單" : "下單"} <i data-lucide="arrow-up-right" class="w-3.5 h-3.5"></i>
+            ${p.delivery_available === true ? "下單" : "查看菜單"} <i data-lucide="arrow-up-right" class="w-3.5 h-3.5"></i>
           </a>
         </div>
       </div>
