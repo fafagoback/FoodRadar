@@ -124,11 +124,13 @@ export async function metadata() {
 async function fetchBuckets(bucketIds) {
   const missing = [...new Set(bucketIds)].filter(id => !bucketCache.has(id));
   if (missing.length === 0) return;
+  const epoch = cacheEpoch;
   for (let i = 0; i < missing.length; i += 60) {
     const ids = missing.slice(i, i + 60);
     const rows = await sql(`select bucket_id, payload, checksum from search_buckets where bucket_id in (${ids.join(',')})`);
     for (const r of rows) {
-      bucketCache.set(Number(r.bucket_id), r.payload ? await unpack(r.payload, r.checksum) : {});
+      const bucket = r.payload ? await unpack(r.payload, r.checksum) : {};
+      if (epoch === cacheEpoch) bucketCache.set(Number(r.bucket_id), bucket);
     }
   }
 }
@@ -687,6 +689,7 @@ export function normalizePriceHistoryEvents(events) {
 
 // Resolve the actual current comparison; change-event history omits unchanged crawls.
 export async function packedCurrentProduct(storeUuid, productUuid) {
+  await metadata(); // Same batch can be rebuilt, invalidating any prior bundle.
   const escaped = String(storeUuid).replace(/'/g, "''");
   const row = (await sql(`select store_id from store_directory where store_uuid='${escaped}' limit 1`))[0];
   if (!row) return null;
@@ -712,6 +715,7 @@ export async function packedCurrentProduct(storeUuid, productUuid) {
 }
 
 export async function packedHistory(storeUuid, productUuid) {
+  await metadata(); // Check dataset revision even when opening a modal directly.
   const row = (await sql(`select store_id from store_directory where store_uuid='${String(storeUuid).replace(/'/g, "''")}' limit 1`))[0];
   if (!row) return [];
   await bundlesForStores([Number(row.store_id)]);
