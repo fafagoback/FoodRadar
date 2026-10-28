@@ -30,9 +30,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    from .price_observation import price_observation_valid, menu_catalog_valid
+    from .price_observation import price_observation_valid, menu_catalog_valid, menu_price_observation_valid
 except ImportError:
-    from price_observation import price_observation_valid, menu_catalog_valid
+    from price_observation import price_observation_valid, menu_catalog_valid, menu_price_observation_valid
 
 try:
     import orjson
@@ -467,6 +467,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
 
         # Keep payable-price verification independent of menu visibility.
         store_price_valid = price_observation_valid(doc, batch_id)
+        quote_price_valid = menu_price_observation_valid(doc, batch_id)
         sections = (doc.get("hasMenu") or {}).get("hasMenuSection") or []
         # A SKU may appear both in a normal category and in the live BOGO
         # category. Selecting the first occurrence makes prices jump when
@@ -531,9 +532,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 quote = (observed_price if 0 < observed_price < 1_000_000 else None,
                          quote_unit if 0 < quote_unit < 1_000_000 else None,
                          observed_promo, observed_qty, int(bool(price_valid)))
-                # Store a rolling week of distinct raw MENU prices; unlike payable
-                # price events, this series survives "Delivery unavailable" and
-                # night-time closing. Use exactly one observation per SKU/batch.
+                # Keep all menu quotes visible, but only observations made when
+                # the store is ACTUALLY OPEN may become a historical price
+                # baseline. Delivery unavailable never rejects an open-hours quote.
                 cutoff = (datetime.fromisoformat(now) - timedelta(days=7)).isoformat()
                 previous_quotes = (old or {}).get("menu_quote_history") or []
                 if isinstance(previous_quotes, str):
@@ -542,7 +543,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 quote_history = [[t, v] for t, v in previous_quotes
                                  if isinstance(t, str) and cutoff <= t < now
                                  and isinstance(v, (int, float)) and 0 < v < 1_000_000]
-                if quote[1] is not None:
+                if quote_price_valid and quote[1] is not None:
                     quote_history.append([now, round(quote[1], 2)])
                 quote_history_batch.append((json_dumps(quote_history), sid, pid))
                 state = {
@@ -554,6 +555,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 # A flag on event JSON, not another SQL/Turso column.
                 event_state = {**state, "price_valid": bool(price_valid),
                                "menu_quote_valid": bool(observed_price > 0),
+                               "menu_price_comparable": bool(quote_price_valid and observed_price > 0),
                                "delivery_available": bool(store_price_valid)}
                 ph = canonical_hash(state)
 
