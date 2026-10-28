@@ -5,6 +5,8 @@ on:
   schedule:
     # Asia/Taipei 06:30 and 18:30 daily; GitHub schedules use UTC.
     - cron: '30 10,22 * * *'
+    # 07:30/19:30 backup: check Turso first; do NOT duplicate successful crawls.
+    - cron: '30 11,23 * * *'
   workflow_dispatch:
     inputs:
       publish_existing:
@@ -108,8 +110,24 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/audit_soymilk_raw.py
+  schedule-recovery:
+    name: Recover only if scheduled crawl was missed
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '30 11,23 * * *' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      needed: ${{ steps.check.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Turso has the latest scheduled window
+        id: check
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: python scripts/should_crawl_backup.py
   crawl:
-    if: ${{ !contains(github.event.head_commit.message, '[audit-bingdoujiang]') }}
+    needs: [schedule-recovery]
+    if: ${{ always() && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
     # Limit only the database publisher. Browser QA must not monopolize the
     # release lock or block deployment of a newer commit.
     concurrency:
