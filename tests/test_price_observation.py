@@ -107,7 +107,7 @@ class PriceValidityTests(unittest.TestCase):
         doc['menu_status'] = 'present'
         self.assertFalse(price_observation_valid(doc, '20261023091759'))
         self.assertTrue(menu_catalog_valid(doc, '20261023091759'))
-        counts = apply_snapshot(self.conn, [doc], '20261023091759')
+        counts = apply_snapshot(self.conn, [doc], '20261023091759', baseline=False)
         self.assertEqual((counts['stores'], counts['products']), (1, 1))
         row = self.conn.execute('SELECT price,menu_quote_price,menu_quote_effective_price,delivery_available FROM products').fetchone()
         self.assertEqual(tuple(row), (0, 120, 120, 0))
