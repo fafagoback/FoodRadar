@@ -31,6 +31,7 @@ def main():
     per_batch=[]
     source_prices=collections.defaultdict(list)
     legacy_quotes=collections.defaultdict(list)
+    product_labels={}
     for manifest in manifests:
         batch=manifest.split('/')[-2]
         try:when=datetime.strptime(batch,'%Y%m%d%H%M%S')
@@ -87,6 +88,11 @@ def main():
                         rank=(int(qty>1),promo)
                         if previous is None or rank>previous[0]:
                             skus[pid]=(rank,raw,promo,qty)
+                            product_labels[(sid,pid)]={
+                                'store_name':str(doc.get('name') or doc.get('store_name') or ''),
+                                'product_name':str(item.get('name') or ''),
+                                'category':category,
+                            }
                     except (ValueError,TypeError,OverflowError):pass
             for pid,(_,raw,promo,qty) in skus.items():
                 unit=calculate_effective_price(raw,promo,qty)
@@ -103,13 +109,24 @@ def main():
     current={k:v[-1] for k,v in source_prices.items() if v and v[-1][0]==latest}
     qualified=[]
     prior_available=0
+    thresholds={str(n):0 for n in (0,1,5,10,20,30,40,50)}
+    all_verified_price_drops=[]
     for key,(batch,now_price) in current.items():
         earlier=[price for t,price in source_prices[key] if t<batch and datetime.strptime(t,'%Y%m%d%H%M%S')>=window]
         if not earlier:continue
         prior_available+=1
         high=max(earlier)
-        if now_price>0 and high>=now_price/0.7:
-            qualified.append({'store':key[0],'product':key[1],'high':high,'current':now_price,'pct':round(100*(high-now_price)/high,2)})
+        pct=round(100*(high-now_price)/high,2) if high>0 else 0
+        if pct>0:
+            drop={'store':key[0], 'product':key[1],
+                  **product_labels.get(key,{}),
+                  'high':high,'current':now_price,'pct':pct,
+                  'valid_price_samples':source_prices[key][-12:]}
+            all_verified_price_drops.append(drop)
+            for threshold in thresholds:
+                if pct>=float(threshold):thresholds[threshold]+=1
+        if pct>=30:
+            qualified.append(drop)
     legacy_proposals=[]
     candidates_with_legacy=0
     for key,(batch,now_price) in current.items():
@@ -123,14 +140,23 @@ def main():
         high=max(corroborated)
         if high>0 and (high-now_price)/high>=.30:
             legacy_proposals.append({
-                'store':key[0], 'product':key[1], 'archive_quote_high':high,
+                'store':key[0], 'product':key[1],
+                **product_labels.get(key,{}),
+                'archive_quote_high':high,
                 'current_verified':now_price,
                 'discount_pct':round(100*(high-now_price)/high,2),
                 'archive_batches':len(by_price[high]),
+                'archive_quote_dates':sorted(by_price[high]),
+                'verified_price_samples':source_prices[key][-12:],
                 'previous_verified':max(
                     [p for t,p in source_prices[key] if t<batch],default=None
                 )
             })
+    print('HF_RAW_PRICE_DROP_DISTRIBUTION='+json.dumps({
+        'comparable_latest_products':prior_available,
+        'positive_deals_by_minimum_percent':thresholds,
+        'top_verified_drops':sorted(all_verified_price_drops,key=lambda x:x['pct'],reverse=True)[:20],
+    },ensure_ascii=False),flush=True)
     print('HF_LEGACY_MENU_QUOTE_AUDIT='+json.dumps({
         'products_with_2_legacy_quotes':candidates_with_legacy,
         'legacy_high_30pct_candidates':len(legacy_proposals),
@@ -141,7 +167,7 @@ def main():
     if serving.exists():
         con=sqlite3.connect(serving)
         con.row_factory=sqlite3.Row
-        for suspect in qualified[:20]:
+        for suspect in (qualified[:20]+legacy_proposals[:20]):
             sid,pid=suspect['store'],suspect['product']
             row=con.execute(
               "SELECT product_name,price,promo_type,quantity,effective_price,seven_day_reference_price,seven_day_discount_pct,seven_day_is_price_deal,last_seen FROM products WHERE store_uuid=? AND product_uuid=?",
@@ -153,8 +179,16 @@ def main():
                'raw':suspect,'stored':dict(row) if row else None,
                'events':[{'time':e['event_time'],'type':e['event_type'],'state':json.loads(e['new_state'] or '{}')} for e in events]
             },ensure_ascii=False),flush=True)
+        counts_sql=con.execute("""SELECT
+          COUNT(*) AS all_products,
+          SUM(CASE WHEN seven_day_is_price_deal=1 THEN 1 ELSE 0 END) AS stored_seven_day_deal30,
+          SUM(CASE WHEN archive_is_price_deal=1 THEN 1 ELSE 0 END) AS stored_archive_candidates
+          FROM products""").fetchone()
+        print('HF_NORMALIZED_DATABASE_AUDIT='+json.dumps({
+          'batch':latest,'counts':dict(counts_sql)
+        },ensure_ascii=False),flush=True)
         con.close()
-    print('HF_SEVEN_DAY_RAW_AUDIT='+json.dumps({
+    print('HF_SEVEN_DAY_RAW_AUDIT=+json.dumps({
         'window_start':window.isoformat(),'window_end':anchor.isoformat(),
         'batches':len(per_batch),'raw_stores':totals['raw_stores'],
         'valid_stores':totals['valid_stores'],'closed_messages':totals['closed_message'],

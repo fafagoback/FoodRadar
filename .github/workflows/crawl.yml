@@ -88,6 +88,11 @@ jobs:
             EXTRA=(--verified-rebuild-manifest "data/$BATCH/verified-rebuild.json")
           fi
           python scripts/publish_turso_delta.py "data/$BATCH/packed-serving.db" --apply "${EXTRA[@]}" --report delta-report.json
+      - name: Independently query live Turso price statistics (read only)
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: python scripts/audit_live_turso.py
       - name: Verify Burger King discounted price in published web dataset
         run: python scripts/verify_burger_king_price.py
       - name: Persist fully rebuilt valid-price checkpoint after verified Turso write
