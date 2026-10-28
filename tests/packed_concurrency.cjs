@@ -16,6 +16,7 @@ const blob = {
   events: [['p', 1, 'NEW', '2026-10-22T12:00:00+08:00', null, value]]
 };
 let bundleSelects = 0, locationSelects = 0, lastStoreSearch = '', lastLocationSearch = '';
+let dataRevision = 'first-release';
 function result(rows) {
   const cols = Object.keys(rows[0] || {}).map(name => ({name}));
   return {results: [{type:'ok', response:{result:{cols, rows:rows.map(r =>
@@ -29,7 +30,8 @@ globalThis.fetch = async (_url, opts) => {
   if (sql.includes('from metadata')) {
     return {ok:true,json:async()=>result([
       {key:'latest_processed_at',value:JSON.stringify('2026-10-27T14:46:28+08:00')},
-      {key:'latest_batch',value:JSON.stringify('20261027144628')}
+      {key:'latest_batch',value:JSON.stringify('20261027144628')},
+      {key:'data_revision',value:JSON.stringify(dataRevision)}
     ])};
   }
   if (sql.includes('from store_bundles')) {
@@ -58,6 +60,10 @@ globalThis.fetch = async (_url, opts) => {
   assert.equal(bundleSelects, 1, 'parallel reads must share a single store-bundle fetch');
   assert.equal(first.length,1);
   assert.equal(second.length,1);
+  dataRevision = 'same-batch-rebuilt';
+  await reader.metadata();
+  await reader.packedHistory('s','p');
+  assert.equal(bundleSelects,2,'same-batch full RAW rebuild must invalidate cached store bundles');
   const pos1={enabled:true,latitude:25.123240,longitude:121.529520,radiusKm:5};
   const pos2={enabled:true,latitude:25.123249,longitude:121.529520,radiusKm:5};
   await reader.getStoresInLocation(pos1);
