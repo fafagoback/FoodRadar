@@ -72,13 +72,13 @@ class PriceValidityTests(unittest.TestCase):
         # The prior 300 quote is a comparable historical menu price even
         # though it was not a validated payable / delivery price.
         last=self.conn.execute('SELECT menu_quote_history FROM products').fetchone()[0]
-        self.assertEqual([v for _,v in json.loads(last)],[210])  # 01:40 closed 300 excluded
+        self.assertEqual([point[1] for point in json.loads(last)],[210])  # 01:40 closed 300 excluded
 
         late=menu('20261015014059',999)
         apply_snapshot(self.conn,[late],'20261015014059')
         row=self.conn.execute('SELECT price,menu_quote_price,delivery_available FROM products').fetchone()
         self.assertEqual(tuple(row),(210,999,0))
-        self.assertEqual([v for _,v in json.loads(self.conn.execute(
+        self.assertEqual([point[1] for point in json.loads(self.conn.execute(
             'SELECT menu_quote_history FROM products').fetchone()[0])],[210])
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM events WHERE event_type='PRICE_CHANGED'").fetchone()[0],0)
@@ -112,7 +112,11 @@ class PriceValidityTests(unittest.TestCase):
             apply_snapshot(self.conn,[yuchi(batch,promo,open_hour,'09:30')],batch)
         p=self.conn.execute("SELECT menu_quote_price,menu_quote_effective_price,menu_quote_history FROM products").fetchone()
         self.assertEqual((p[0],p[1]),(55,27.5))
-        self.assertEqual([v for _,v in json.loads(p[2])],[27.5,27.5,27.5])
+        self.assertEqual([point[1] for point in json.loads(p[2])],[27.5,27.5,27.5])
+        self.assertEqual(
+            [(point[2], point[3], point[4]) for point in json.loads(p[2])],
+            [(55, '買1送1', 2)] * 3,
+        )
 
     def test_conflicting_isopen_and_missing_hours_are_rejected(self):
         doc=menu('20261014014059',300)
