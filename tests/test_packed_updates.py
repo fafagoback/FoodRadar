@@ -118,21 +118,21 @@ class PackedUpdateTests(unittest.TestCase):
                                  (old_pid,)).fetchone()
             self.assertEqual((stale['status'], stale['is_price_drop']), ('active', 1))
             self.assertEqual(stale['last_seen'], '2026-10-26T06:30:00+08:00')
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0], 2)
             build_web_db(root/'state.db', root/'packed.db')
             with contextlib.closing(sqlite3.connect(root/'packed.db')) as packed:
                 metadata = dict((k, json.loads(v)) for k,v in packed.execute('SELECT key,value FROM metadata'))
-                self.assertEqual(metadata['active_products'], 1)
+                self.assertEqual(metadata['active_products'], 2)
                 self.assertEqual(metadata['latest_processed_at'], '2026-10-27T06:30:00+08:00')
                 tokens = {}
                 for payload, in packed.execute('SELECT payload FROM search_buckets'):
                     for term, refs in msgpack.unpackb(zstandard.ZstdDecompressor().decompress(payload), raw=False).items():
                         tokens.setdefault(term, []).extend(refs)
-                self.assertEqual(tokens.get('f:catalog'), [1])  # Only the live product is searchable.
+                self.assertEqual(tokens.get('f:catalog'), [0,1])  # Last-known menu remains searchable.
                 self.assertFalse(any(key.startswith('f:discount:') for key in tokens))
                 self.assertIsNotNone(conn.execute('SELECT 1 FROM products WHERE product_uuid=?',(old_pid,)).fetchone())
 
-    def test_closed_store_cannot_show_yesterdays_catalog(self):
+    def test_closed_store_keeps_last_known_catalog_but_not_current_deals(self):
         import json
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), contextlib.ExitStack() as stack:
             root = Path(tmp)
@@ -149,9 +149,9 @@ class PackedUpdateTests(unittest.TestCase):
             build_web_db(root/'state.db',root/'packed.db')
             with contextlib.closing(sqlite3.connect(root/'packed.db')) as packed:
                 meta = {k:json.loads(v) for k,v in packed.execute('SELECT key,value FROM metadata')}
-                self.assertEqual(meta['active_stores'],1)
-                self.assertEqual(meta['active_products'],1)
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0],1)
+                self.assertEqual(meta['active_stores'],2)
+                self.assertEqual(meta['active_products'],2)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0],2)
 
 
 if __name__ == '__main__':
