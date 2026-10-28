@@ -150,7 +150,7 @@ def verified_rebuild_evidence(path, local_meta, old_meta):
     return True
 
 
-def publish(database, remote, apply=False, verified_rebuild_manifest=None):
+def publish(database, remote, apply=False, verified_rebuild_manifest=None, reset_all=False):
     conn = sqlite3.connect(f'{Path(database).resolve().as_uri()}?mode=ro', uri=True)
     conn.row_factory = sqlite3.Row
     try:
@@ -165,6 +165,8 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None):
             raise ValueError('Schema changes require a new versioned database')
         trusted_rebuild = verified_rebuild_evidence(
             verified_rebuild_manifest, local_meta, old_meta)
+        if reset_all and not trusted_rebuild:
+            raise ValueError('Refusing to erase Turso without full checksum-verified HF RAW replay')
         # A historical Raw archive can be incomplete even when its checksum is
         # valid. Never turn a re-pack into a destructive mass purge of known
         # stores or products without a separately audited source of truth.
@@ -195,12 +197,18 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None):
         for table in TABLE_KEYS:
             local = [dict(row) for row in conn.execute(f'SELECT * FROM {table}')]
             changed, deleted = plan_table(table, local, remote_rows(remote, table, tables))
+            if reset_all:
+                # Explicitly discard every previous Turso row, then load only
+                # the freshly rebuilt HF source. No backup is created.
+                changed = local
+                deleted = []
             plans[table] = changed, deleted
             write_bytes += sum(len(json.dumps([cell(v) for v in row.values()]).encode()) for row in changed)
             stats[table] = {'upsert': len(changed), 'delete': len(deleted), 'total': len(local)}
         report = {'previous_batch': previous_batch, 'latest_batch': target_batch,
                   'initialization': not bool(old_meta),
-                  'verified_full_raw_rebuild': trusted_rebuild, 'delta_bytes': write_bytes,
+                  'verified_full_raw_rebuild': trusted_rebuild, 'reset_all': reset_all,
+                  'delta_bytes': write_bytes,
                   'tables': stats, 'applied': False}
         if write_bytes > MAX_DELTA_BYTES:
             raise ValueError('Daily delta exceeds 250 MiB; refusing full replacement')
@@ -228,6 +236,9 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None):
                     size = 0
             for table, (changed, deleted) in plans.items():
                 keys = TABLE_KEYS[table]
+                if reset_all:
+                    flush()
+                    remote.query(f'DELETE FROM {table}')
                 # Delete first, then upsert. Upserting a renumbered store UUID
                 # before freeing its old store_id hits UNIQUE(store_uuid).
                 # This all runs inside the same transaction, so a failure
@@ -277,11 +288,13 @@ if __name__ == '__main__':
     parser.add_argument('database')
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--verified-rebuild-manifest',default=None)
+    parser.add_argument('--reset-all', action='store_true',
+                        help='Erase every FoodRadar Turso table within the same transaction before inserting full verified HF RAW rebuild')
     parser.add_argument('--report', default='delta-report.json')
     args = parser.parse_args()
     remote = Remote(os.environ['TURSO_DATABASE_URL'], os.environ['TURSO_AUTH_TOKEN'])
     try:
-        report = publish(args.database, remote, args.apply, args.verified_rebuild_manifest)
+        report = publish(args.database, remote, args.apply, args.verified_rebuild_manifest, args.reset_all)
         Path(args.report).write_text(json.dumps(report, indent=2), encoding='utf-8')
         print(json.dumps(report))
     finally:
