@@ -188,7 +188,7 @@ def main():
           'batch':latest,'counts':dict(counts_sql)
         },ensure_ascii=False),flush=True)
         con.close()
-    print('HF_SEVEN_DAY_RAW_AUDIT=+json.dumps({
+    print('HF_SEVEN_DAY_RAW_AUDIT='+json.dumps({
         'window_start':window.isoformat(),'window_end':anchor.isoformat(),
         'batches':len(per_batch),'raw_stores':totals['raw_stores'],
         'valid_stores':totals['valid_stores'],'closed_messages':totals['closed_message'],
