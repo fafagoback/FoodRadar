@@ -90,6 +90,38 @@ class PackedUpdateTests(unittest.TestCase):
             with contextlib.closing(sqlite3.connect(root/'c.db')) as c:
                 self.assertEqual(c.execute('SELECT store_id FROM store_directory WHERE store_uuid=?',(sid,)).fetchone()[0],0)
 
+    def test_raw_delivery_unavailable_prices_drive_formal_seven_day_discount(self):
+        import json
+        import contextlib
+        from repair_effective_prices import repair
+        with tempfile.TemporaryDirectory() as tmp:
+            file=Path(tmp)/'serving.db'
+            con=sqlite3.connect(file)
+            con.row_factory=sqlite3.Row
+            sid='ffffffff-ffff-4fff-8fff-ffffffffffff'
+            pid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            old=document(sid,[pid])
+            old['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['offers']['price']=100
+            old['closedMessage']='Delivery unavailable'
+            old['isOpen']=False
+            apply_snapshot(con,[old],'20261022090000')
+            current=document(sid,[pid])
+            current['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['offers']['price']=50
+            current['closedMessage']='Delivery unavailable'
+            current['isOpen']=False
+            apply_snapshot(con,[current],'20261023090000')
+            con.close()
+            repair(file)
+            with contextlib.closing(sqlite3.connect(file)) as verify:
+                p=verify.execute("SELECT menu_quote_price,delivery_available,seven_day_reference_price,seven_day_discount_pct,seven_day_is_price_deal,menu_quote_history FROM products").fetchone()
+                self.assertEqual(tuple(p[:5]),(50,0,100,50,1))
+                self.assertEqual(len(json.loads(p[5])),2)
+            build_web_db(file, Path(tmp)/'packed.db')
+            with contextlib.closing(sqlite3.connect(Path(tmp)/'packed.db')) as packed:
+                meta={k:json.loads(v) for k,v in packed.execute('SELECT key,value FROM metadata')}
+                self.assertEqual(meta['active_30pct_drops'],1)
+                self.assertEqual(meta['seven_day_reference_products'],1)
+
     def test_stale_discount_vanishes_from_next_batch_even_if_row_is_active(self):
         import json
         import msgpack
