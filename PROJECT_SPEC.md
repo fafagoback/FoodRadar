@@ -42,15 +42,15 @@
 
 ### 2.4 七日低價、前次變價、促銷與全商品搜尋
 
-**特價主清單唯一基準：** 同店同商品（`store_uuid`、`product_uuid`）的「最新成功批次有效實質單價」與該批次之前 **7×24 小時內最高有效實質單價**。時間範圍 `[T-7天, T)`，不含本次；超過七天的高價自動失效。計算只使用已驗證營業且可外送的價格觀測，不讀中位數、歷史最低價、前次價、原始菜單標價或無效時段舊報價。
+**特價主清單唯一基準：** 同店同商品（`store_uuid`、`product_uuid`）的「最新成功批次有效實質單價」與該批次之前 **7×24 小時內最高有效實質單價**。時間範圍 `[T-7天, T)`，不含本次；超過七天的高價自動失效。計算只使用已驗證實際營業時段的有效菜單單價（可暫不可外送，但不得宣稱當時已確認可下單），不讀中位數、歷史最低價、前次價、原始菜單標價或無效時段舊報價。
 
 - 降幅 = `max(0, (七日最高有效單價 - 最新有效單價) / 七日最高有效單價 × 100%)`；每件省下 = `max(0, 七日最高有效單價 - 最新有效單價)`。精算保留小數，介面以整數台幣顯示。
 - 主清單預設 **降幅 ≥30% 且省下金額 ≥0 元**；即使近幾次價格都持平，只要七日內最高價仍較高，仍屬七日低價。沒有七日有效基準時不可認定降價，也不得以 0 筆暗示已檢查完整歷史。
 - `products.seven_day_reference_price`、`seven_day_discount_pct`、`seven_day_discount_amount`、`seven_day_is_price_deal` 是首頁與特價主清單權威欄位。由 `PriceChange.seven_day_high` / `persisted_seven_day` 從有效歷史計算，網站只讀結果與過濾，不得自行重算。
 - `reference_price`、`price_direction`、`is_price_drop`、`price_change_amount`、`price_change_percent`、`discount_pct` 屬**上次有效價 → 本次**的輔助變價資訊，**不得用來取代七日特價主清單**；例如第 4 次 100→50，第 5、6 次 50→50，後兩次的單次變價為持平，但七日特價仍是 50%。
 - 實質單價依可支付標價與促銷件數計算；買一送一、第二件半價等換成每件成本。平台直接標示折扣的菜單價已為付款價，不重複打折。
-- HF Raw 完整保存，包括非營業時段無法下單的菜單報價；僅當時經驗證為有效的歷史觀測可進入正式七日比較。無法驗證但有多次支持的歷史菜單價，只能放在**另列的參考報價**，不能偽裝成可下單的降價。
-- **已驗證特價**同時要求 `store/product active`、當批已確認可外送，且 `last_seen==latest_processed_at`；舊批次曾有促銷，不代表目前有效。
+- HF Raw 完整保存，包括非營業時段無法下單的菜單報價；僅當時實際營業時段取得的有效菜單報價可進入正式七日比較。非營業時段菜單僅供商品目錄參考；配送不可用的營業時段報價能供菜單價比較，但不能偽裝成可下單優惠。
+- **七日菜單降價**要求 `store/product active`、當批經實際營業時段驗證且 `last_seen==latest_processed_at`；另用 `delivery_available` 區分當批是否確認可外送，舊批促銷不可宣稱現在可用。
 - 平台促銷（促銷標籤或優惠組合）與實際七日降價是不同概念；「全庫商品搜尋」列出 `active` 的**最後已知菜單商品**，即使店家目前打烊或暫不能外送，也不得因此刪除搜尋索引；介面要標註「最近菜單價・非即時」或「菜單參考價・暫不可外送」。歷史覆蓋不足需顯示有效採集日、具可比對價格的商品數。
 
 ### 2.5 可重現的七日特價範例
@@ -67,7 +67,7 @@
 
 1. `src/crawl.py` 掃描此配送座標的店家，將同次 feed 依正規化店家 UUID 去重，抓取逐店菜單；任何店家抓取失敗即拒絕發布不完整快照。HF Raw 完整封存所有成功抓取的店家與菜單（含非營業時段）。
 2. `src/pipeline.py:restore_history` 優先從 Hugging Face 永久 normalized state 還原先前 `serving.db`（驗證 SHA-256、SQLite integrity 與批次一致性），再補入新於 checkpoint 的已完成 Raw 快照。
-3. `src/price_observation.py` **分開**驗證：`menu_catalog_valid()` 允許營業時間正常、菜單存在、但 `closedMessage=Delivery unavailable` 的商品進入一般商品資料庫；`price_observation_valid()` 只准確認可外送的報價進入正式降價基準。真正非營業時段的 RAW 不更新當次菜單或價格，保留先前最後已知商品。
+3. `src/price_observation.py` **分開**驗證：`menu_catalog_valid()` 允許營業或非營業時段的有價菜單進入一般商品資料庫；`menu_price_observation_valid()` 僅將營業時段報價納入正式比價，與是否可外送分離；`price_observation_valid()` 僅代表採集當批確認可外送。非營業菜單可更新最近目錄報價，但不新增七日比價樣本。
 4. `src/serving_state.py` 對有效菜單報價（無論是否可外送），以店家 UUID、商品複合 UUID 查詢含 inactive 的歷史資料。存在則更新狀態但不重設 `first_seen`；不存在才插入並產生 `STORE_NEW` 或 `NEW` 事件。
 4. 店家缺席會累積 `missing_streak`，達預設門檻成 `inactive`；回歸產生 `STORE_REAPPEARED`，不重設首次日期。
 5. 商品在可見且已驗證營業的店家菜單內缺席累積 `missing_streak`，達門檻成 `inactive`；滿 60 天再觀測時標記季節性回歸並更新本輪上架日期。
@@ -126,11 +126,11 @@ GitHub Actions (.github/workflows/crawl.yml)
 - `publish_existing` 可由現有 HF Raw 重建／重試發布而不重新爬取。
 - 注意：平台 UUID 變化、採集盲區、營業時間及漏抓可能影響「首次被觀測」之意義；不應將 `first_seen` 解釋成現實世界的開幕日期。
 
-**2026-10-28 配送／菜單分離修正：** 商品目錄的存在與搜尋不以「當前可下單」為必要條件。`menu_quote_*` 保存最近菜單標價與優惠單價，`delivery_available` 是單獨資訊；正式七日降價仍以經確認可外送的有效實質價判斷。完整 HF RAW 重播可將舊時因 `Delivery unavailable` 而被隱藏的菜單恢復。
+**2026-10-28 配送／菜單分離修正：** 商品目錄的存在與搜尋不以「當前可下單」為必要條件。`menu_quote_*` 保存最近菜單標價與優惠單價，`delivery_available` 是單獨資訊；正式七日菜單降價以營業時段的有效實質單價判斷；配送驗證為獨立標示。完整 HF RAW 重播可將舊時因 `Delivery unavailable` 而被隱藏的菜單恢復。
 
 ### 2026-10-28 正式 RAW 菜單比價修復
 
-價格比較與配送狀態分離。每批取得的有效菜單報價，不因 `Delivery unavailable` 或當次打烊被刪除；`products.menu_quote_history` 保存七日內同店同商品的每批實質單價，`repair_effective_prices.py` 使用「最新菜單價 vs 前七天最高菜單實質單價」填入正式 `seven_day_*` 欄位，`prototype_pack_db.py` 建立正式降價索引。配送是否可下單只影響獨立標示，不能冒充已確認優惠。網站走勢圖直接讀取保存的菜單單價，並由 `audit_deal_pipeline.py` 獨立核對已存計算結果。需從所有已驗證完整性的 HF RAW 重播，不能只換搜尋條件。
+價格比較與配送狀態分離。每批取得的有價菜單報價，不因 `Delivery unavailable` 或當次打烊從**商品目錄**消失；`products.menu_quote_history` 只保存七日內同店同商品在**實際營業時段**的每批實質單價，`repair_effective_prices.py` 使用「最新菜單價 vs 前七天最高菜單實質單價」填入正式 `seven_day_*` 欄位，`prototype_pack_db.py` 建立正式降價索引。配送是否可下單只影響獨立標示，不能冒充已確認優惠。網站走勢圖直接讀取保存的菜單單價，並由 `audit_deal_pipeline.py` 獨立核對已存計算結果。需從所有已驗證完整性的 HF RAW 重播，不能只換搜尋條件。
 
 
 ### 2026-10-28 HF RAW 清庫重建指令（不保留舊 Turso 資料）
