@@ -120,7 +120,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
         raise ValueError("No completed crawl batch: cannot publish current prices")
     from datetime import datetime, timedelta
     cutoff = (datetime.fromisoformat(latest_time) - timedelta(days=7)).isoformat()
-    active_stores = active_products = 0
+    active_stores = active_products = current_verified_products = 0
     active_comparable_products = active_platform_promotions = active_30pct_drops = 0
     seven_day_reference_products = 0
     archive_reference_products = archive_30pct_candidates = 0
@@ -145,30 +145,32 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
             product_gid += 1
             arr = row_array(product, pc)
             product_arrays.append([(store_id << 20) | local_index, arr])
-            # Keep the entire archive, but index ONLY this batch's validated
-            # store and product prices. Absent/off-hours items keep their
-            # previous last_seen and therefore disappear from current listings.
-            searchable = (store["status"] == "active" and int(store["is_open"] or 0) == 1
-                          and store["last_seen"] == latest_time
+            # A closed shop or unavailable delivery cannot erase its last menu.
+            searchable = (store["status"] == "active"
                           and product["status"] == "active"
-                          and int(product["is_open"] or 0) == 1
-                          and product["last_seen"] == latest_time
                           and float(product["menu_quote_effective_price"] or product["effective_price"] or product["price"] or 0) > 0)
+            current_menu = (store["last_seen"] == latest_time
+                            and product["last_seen"] == latest_time
+                            and int(store["is_open"] or 0) == 1
+                            and int(product["is_open"] or 0) == 1)
+            current_verified = current_menu and int(product["delivery_available"] or 0) == 1
             terms = (store_terms | tokens(product["product_name"]) | tokens(product["category"]) | tokens(product["menu_quote_promo_type"] or product["promo_type"])) if searchable else set()
             price = float(product["menu_quote_effective_price"] or product["effective_price"] or product["price"] or 0)
             if searchable:
                 active_products += 1
-                if int(product["delivery_available"] or 0) == 1 and float(product["reference_price"] or 0) > 0:
+                if current_verified and float(product["reference_price"] or 0) > 0:
                     active_comparable_products += 1
-                if int(product["delivery_available"] or 0) == 1 and float(product["seven_day_reference_price"] or 0) > 0:
+                if current_verified and float(product["seven_day_reference_price"] or 0) > 0:
                     seven_day_reference_products += 1
-                if (product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無"):
-                    active_platform_promotions += 1
-                if int(product["delivery_available"] or 0) == 1 and int(product["seven_day_is_price_deal"] or 0) == 1:
+                if current_verified:
+                    current_verified_products += 1
+                    if (product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無"):
+                        active_platform_promotions += 1
+                if current_verified and int(product["seven_day_is_price_deal"] or 0) == 1:
                     active_30pct_drops += 1
-                if int(product["delivery_available"] or 0) == 1 and float(product["archive_reference_price"] or 0) > 0:
+                if current_verified and float(product["archive_reference_price"] or 0) > 0:
                     archive_reference_products += 1
-                if int(product["delivery_available"] or 0) == 1 and int(product["archive_is_price_deal"] or 0) == 1:
+                if current_verified and int(product["archive_is_price_deal"] or 0) == 1:
                     archive_30pct_candidates += 1
                     terms.add(f"f:archive_discount:{int(float(product['archive_discount_pct']) // 5)}")
                 terms.add(f"f:price:{int(price // 50)}")
@@ -177,10 +179,10 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'][:10] > store['first_seen'][:10]
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
-                if ((product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無")
-                        or (int(product["delivery_available"] or 0) == 1 and float(product["seven_day_discount_pct"] or 0) > 0)):
+                if current_verified and ((product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無")
+                        or float(product["seven_day_discount_pct"] or 0) > 0):
                     terms.add("f:promo")
-                if int(product["delivery_available"] or 0) == 1 and float(product["seven_day_discount_pct"] or 0) > 0:
+                if current_verified and float(product["seven_day_discount_pct"] or 0) > 0:
                     terms.add(f"f:discount:{int(float(product['seven_day_discount_pct']) // 5)}")
             for term in sorted(terms):
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
@@ -193,8 +195,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
         pchunks = [product_arrays[i:i + max_items] for i in range(0, len(product_arrays), max_items)] or [[]]
         echunks = [[row_array(e, ec) for e in events[i:i + max_items]] for i in range(0, len(events), max_items)] or [[]]
         chunk_count = max(len(pchunks), len(echunks))
-        if (store['status'] == 'active' and int(store['is_open'] or 0) == 1
-                and store['last_seen'] == latest_time):
+        if store['status'] == 'active':
             active_stores += 1
         dst.execute("INSERT INTO store_directory VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             store_id, sid, store["name"], store["city"], store["locality"], store["rating"], store["review_count"], chunk_count,
@@ -234,6 +235,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     info = {"definition_version": "foodradar-daily-v1", "source_revision": source_meta.get("source_revision", "local"),
             "application": "FoodRadar", "schema_version": 1,
             "active_stores": active_stores, "active_products": active_products,
+            "current_verified_products": current_verified_products,
             "active_comparable_products": active_comparable_products,
             "seven_day_reference_products": seven_day_reference_products,
             "archive_reference_products": archive_reference_products,
