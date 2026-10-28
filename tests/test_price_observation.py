@@ -104,6 +104,7 @@ class PriceValidityTests(unittest.TestCase):
     def test_delivery_unavailable_keeps_menu_visible_without_verified_discount(self):
         doc = menu('20261023091759', 120)
         doc['closedMessage'] = 'Delivery unavailable'
+        doc['menu_status'] = 'present'
         self.assertFalse(price_observation_valid(doc, '20261023091759'))
         self.assertTrue(menu_catalog_valid(doc, '20261023091759'))
         counts = apply_snapshot(self.conn, [doc], '20261023091759')
