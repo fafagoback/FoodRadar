@@ -628,7 +628,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
 // PRICE_CHANGED / CONTENT_CHANGED event emitted by the same crawl.
 export function normalizePriceHistoryEvents(events) {
   // A promotion change can change unit cost even when the raw menu price is stable.
-  const priority = { BASELINE: 0, NEW: 1, PRICE_OBSERVED: 2, PROMOTION_CHANGED: 3, PRICE_CHANGED: 4 };
+  const priority = { BASELINE: 0, NEW: 1, PRICE_OBSERVED: 2, PROMOTION_CHANGED: 3, PRICE_CHANGED: 4, MENU_QUOTE: 5 };
   const priceEvents = (events || []).filter(e =>
     Object.prototype.hasOwnProperty.call(priority, e.event_type));
 
@@ -659,8 +659,8 @@ export function normalizePriceHistoryEvents(events) {
     let state;
     try { state = JSON.parse(event.new_state || event.old_state || '{}'); }
     catch (_) { continue; }
-    if (state.price_valid !== true) continue;
-    if (state.is_open !== 1 && state.is_open !== true) continue;
+    if (state.price_valid !== true && state.menu_quote_valid !== true) continue;
+    if (state.menu_quote_valid !== true && state.is_open !== 1 && state.is_open !== true) continue;
     if (!(Number(state.price) > 0)) continue;
     const previous = byTime.get(time);
     if (!previous || priority[event.event_type] > priority[previous.event_type]) {
@@ -703,9 +703,24 @@ export async function packedHistory(storeUuid, productUuid) {
   if (!row) return [];
   await bundlesForStores([Number(row.store_id)]);
   const events = [];
-  let cols;
+  let cols, productCols;
   for (const chunk of bundleCache.get(Number(row.store_id)) || []) {
     cols = chunk.event_columns || cols;
+    productCols = chunk.product_columns || productCols;
+    for (const pair of chunk.products || []) {
+      if (!productCols) continue;
+      const product = Object.fromEntries(productCols.map((c, i) => [c, pair[1][i]]));
+      if (String(product.product_uuid) !== String(productUuid)) continue;
+      let quotes = [];
+      try { quotes = JSON.parse(product.menu_quote_history || '[]'); }
+      catch (_) { quotes = []; }
+      for (const [at, unit] of quotes) {
+        if (!at || !(Number(unit) > 0)) continue;
+        events.push({event_time:at, event_type:'MENU_QUOTE',
+          new_state:JSON.stringify({price:Number(unit),quantity:1,promo_type:'無',
+            menu_quote_valid:true,price_valid:false,delivery_available:false})});
+      }
+    }
     for (const event of chunk.events || []) {
       if (!cols) continue;
       const e = Object.fromEntries(cols.map((c, i) => [c, event[i]]));
