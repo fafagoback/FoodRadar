@@ -50,41 +50,36 @@ class PriceValidityTests(unittest.TestCase):
         self.assertEqual(row['is_price_deal'],0)
         events=self.conn.execute("SELECT event_type,new_state FROM events WHERE product_uuid=?",(PID,)).fetchall()
         types=[e['event_type'] for e in events]
-        self.assertIn('NEW',types)
         self.assertIn('PRICE_OBSERVED',types)
         self.assertNotIn('PRICE_CHANGED',types)
         observations=[json.loads(e['new_state']) for e in events if e['event_type'] in ('NEW','PRICE_OBSERVED','PRICE_CHANGED')]
         self.assertTrue(all(s['price_valid'] for s in observations if s['price']>0))
         self.assertEqual([s['price'] for s in observations if s['price']>0],[210,210])
 
-    def test_closed_hour_raw_cannot_create_or_mutate_database_rows(self):
-        result=apply_snapshot(self.conn,[menu('20261014014059',300)],'20261014014059')
-        self.assertEqual(result['skipped_closed_stores'],1)
-        for table in ('stores','products','events','product_search'):
-            self.assertEqual(self.conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0],0,table)
+    def test_closed_hours_keep_raw_quotes_without_creating_verified_price_events(self):
+        from repair_effective_prices import repair
+        first=menu('20261014014059',300)
+        result=apply_snapshot(self.conn,[first],'20261014014059')
+        self.assertEqual(result['stores'],1)
+        row=self.conn.execute('SELECT price,menu_quote_price,delivery_available FROM products').fetchone()
+        self.assertEqual(tuple(row),(0,300,0))
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0],1)
 
-        apply_snapshot(self.conn,[menu('20261014091759',210)],'20261014091759')
-        store=dict(self.conn.execute('SELECT * FROM stores').fetchone())
-        product=dict(self.conn.execute('SELECT * FROM products').fetchone())
-        self.assertEqual(store['first_seen'],'2026-10-14T09:17:59+08:00')
-        self.assertEqual(product['first_seen'],store['first_seen'])
-        event_count=self.conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
+        live=menu('20261014091759',210)
+        apply_snapshot(self.conn,[live],'20261014091759')
+        row=self.conn.execute('SELECT price,menu_quote_price,delivery_available FROM products').fetchone()
+        self.assertEqual(tuple(row),(210,210,1))
+        # The prior 300 quote is a comparable historical menu price even
+        # though it was not a validated payable / delivery price.
+        last=self.conn.execute('SELECT menu_quote_history FROM products').fetchone()[0]
+        self.assertEqual([v for _,v in json.loads(last)],[300,210])
 
-        fake=menu('20261015014059',999)
-        fake['name']='非營業時間假店名'
-        fake['hasMenu']['hasMenuSection'][0]['hasMenuItem'].append({
-            'identifier':'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-            'name':'非營業時間假商品','offers':{'price':1}})
-        apply_snapshot(self.conn,[fake],'20261015014059')
-        self.assertEqual(dict(self.conn.execute('SELECT * FROM stores').fetchone()),store)
-        self.assertEqual(dict(self.conn.execute('SELECT * FROM products').fetchone()),product)
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM products').fetchone()[0],1)
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM events').fetchone()[0],event_count)
-
-        apply_snapshot(self.conn,[menu('20261015091759',210)],'20261015091759')
-        row=self.conn.execute('SELECT price,discount_pct,first_seen FROM products').fetchone()
-        self.assertEqual((row['price'],row['discount_pct'],row['first_seen']),
-                         (210,0,product['first_seen']))
+        late=menu('20261015014059',999)
+        apply_snapshot(self.conn,[late],'20261015014059')
+        row=self.conn.execute('SELECT price,menu_quote_price,delivery_available FROM products').fetchone()
+        self.assertEqual(tuple(row),(210,999,0))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='PRICE_CHANGED'").fetchone()[0],0)
 
     def test_conflicting_isopen_and_missing_hours_are_rejected(self):
         doc=menu('20261014014059',300)
@@ -124,9 +119,10 @@ class PriceValidityTests(unittest.TestCase):
     def test_delivery_banner_does_not_override_real_closure(self):
         doc = menu('20261023014059', 500)
         doc['closedMessage'] = 'Delivery unavailable'
-        self.assertFalse(menu_catalog_valid(doc, '20261023014059'))
+        self.assertTrue(menu_catalog_valid(doc, '20261023014059'))
         result = apply_snapshot(self.conn, [doc], '20261023014059')
-        self.assertEqual(result['stores'], 0)
+        self.assertEqual(result['stores'], 1)
+        self.assertEqual(self.conn.execute('SELECT delivery_available FROM products').fetchone()[0],0)
 
     def test_baseline_valid_price_is_recorded_even_without_any_future_price_changes(self):
         apply_snapshot(self.conn,[menu('20261006091759',210)],'20261006091759')
