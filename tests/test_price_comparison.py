@@ -28,6 +28,31 @@ class PriceComparisonContractTests(unittest.TestCase):
         self.assertIsNone(PriceChange.seven_day_high([(now.isoformat(),100)],now.isoformat(),50))
 
 
+    def test_weekly_persisted_fields_use_highest_price_not_last_or_median(self):
+        from datetime import datetime, timedelta, timezone
+        tz = timezone(timedelta(hours=8))
+        now = datetime(2026, 10, 27, 18, 30, tzinfo=tz)
+        # Previous: 50, median: 50, 7-day high: 100.
+        observations = [
+            ((now - timedelta(days=6)).isoformat(), 100),
+            ((now - timedelta(days=5)).isoformat(), 50),
+            ((now - timedelta(days=4)).isoformat(), 50),
+            ((now - timedelta(days=1)).isoformat(), 50),
+        ]
+        week = PriceChange.seven_day_high(observations, now.isoformat(), 50)
+        self.assertEqual(PriceChange.persisted_seven_day(week), {
+            "seven_day_reference_price": 100.0,
+            "seven_day_discount_pct": 50.0,
+            "seven_day_discount_amount": 50.0,
+            "seven_day_is_price_deal": 1,
+        })
+        # When the old high expires, the apparent discount must also expire.
+        later = now + timedelta(days=2)
+        expired = PriceChange.seven_day_high(observations, later.isoformat(), 50)
+        self.assertEqual(PriceChange.persisted_seven_day(expired)["seven_day_is_price_deal"], 0)
+        self.assertEqual(PriceChange.persisted_seven_day(None)["seven_day_reference_price"], None)
+        self.assertEqual(PriceChange.persisted_seven_day(None)["seven_day_is_price_deal"], 0)
+
     def test_unit_rule_includes_all_drops_without_promo(self):
         self.assertIsNone(compare_effective_prices(None, 120))
         self.assertIsNone(compare_effective_prices(0, 120))

@@ -136,14 +136,15 @@ def repair(db_path):
         ):
             seven = PriceChange.seven_day_high(
                 histories.get((sid, pid), ()), last_batch, unit) if last_batch == last_seen else None
-            comparison = seven["comparison"] if seven else None
-            qualifies = bool(comparison and PriceChange.qualifies(comparison, 30))
-            week_deals += int(qualifies)
+            # The published deal list uses the highest VERIFIED unit price
+            # inside the prior seven days, not the previous-crawl movement.
+            week_fields = PriceChange.persisted_seven_day(seven)
+            week_deals += week_fields["seven_day_is_price_deal"]
             week_updates.append((
-                seven["reference"] if seven else None,
-                comparison["discount_pct"] if comparison and comparison["is_price_drop"] else 0,
-                comparison["savings"] if comparison and comparison["is_price_drop"] else 0,
-                int(qualifies), sid, pid))
+                week_fields["seven_day_reference_price"],
+                week_fields["seven_day_discount_pct"],
+                week_fields["seven_day_discount_amount"],
+                week_fields["seven_day_is_price_deal"], sid, pid))
         conn.executemany(
             """UPDATE products SET seven_day_reference_price=?,
                seven_day_discount_pct=?,seven_day_discount_amount=?,

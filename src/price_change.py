@@ -67,6 +67,25 @@ class PriceChange:
                 "comparison": PriceChange.compare(high, current)}
 
     @staticmethod
+    def persisted_seven_day(week: dict | None, min_percent: float = LARGE_DROP_PCT,
+                            min_savings: float = 0.0) -> dict:
+        """Main deal-list fields: previous SEVEN DAYS' highest valid unit price.
+
+        Previous-crawl reference_price/discount_pct remain separate movement
+        diagnostics. Never replace seven_day_* with the last observed price,
+        the median, a menu list price, or an unverified archived quote.
+        """
+        comparison = week.get("comparison") if week else None
+        dropped = bool(comparison and comparison["is_price_drop"])
+        return {
+            "seven_day_reference_price": week["reference"] if week else None,
+            "seven_day_discount_pct": comparison["discount_pct"] if dropped else 0.0,
+            "seven_day_discount_amount": comparison["savings"] if dropped else 0.0,
+            "seven_day_is_price_deal": int(PriceChange.qualifies(
+                comparison, min_percent, min_savings)),
+        }
+
+    @staticmethod
     def qualifies(comparison: dict | None, min_percent: float = 0.0,
                   min_savings: float = 0.0) -> bool:
         """Use the same rule for every price-drop list, regardless of source."""
