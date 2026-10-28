@@ -425,7 +425,7 @@ async function productsFromRefs(refs, location, limit = 50000, accepts = () => t
           if (indexes.has(offset)) {
             const p = Object.fromEntries(cols.map((c, j) => [c, pair[1][j]]));
             if (store.status === 'active' && p.status === 'active' &&
-                Number.isFinite(Number(p.price)) && isCurrentPriceObservation(p, store)) {
+                Number(p.menu_quote_price || p.price) > 0) {
               const view = productView(p, store);
               if (accepts(view)) out.push(view);
             }
@@ -546,7 +546,7 @@ async function sampleProducts(stores, location, limit = 50000) {
       for (const pair of chunk.products || []) {
         const p = Object.fromEntries(cols.map((c, i) => [c, pair[1][i]]));
         if (store.status === 'active' && p.status === 'active' &&
-            Number.isFinite(Number(p.price)) && isCurrentPriceObservation(p, store)) out.push(productView(p, store));
+            Number(p.menu_quote_price || p.price) > 0) out.push(productView(p, store));
         if (out.length >= limit) return dedupeProducts(out);
       }
     }
@@ -689,7 +689,7 @@ export async function packedCurrentProduct(storeUuid, productUuid) {
       const item = Object.fromEntries(cols.map((name, index) => [name, pair[1][index]]));
       if (String(item.product_uuid) === String(productUuid)) {
         if (store.status !== 'active' || item.status !== 'active' ||
-            !isCurrentPriceObservation(item, store)) return null;
+            !(Number(item.menu_quote_price || item.price) > 0)) return null;
         return productView(item, store);
       }
     }
