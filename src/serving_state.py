@@ -199,7 +199,7 @@ def _event(conn: sqlite3.Connection, now: str, sid: str, pid: str | None, kind: 
 
 
 def refresh_product_search(conn: sqlite3.Connection, latest_observation_at: str | None = None) -> None:
-    """Index current menu products separately from delivery availability."""
+    """Index latest-known active menu products, even when shops close or delivery stops."""
     if latest_observation_at is None:
         row = conn.execute("SELECT MAX(processed_at) FROM crawl_batches").fetchone()
         latest_observation_at = row[0] if row else None
@@ -210,9 +210,7 @@ def refresh_product_search(conn: sqlite3.Connection, latest_observation_at: str 
                SELECT p.store_uuid,p.product_uuid,s.name,p.product_name,p.category
                FROM products p JOIN stores s USING(store_uuid)
                WHERE p.status='active' AND s.status='active'
-                 AND p.is_open=1 AND s.is_open=1
-                 AND p.last_seen=? AND s.last_seen=? AND COALESCE(p.menu_quote_price,p.price)>0""",
-            (latest_observation_at, latest_observation_at)
+                 AND COALESCE(p.menu_quote_price,p.price)>0"""
         )
 
 
