@@ -30,9 +30,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    from .price_observation import price_observation_valid
+    from .price_observation import price_observation_valid, menu_catalog_valid
 except ImportError:
-    from price_observation import price_observation_valid
+    from price_observation import price_observation_valid, menu_catalog_valid
 
 try:
     import orjson
@@ -118,6 +118,11 @@ CREATE TABLE IF NOT EXISTS products(
   archive_discount_amount REAL NOT NULL DEFAULT 0,
   archive_evidence_count INTEGER NOT NULL DEFAULT 0,
   archive_is_price_deal INTEGER NOT NULL DEFAULT 0,
+  menu_quote_price REAL,
+  menu_quote_effective_price REAL,
+  menu_quote_promo_type TEXT,
+  menu_quote_quantity INTEGER,
+  delivery_available INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY(store_uuid, product_uuid),
   FOREIGN KEY(store_uuid) REFERENCES stores(store_uuid)
 );
@@ -194,7 +199,7 @@ def _event(conn: sqlite3.Connection, now: str, sid: str, pid: str | None, kind: 
 
 
 def refresh_product_search(conn: sqlite3.Connection, latest_observation_at: str | None = None) -> None:
-    """Index only this completed batch's verified product observations."""
+    """Index current menu products separately from delivery availability."""
     if latest_observation_at is None:
         row = conn.execute("SELECT MAX(processed_at) FROM crawl_batches").fetchone()
         latest_observation_at = row[0] if row else None
@@ -206,7 +211,7 @@ def refresh_product_search(conn: sqlite3.Connection, latest_observation_at: str 
                FROM products p JOIN stores s USING(store_uuid)
                WHERE p.status='active' AND s.status='active'
                  AND p.is_open=1 AND s.is_open=1
-                 AND p.last_seen=? AND s.last_seen=? AND p.effective_price>0""",
+                 AND p.last_seen=? AND s.last_seen=? AND COALESCE(p.menu_quote_price,p.price)>0""",
             (latest_observation_at, latest_observation_at)
         )
 
@@ -245,6 +250,11 @@ def ensure_schema_and_migrations(conn: sqlite3.Connection) -> None:
         ("archive_discount_amount", "REAL NOT NULL DEFAULT 0"),
         ("archive_evidence_count", "INTEGER NOT NULL DEFAULT 0"),
         ("archive_is_price_deal", "INTEGER NOT NULL DEFAULT 0"),
+        ("menu_quote_price", "REAL"),
+        ("menu_quote_effective_price", "REAL"),
+        ("menu_quote_promo_type", "TEXT"),
+        ("menu_quote_quantity", "INTEGER"),
+        ("delivery_available", "INTEGER NOT NULL DEFAULT 1"),
     ):
         if name not in product_columns:
             conn.execute(f"ALTER TABLE products ADD COLUMN {name} {definition}")
@@ -362,10 +372,10 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
             conn.executemany("UPDATE stores SET name=?,address=?,city=?,locality=?,latitude=?,longitude=?,rating=?,review_count=?,order_url=?,is_open=?,last_seen=?,status=?,missing_streak=0,state_hash=? WHERE store_uuid=?", update_stores_batch)
             update_stores_batch.clear()
         if insert_products_batch:
-            conn.executemany("INSERT INTO products(store_uuid,product_uuid,product_name,category,description,price,quantity,promo_type,effective_price,order_url,is_open,first_seen,last_seen,status,missing_streak,state_hash,recent_prices,price_novel_vs_previous_3,reference_price,discount_amount,discount_pct,is_price_deal,price_direction,is_price_drop,price_change_amount,price_change_percent,listing_started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", insert_products_batch)
+            conn.executemany("INSERT INTO products(store_uuid,product_uuid,product_name,category,description,price,quantity,promo_type,effective_price,order_url,is_open,first_seen,last_seen,status,missing_streak,state_hash,recent_prices,price_novel_vs_previous_3,reference_price,discount_amount,discount_pct,is_price_deal,price_direction,is_price_drop,price_change_amount,price_change_percent,listing_started_at,menu_quote_price,menu_quote_effective_price,menu_quote_promo_type,menu_quote_quantity,delivery_available) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", insert_products_batch)
             insert_products_batch.clear()
         if update_products_batch:
-            conn.executemany("UPDATE products SET product_name=?,category=?,description=?,price=?,quantity=?,promo_type=?,effective_price=?,order_url=?,is_open=?,last_seen=?,status='active',missing_streak=0,state_hash=?,recent_prices=?,price_novel_vs_previous_3=?,reference_price=?,discount_amount=?,discount_pct=?,is_price_deal=?,price_direction=?,is_price_drop=?,price_change_amount=?,price_change_percent=?,listing_started_at=? WHERE store_uuid=? AND product_uuid=?", update_products_batch)
+            conn.executemany("UPDATE products SET product_name=?,category=?,description=?,price=?,quantity=?,promo_type=?,effective_price=?,order_url=?,is_open=?,last_seen=?,status='active',missing_streak=0,state_hash=?,recent_prices=?,price_novel_vs_previous_3=?,reference_price=?,discount_amount=?,discount_pct=?,is_price_deal=?,price_direction=?,is_price_drop=?,price_change_amount=?,price_change_percent=?,listing_started_at=?,menu_quote_price=?,menu_quote_effective_price=?,menu_quote_promo_type=?,menu_quote_quantity=?,delivery_available=? WHERE store_uuid=? AND product_uuid=?", update_products_batch)
             update_products_batch.clear()
         if events_batch:
             conn.executemany("INSERT INTO events(event_time,store_uuid,product_uuid,event_type,old_state,new_state) VALUES(?,?,?,?,?,?)", events_batch)
@@ -382,9 +392,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         if sid in seen_stores:
             continue
         seen_stores.add(sid)
-        # A connection-local seen marker suppresses false missing-item
-        # detection on closed hours, without persisting the rejected menu.
-        is_open = int(price_observation_valid(doc, batch_id))
+        # Delivery availability cannot erase an existing open-hours menu.
+        is_open = int(menu_catalog_valid(doc, batch_id))
         conn.execute("INSERT OR REPLACE INTO snapshot_seen_stores VALUES(?,?)", (sid, is_open))
         if not is_open:
             counts["skipped_closed_stores"] += 1
@@ -448,8 +457,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
             })
             changed_store_keys.add(sid)
 
-        # The shared store-open gate already rejected off-hours observations.
-        store_price_valid = True
+        # Keep payable-price verification independent of menu visibility.
+        store_price_valid = price_observation_valid(doc, batch_id)
         sections = (doc.get("hasMenu") or {}).get("hasMenuSection") or []
         # A SKU may appear both in a normal category and in the live BOGO
         # category. Selecting the first occurrence makes prices jump when
@@ -510,6 +519,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 promo = observed_promo if price_valid else (str(old["promo_type"]) if old else "無")
                 qty = observed_qty if price_valid else (int(old["quantity"]) if old else 1)
                 effective = calculate_effective_price(price, promo, qty)
+                quote = (observed_price if observed_price > 0 else None,
+                         calculate_effective_price(observed_price, observed_promo, observed_qty) if observed_price > 0 else None,
+                         observed_promo, observed_qty, int(bool(store_price_valid)))
                 state = {
                     "product_name": name, "category": category, "description": desc,
                     "price": price, "quantity": qty, "promo_type": promo,
@@ -517,12 +529,14 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     "is_open": is_open,
                 }
                 # A flag on event JSON, not another SQL/Turso column.
-                event_state = {**state, "price_valid": bool(price_valid)}
+                event_state = {**state, "price_valid": bool(price_valid),
+                               "menu_quote_valid": bool(observed_price > 0),
+                               "delivery_available": bool(store_price_valid)}
                 ph = canonical_hash(state)
 
                 if old is None:
                     init_recent = [price] if price_valid else []
-                    insert_products_batch.append((sid, pid, *state.values(), now, now, "active", 0, ph, json_dumps(init_recent), 0, None, 0, 0, 0, 'unknown', 0, 0, 0, now))
+                    insert_products_batch.append((sid, pid, *state.values(), now, now, "active", 0, ph, json_dumps(init_recent), 0, None, 0, 0, 0, 'unknown', 0, 0, 0, now, *quote))
                     counts["new"] += 1
                     # A first valid in-hours observation must survive even when
                     # this snapshot initializes the whole dataset. Otherwise a
@@ -539,6 +553,11 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         "price_direction": "unknown", "is_price_drop": 0,
                         "price_change_amount": 0,
                         "price_change_percent": 0,
+                        "menu_quote_price": quote[0],
+                        "menu_quote_effective_price": quote[1],
+                        "menu_quote_promo_type": quote[2],
+                        "menu_quote_quantity": quote[3],
+                        "delivery_available": quote[4],
                     })
                     changed_product_rows.append(key)
                 else:
@@ -598,6 +617,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         or old.get("is_price_drop") != is_price_drop
                         or old.get("price_change_amount") != price_change_amount
                         or old.get("price_change_percent") != price_change_percent
+                        or (old.get("menu_quote_price"), old.get("menu_quote_effective_price"),
+                            old.get("menu_quote_promo_type"), old.get("menu_quote_quantity"),
+                            old.get("delivery_available", 1)) != quote
                     )
 
                     if old["status"] != "active":
@@ -636,7 +658,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                             })
                         ))
 
-                    update_products_batch.append((*state.values(), now, ph, json_dumps(next_recent_prices), price_novel, reference_price, discount_amount, discount_pct, is_price_deal, price_direction, is_price_drop, price_change_amount, price_change_percent, listing_started_at, sid, pid))
+                    update_products_batch.append((*state.values(), now, ph, json_dumps(next_recent_prices), price_novel, reference_price, discount_amount, discount_pct, is_price_deal, price_direction, is_price_drop, price_change_amount, price_change_percent, listing_started_at, *quote, sid, pid))
                     old.update(state)
                     old["listing_started_at"] = listing_started_at
                     old["last_seen"] = now
@@ -653,6 +675,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     old["is_price_drop"] = is_price_drop
                     old["price_change_amount"] = price_change_amount
                     old["price_change_percent"] = price_change_percent
+                    old.update(zip(("menu_quote_price", "menu_quote_effective_price",
+                                    "menu_quote_promo_type", "menu_quote_quantity",
+                                    "delivery_available"), quote))
                     if product_needs_publish:
                         changed_product_rows.append(key)
 
@@ -726,12 +751,12 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
 
     if insert_products_batch:
         conn.executemany(
-            "INSERT INTO products(store_uuid,product_uuid,product_name,category,description,price,quantity,promo_type,effective_price,order_url,is_open,first_seen,last_seen,status,missing_streak,state_hash,recent_prices,price_novel_vs_previous_3,reference_price,discount_amount,discount_pct,is_price_deal,price_direction,is_price_drop,price_change_amount,price_change_percent,listing_started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO products(store_uuid,product_uuid,product_name,category,description,price,quantity,promo_type,effective_price,order_url,is_open,first_seen,last_seen,status,missing_streak,state_hash,recent_prices,price_novel_vs_previous_3,reference_price,discount_amount,discount_pct,is_price_deal,price_direction,is_price_drop,price_change_amount,price_change_percent,listing_started_at,menu_quote_price,menu_quote_effective_price,menu_quote_promo_type,menu_quote_quantity,delivery_available) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             insert_products_batch,
         )
     if update_products_batch:
         conn.executemany(
-            "UPDATE products SET product_name=?,category=?,description=?,price=?,quantity=?,promo_type=?,effective_price=?,order_url=?,is_open=?,last_seen=?,status='active',missing_streak=0,state_hash=?,recent_prices=?,price_novel_vs_previous_3=?,reference_price=?,discount_amount=?,discount_pct=?,is_price_deal=?,price_direction=?,is_price_drop=?,price_change_amount=?,price_change_percent=?,listing_started_at=? WHERE store_uuid=? AND product_uuid=?",
+            "UPDATE products SET product_name=?,category=?,description=?,price=?,quantity=?,promo_type=?,effective_price=?,order_url=?,is_open=?,last_seen=?,status='active',missing_streak=0,state_hash=?,recent_prices=?,price_novel_vs_previous_3=?,reference_price=?,discount_amount=?,discount_pct=?,is_price_deal=?,price_direction=?,is_price_drop=?,price_change_amount=?,price_change_percent=?,listing_started_at=?,menu_quote_price=?,menu_quote_effective_price=?,menu_quote_promo_type=?,menu_quote_quantity=?,delivery_available=? WHERE store_uuid=? AND product_uuid=?",
             update_products_batch,
         )
     if missing_products_batch:
