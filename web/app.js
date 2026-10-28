@@ -1855,7 +1855,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         history = events
           .filter(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
-            return state.price_valid === true && (state.is_open === 1 || state.is_open === true);
+            return state.menu_quote_valid === true || (state.price_valid === true && (state.is_open === 1 || state.is_open === true));
           })
           .map(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
@@ -1935,9 +1935,14 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     const unitFmt = window.UBER_DATA_CONTRACT.unitMoney;
     // Read-only presentation of fields computed by Python PriceChange.
     // Change events are sparse: never recompute from the last two chart points.
+    const weekly = currentProductLoaded && Number(currentComparison.seven_day_reference_price) > 0
+      ? currentComparison : null;
     const compared = currentProductLoaded && Number(currentComparison.reference_price) > 0
       && currentComparison.price_direction !== 'unknown' ? currentComparison : null;
-    if (compared) {
+    if (weekly) {
+      const difference = Number(weekly.seven_day_reference_price) - Number(weekly.current_price);
+      priceChangeEl.textContent = `近七日最高菜單價 ${unitFmt(weekly.seven_day_reference_price)} → 最新菜單價 ${unitFmt(weekly.current_price)}（${difference > 0 ? '降幅 '+Number(weekly.discount_pct).toFixed(1)+'%' : '沒有降價'}；${weekly.delivery_available === true ? '目前確認可外送' : '未確認可外送'}）`;
+    } else if (compared) {
       const delta = Number(compared.price_change_amount);
       const percent = Math.abs(Number(compared.price_change_percent)).toFixed(1);
       const direction = {up: '漲價', down: '降價', flat: '價格持平'}[compared.price_direction];
@@ -1951,7 +1956,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         : '目前沒有可比較的實質單價紀錄';
     }
     if (currentProductLoaded && currentComparison.crawled_time) {
-      priceChangeEl.textContent += `｜最後有效採集 ${formatBatchDate(currentComparison.crawled_time)}`;
+      priceChangeEl.textContent += `｜最近菜單採集 ${formatBatchDate(currentComparison.crawled_time)}`;
     }
   }
 
