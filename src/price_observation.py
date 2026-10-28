@@ -92,3 +92,28 @@ def price_observation_valid(doc: dict, batch_id: str) -> bool:
     # as isOpen=True. Unknown observations remain only in HF Raw.
     return text.startswith(('open ', 'currently open', '24 hours', '24 小時',
                             '營業中', '營業至', '營業到'))
+
+
+def menu_catalog_valid(doc: dict, batch_id: str) -> bool:
+    """A restaurant's open-hours menu remains valid when delivery is unavailable.
+
+    This is a menu/price-quote gate, NOT proof that an order can be placed.
+    Verified payable prices still use the stricter price_observation_valid.
+    """
+    if price_observation_valid(doc, batch_id):
+        return True
+    if doc.get('isOpen') is not True or doc.get('menu_status') != 'present':
+        return False
+    if str(doc.get('closedMessage') or '').strip().lower() != 'delivery unavailable':
+        return False
+    tagline = str(doc.get('workingHoursTagline') or '').strip().lower()
+    if tagline.startswith(('opens ', 'opening ', 'closed', 'temporarily closed',
+                           'currently closed', '未營業', '尚未營業', '休息中', '已打烊', '暫停營業')):
+        return False
+    hours = _schedule_open(doc, observed_at(doc, batch_id))
+    if hours is False:
+        return False
+    if hours is True:
+        return True
+    return tagline.startswith(('open ', 'currently open', '24 hours',
+                               '24 小時', '營業中', '營業至', '營業到'))
