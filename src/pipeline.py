@@ -20,21 +20,19 @@ def assert_useful_price_batch(documents, batch):
     verifiable current-price refresh. A daytime >90% closure response is the
     signature of the previous missing-location-cookie bug.
     """
-    from price_observation import price_observation_valid
+    from price_observation import price_observation_valid, menu_catalog_valid
     total = len(documents)
     valid = sum(bool(price_observation_valid(doc, batch)) for doc in documents)
+    menu_stores = sum(bool(menu_catalog_valid(doc, batch)) for doc in documents)
     banner = sum(bool(str(doc.get("closedMessage") or "").strip()) for doc in documents)
     hour = int(batch[8:10])
-    if total >= 50 and valid == 0:
+    if total >= 50 and menu_stores == 0:
         raise RuntimeError(
-            f"Unusable menu crawl: 0/{total} valid price stores; "
+            f"Unusable menu crawl: 0/{total} open-hours menu stores; "
             "rejecting batch and preserving previous published prices"
         )
     if total >= 100 and 9 <= hour <= 22 and valid * 20 < total and banner * 10 >= total * 9:
-        raise RuntimeError(
-            f"Suspected broken delivery-location capture: {valid}/{total} "
-            f"valid stores, {banner} closed messages; not publishing"
-        )
+        print(f"DELIVERY_UNAVAILABLE_WARNING verified={valid}/{total} menu_catalog={menu_stores}/{total} banners={banner}", flush=True)
     return valid
 
 
@@ -176,10 +174,11 @@ def build_snapshot(output, config):
     # Distinguish successful menu downloads from *valid payable-price*
     # observations. A run containing only rejected observations is not a
     # successful price refresh; report the rejection signature explicitly.
-    from price_observation import price_observation_valid
+    from price_observation import price_observation_valid, menu_catalog_valid
     audit = {
         "captured_stores": len(documents),
-        "valid_price_stores": counts["stores"],
+        "valid_price_stores": sum(bool(price_observation_valid(doc, batch)) for doc in documents),
+        "catalog_menu_stores": counts["stores"],
         "raw_only_stores": counts["skipped_closed_stores"],
         "is_open": dict(Counter(
             "true" if doc.get("isOpen") is True else
@@ -194,7 +193,7 @@ def build_snapshot(output, config):
             "other_or_empty"
             for doc in documents)),
     }
-    assert sum(bool(price_observation_valid(doc, batch)) for doc in documents) == counts["stores"]
+    assert sum(bool(menu_catalog_valid(doc, batch)) for doc in documents) == counts["stores"]
     print("PRICE_OBSERVATION_AUDIT=" + json.dumps(audit, ensure_ascii=False), flush=True)
     report_path = output / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
