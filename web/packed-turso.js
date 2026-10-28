@@ -109,7 +109,10 @@ export async function metadata() {
     try { return [r.key, JSON.parse(r.value)]; }
     catch { return [r.key, r.value]; }
   }));
-  if (releaseMeta.latest_batch && releaseMeta.latest_batch !== meta.latest_batch) {
+  // Replayed HF RAW may change prices without changing the latest batch identifier.
+  const previousRevision = releaseMeta.data_revision || releaseMeta.source_revision || releaseMeta.latest_batch;
+  const nextRevision = meta.data_revision || meta.source_revision || meta.latest_batch;
+  if (previousRevision && previousRevision !== nextRevision) {
     cacheEpoch++;
     bucketCache.clear(); bundleCache.clear(); pendingBundleLoads.clear();
     locationStoresCache = { key: '', storeIds: new Set(), stores: [] };
