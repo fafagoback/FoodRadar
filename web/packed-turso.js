@@ -197,22 +197,34 @@ function dedupeProducts(products) {
   return out;
 }
 
+export function isCurrentMenuObservation(product, store, latestProcessedAt = releaseMeta.latest_processed_at) {
+  const latest = String(latestProcessedAt || '');
+  return Boolean(latest && String(store?.last_seen || '') === latest &&
+    String(product?.last_seen || '') === latest &&
+    Number(store?.is_open) === 1 && Number(product?.is_open) === 1 &&
+    Number(product?.menu_quote_price || product?.price) > 0);
+}
+
 export function isCurrentPriceObservation(product, store, latestProcessedAt = releaseMeta.latest_processed_at) {
-  // last_seen is only advanced after the Python verified-open price gate.
+  // Verified price/deliverability is stricter than a current menu quote.
   const latest = String(latestProcessedAt || '');
   return Boolean(latest &&
     String(store?.last_seen || '') === latest &&
     String(product?.last_seen || '') === latest &&
     Number(store?.is_open) === 1 && Number(product?.is_open) === 1 &&
-    Number(product?.price) > 0);
+    Number(product?.price) > 0 && Number(product?.delivery_available ?? 1) === 1);
 }
 
 function productView(product, store) {
-  const price = Number(product.price || 0);
-  // Derive true per-unit cost from the raw payable menu price and promotion.
+  const menuCurrent = isCurrentMenuObservation(product, store);
+  const quoted = Number(product.menu_quote_price || 0);
+  const price = menuCurrent && quoted > 0 ? quoted : Number(product.price || 0);
+  const promo = menuCurrent && quoted > 0 ? (product.menu_quote_promo_type || product.promo_type) : product.promo_type;
+  const quantity = menuCurrent && quoted > 0 ? Number(product.menu_quote_quantity || 1) : Number(product.quantity || 1);
+  // Show real menu price regardless of delivery; this is not proof of orderability.
   // Do not trust legacy effective_price (it could double-apply a direct discount).
   // Historical reference_price is now the PREVIOUS effective unit cost.
-  const effective = window.UBER_DATA_CONTRACT.unitPrice(price, product.promo_type, product.quantity);
+  const effective = window.UBER_DATA_CONTRACT.unitPrice(price, promo, quantity);
   // Derived change data comes only from Python PriceChange, persisted in Turso.
   // This read adapter must not recompare reference_price with effective.
   const refPrice = Number(product.reference_price || 0) > 0 ? Number(product.reference_price) : null;
@@ -236,8 +248,8 @@ function productView(product, store) {
     category_name: product.category,
     description: product.description,
     price,
-    quantity: Number(product.quantity || 1),
-    promo_type: product.promo_type,
+    quantity,
+    promo_type: promo,
     eff_price: effective,
     effective_price: effective,
     order_action_url: product.order_url || store.order_url,
@@ -270,6 +282,8 @@ function productView(product, store) {
     savings_amount: currentDrop ? historicalSaving : 0,
     is_price_deal: currentDrop ? Number(product.seven_day_is_price_deal || 0) : 0,
     is_current_price_observation: isCurrent,
+    is_current_menu_observation: menuCurrent,
+    delivery_available: isCurrent,
     status: product.status,
     is_open: (Number(product.is_open) === 1 && Number(store.is_open) === 1) ? 1 : 0
   };
@@ -598,7 +612,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
   const k = normalize(keyword), c = normalize(city);
   const accepts = p =>
     p.status === 'active' && Number(p.is_open) === 1 &&
-    p.is_current_price_observation === true &&
+    p.is_current_menu_observation === true &&
     (!k || matchesWords(`${p.product_name}${p.store_name}${p.category_name}`, keyword)) &&
     (!c || matchesWords(`${p.city}${p.locality}${p.street_address}`, city)) &&
     (minDiscount === null || Number(p.discount_pct || 0) >= Number(minDiscount)) &&
