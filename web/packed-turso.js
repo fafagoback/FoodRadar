@@ -218,9 +218,9 @@ export function isCurrentPriceObservation(product, store, latestProcessedAt = re
 function productView(product, store) {
   const menuCurrent = isCurrentMenuObservation(product, store);
   const quoted = Number(product.menu_quote_price || 0);
-  const price = menuCurrent && quoted > 0 ? quoted : Number(product.price || 0);
-  const promo = menuCurrent && quoted > 0 ? (product.menu_quote_promo_type || product.promo_type) : product.promo_type;
-  const quantity = menuCurrent && quoted > 0 ? Number(product.menu_quote_quantity || 1) : Number(product.quantity || 1);
+  const price = quoted > 0 ? quoted : Number(product.price || 0);
+  const promo = quoted > 0 ? (product.menu_quote_promo_type || product.promo_type) : product.promo_type;
+  const quantity = quoted > 0 ? Number(product.menu_quote_quantity || 1) : Number(product.quantity || 1);
   // Show real menu price regardless of delivery; this is not proof of orderability.
   // Do not trust legacy effective_price (it could double-apply a direct discount).
   // Historical reference_price is now the PREVIOUS effective unit cost.
@@ -283,7 +283,8 @@ function productView(product, store) {
     is_price_deal: currentDrop ? Number(product.seven_day_is_price_deal || 0) : 0,
     is_current_price_observation: isCurrent,
     is_current_menu_observation: menuCurrent,
-    delivery_available: isCurrent,
+    is_menu_catalog_available: price > 0,
+    delivery_available: menuCurrent ? isCurrent : null,
     status: product.status,
     is_open: (Number(product.is_open) === 1 && Number(store.is_open) === 1) ? 1 : 0
   };
@@ -327,7 +328,7 @@ export async function getStoresInLocation(location) {
   if (locationStoresCache.key === key) return locationStoresCache;
   const lat = Number(location.latitude), lon = Number(location.longitude), r = Number(location.radiusKm);
   const { dy, dx } = locationBounds(lat, r);
-  const rows = await sql(`select * from store_directory where status='active' and is_open=1 and last_seen='${latest}' and latitude between ${lat - dy} and ${lat + dy} and longitude between ${lon - dx} and ${lon + dx} order by rating desc nulls last, review_count desc limit 50000`);
+  const rows = await sql(`select * from store_directory where status='active' and latitude between ${lat - dy} and ${lat + dy} and longitude between ${lon - dx} and ${lon + dx} order by rating desc nulls last, review_count desc limit 50000`);
   const allStores = rows.map(r => ({
     store_id: Number(r.store_id),
     store_uuid: r.store_uuid,
@@ -448,7 +449,7 @@ export async function directory(location, limit = 50000) {
   const meta = await metadata();
   const latest = String(meta.latest_processed_at || '').replace(/'/g, "''");
   if (!latest) return [];
-  const active = meta.definition_version ? "and status='active' and is_open=1 and last_seen='" + latest + "'" : '';
+  const active = meta.definition_version ? "and status='active'" : '';
   const rows = await sql(`select * from store_directory where name != '' ${active} order by rating desc nulls last, review_count desc limit ${limit}`);
   const stores = rows.map(r => ({
     store_id: Number(r.store_id),
@@ -478,7 +479,7 @@ export async function searchStores({ keyword = '', location = null, newOnly = fa
   const latest = String(meta.latest_processed_at || '').replace(/'/g, "''");
   if (!latest) return [];
   const keywords = String(keyword || '').trim().split(/\s+/).map(normalize).filter(Boolean);
-  let where = "name != '' and status='active' and is_open=1 and last_seen='" + latest + "'";
+  let where = "name != '' and status='active'";
   for (const word of keywords) {
     // Each token must match, but may appear in a different store field.
     // instr avoids treating user-entered % and _ as SQL LIKE wildcards.
@@ -612,7 +613,7 @@ export async function searchPacked({ keyword = '', city = '', promo = false, new
   const k = normalize(keyword), c = normalize(city);
   const accepts = p =>
     p.status === 'active' && Number(p.is_open) === 1 &&
-    p.is_current_menu_observation === true &&
+    p.is_menu_catalog_available === true &&
     (!k || matchesWords(`${p.product_name}${p.store_name}${p.category_name}`, keyword)) &&
     (!c || matchesWords(`${p.city}${p.locality}${p.street_address}`, city)) &&
     (minDiscount === null || Number(p.discount_pct || 0) >= Number(minDiscount)) &&
