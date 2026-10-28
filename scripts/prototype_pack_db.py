@@ -153,22 +153,22 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                           and product["status"] == "active"
                           and int(product["is_open"] or 0) == 1
                           and product["last_seen"] == latest_time
-                          and float(product["effective_price"] or product["price"] or 0) > 0)
-            terms = (store_terms | tokens(product["product_name"]) | tokens(product["category"]) | tokens(product["promo_type"])) if searchable else set()
-            price = float(product["effective_price"] or product["price"] or 0)
+                          and float(product["menu_quote_effective_price"] or product["effective_price"] or product["price"] or 0) > 0)
+            terms = (store_terms | tokens(product["product_name"]) | tokens(product["category"]) | tokens(product["menu_quote_promo_type"] or product["promo_type"])) if searchable else set()
+            price = float(product["menu_quote_effective_price"] or product["effective_price"] or product["price"] or 0)
             if searchable:
                 active_products += 1
-                if float(product["reference_price"] or 0) > 0:
+                if int(product["delivery_available"] or 0) == 1 and float(product["reference_price"] or 0) > 0:
                     active_comparable_products += 1
-                if float(product["seven_day_reference_price"] or 0) > 0:
+                if int(product["delivery_available"] or 0) == 1 and float(product["seven_day_reference_price"] or 0) > 0:
                     seven_day_reference_products += 1
-                if product["promo_type"] not in (None, "", "無"):
+                if (product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無"):
                     active_platform_promotions += 1
-                if int(product["seven_day_is_price_deal"] or 0) == 1:
+                if int(product["delivery_available"] or 0) == 1 and int(product["seven_day_is_price_deal"] or 0) == 1:
                     active_30pct_drops += 1
-                if float(product["archive_reference_price"] or 0) > 0:
+                if int(product["delivery_available"] or 0) == 1 and float(product["archive_reference_price"] or 0) > 0:
                     archive_reference_products += 1
-                if int(product["archive_is_price_deal"] or 0) == 1:
+                if int(product["delivery_available"] or 0) == 1 and int(product["archive_is_price_deal"] or 0) == 1:
                     archive_30pct_candidates += 1
                     terms.add(f"f:archive_discount:{int(float(product['archive_discount_pct']) // 5)}")
                 terms.add(f"f:price:{int(price // 50)}")
@@ -177,10 +177,10 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'][:10] > store['first_seen'][:10]
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
-                if (product["promo_type"] not in (None, "", "無")
-                        or float(product["seven_day_discount_pct"] or 0) > 0):
+                if ((product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無")
+                        or (int(product["delivery_available"] or 0) == 1 and float(product["seven_day_discount_pct"] or 0) > 0)):
                     terms.add("f:promo")
-                if float(product["seven_day_discount_pct"] or 0) > 0:
+                if int(product["delivery_available"] or 0) == 1 and float(product["seven_day_discount_pct"] or 0) > 0:
                     terms.add(f"f:discount:{int(float(product['seven_day_discount_pct']) // 5)}")
             for term in sorted(terms):
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
