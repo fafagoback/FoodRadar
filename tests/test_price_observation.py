@@ -263,6 +263,36 @@ class PriceValidityTests(unittest.TestCase):
         doc['workingHoursTagline']=''
         self.assertFalse(price_observation_valid(doc,'20261014014059')) # Unknown: raw only
 
+    def test_menu_catalog_does_not_mean_currently_open(self):
+        """A closed-hour menu is searchable but cannot be called open or comparable."""
+        closed = menu('20261023014059', 55)
+        self.assertTrue(menu_catalog_valid(closed, '20261023014059'))
+        apply_snapshot(self.conn, [closed], '20261023014059')
+        store = self.conn.execute('SELECT status,is_open FROM stores').fetchone()
+        product = self.conn.execute('SELECT status,is_open,menu_quote_price,menu_quote_history FROM products').fetchone()
+        self.assertEqual(tuple(store), ('active', 0))
+        self.assertEqual(tuple(product)[:3], ('active', 0, 55))
+        self.assertEqual(json.loads(product['menu_quote_history']), [])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0], 1)
+
+    def test_same_sku_promo_section_uses_its_own_raw_price(self):
+        """Different original prices across category duplicates must not mix."""
+        import copy
+        doc = menu('20261026091759', 100)
+        plain = doc['hasMenu']['hasMenuSection'][0]
+        plain['name'] = '一般飲料'
+        promo = copy.deepcopy(plain)
+        promo['name'] = '買1送1'
+        promo['hasMenuItem'][0]['offers']['price'] = 80
+        doc['hasMenu']['hasMenuSection'] = [plain, promo]
+        apply_snapshot(self.conn, [doc], '20261026091759')
+        result = self.conn.execute('SELECT price,promo_type,quantity,effective_price,menu_quote_price FROM products').fetchone()
+        self.assertEqual(tuple(result), (80,'買1送1',2,40,80))
+        doc['hasMenu']['hasMenuSection'] = [promo, plain]
+        apply_snapshot(self.conn, [doc], '20261027091759')
+        result = self.conn.execute('SELECT price,promo_type,quantity,effective_price FROM products').fetchone()
+        self.assertEqual(tuple(result), (80,'買1送1',2,40))
+
     def test_same_sku_in_normal_and_bogo_sections_is_order_independent(self):
         """A category carousel/order swap must never invent a 50% price jump."""
         import copy
