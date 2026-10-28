@@ -1815,17 +1815,20 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
           })
           .map(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
-            const p = Number(state.price || 0);
-            const eff = window.UBER_DATA_CONTRACT.unitPrice(p, state.promo_type, state.quantity);
+            const unitOnly = state.effective_unit_only === true;
+            const p = unitOnly ? null : Number(state.price || 0);
+            const eff = unitOnly ? Number(state.price || 0)
+              : window.UBER_DATA_CONTRACT.unitPrice(p, state.promo_type, state.quantity);
             return {
               crawled_time: e.event_time,
               price: p,
               eff_price: eff,
-              quantity: Number(state.quantity || 1),
-              promo_type: state.promo_type || '無'
+              quantity: unitOnly ? null : Number(state.quantity || 1),
+              promo_type: unitOnly ? '歷史未保存' : (state.promo_type || '無'),
+              unit_only: unitOnly
             };
           })
-          .filter(h => h.price > 0 && h.eff_price > 0);
+          .filter(h => Number(h.eff_price) > 0 && (h.unit_only || h.price > 0));
       }
     } catch (err) {
       if (sequence !== priceHistorySequence) return;
@@ -1870,7 +1873,8 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         price,
         eff_price: unit,
         quantity: Number(currentComparison.quantity || 1),
-        promo_type: currentComparison.promo_type || '無'
+        promo_type: currentComparison.promo_type || '無',
+        unit_only: false
       });
     }
   }
@@ -1880,7 +1884,10 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   const uniqueHistory = new Map();
   for (const observation of history) {
     const timestamp = String(observation.crawled_time || '');
-    if (!uniqueHistory.has(timestamp)) uniqueHistory.set(timestamp, observation);
+    const prior = uniqueHistory.get(timestamp);
+    if (!prior || (prior.unit_only && !observation.unit_only)) {
+      uniqueHistory.set(timestamp, observation);
+    }
   }
   history = [...uniqueHistory.values()]
     .sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
@@ -1916,12 +1923,16 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     }
   }
 
+  if (priceChangeEl && history.some(h => h.unit_only)) {
+    priceChangeEl.textContent += '｜歷史紀錄僅保存每件單價；未保存的標價與促銷狀態以「—／歷史未保存」顯示';
+  }
+
   const tbody = document.getElementById('modal-history-tbody');
   if (history.length > 0) {
     const rowsHtml = [...history].reverse().map(h => `
       <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
         <td class="px-3 py-2 font-mono text-slate-600 dark:text-slate-300 text-xs">${formatBatchDate(h.crawled_time)}</td>
-        <td class="px-3 py-2 font-mono font-medium text-xs">${window.UBER_DATA_CONTRACT.money(h.price)}</td>
+        <td class="px-3 py-2 font-mono font-medium text-xs">${h.unit_only ? '—' : window.UBER_DATA_CONTRACT.money(h.price)}</td>
         <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-[11px] font-medium ${h.promo_type && h.promo_type !== '無' ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}">${escapeHtml(h.promo_type || '無')}</span></td>
         <td class="px-3 py-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">${window.UBER_DATA_CONTRACT.unitMoney(h.eff_price)}</td>
       </tr>
