@@ -70,7 +70,7 @@ def main() -> None:
     print(f"FOODRADAR_BACKUP_CRAWL needed={needed} latest={latest} "
           f"window={most_recent_window(now).isoformat()}", file=sys.stderr)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-        f.write(f"needed={'true' if needed else 'false'}\\n".replace('\\n', '\n'))
+        f.write('needed=' + ('true' if needed else 'false') + chr(10))
 
 
 if __name__ == "__main__":
