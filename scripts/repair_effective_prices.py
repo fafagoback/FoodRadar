@@ -145,16 +145,27 @@ def repair(db_path):
             # Never mix a previous verified-price event with a RAW quote in
             # the same reference-price series.
             if last_batch == last_seen and raw_quote_unit and float(raw_quote_unit) > 0:
-                current_menu_quotes += 1
                 try:
                     quote_history = json.loads(quote_json or '[]')
                 except (ValueError, TypeError):
                     quote_history = []
-                seven = PriceChange.seven_day_high(
+                # The current quote must itself be an OPEN-hours sample. A
+                # closed shop's last captured menu is only a catalogue value,
+                # never proof of a newly changed purchasable unit price.
+                current_was_open = any(
+                    isinstance(row,(list,tuple)) and len(row)==2
+                    and row[0] == last_batch
+                    and abs(float(row[1])-float(raw_quote_unit))<0.011
+                    for row in quote_history
+                    if isinstance(row,(list,tuple)) and len(row)==2
+                )
+                seven = (PriceChange.seven_day_high(
                     quote_history, last_batch, raw_quote_unit)
+                    if current_was_open else None)
             else:
                 seven = None
             if seven is not None:
+                current_menu_quotes += 1
                 comparable_menu_quotes += 1
             week_fields = PriceChange.persisted_seven_day(seven)
             week_deals += week_fields["seven_day_is_price_deal"]
