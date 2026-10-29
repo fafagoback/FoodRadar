@@ -248,6 +248,34 @@ jobs:
                   print('NATIVE_UUID_EVIDENCE='+json.dumps({'count':len(hits),'target':[h for h in hits if h['uuid']=='225b775d-558b-5648-b6e0-4b87ac575453'][:6],'other_uuids':list(dict.fromkeys(h['uuid'] for h in hits))[:30]},ensure_ascii=False),flush=True)
                   break
           PY
+      - name: Verify actual itemPromotion structure vs BOGO screenshot
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os,json,tarfile
+          from huggingface_hub import hf_hub_download
+          batch='20261029145834';repo='hub-google/UberEat';pid='8a0e205b-9257-53a8-bd7e-6067ec1f05d7'
+          archive=hf_hub_download(repo,f'FoodRadar/snapshots/{batch}/taiwan_menus_{batch}.tar.gz',repo_type='dataset',token=os.getenv('HF_TOKEN'))
+          with tarfile.open(archive,'r:gz') as tf:
+           for member in tf:
+            if not(member.isfile() and member.name.startswith('ApiRaw/') and member.name.endswith('.json')):continue
+            data=(json.load(tf.extractfile(member)).get('data') or {})
+            if '萊爾富' not in str(data.get('title')) or '士銓' not in str(data.get('title')):continue
+            count=0
+            for secs in (data.get('catalogSectionsMap') or {}).values():
+             for sec in secs if isinstance(secs,list) else []:
+              payload=(sec.get('payload') or {}).get('standardItemsPayload') or {}
+              heading=payload.get('title') or {}
+              heading=heading.get('text') if isinstance(heading,dict) else heading
+              for item in payload.get('catalogItems') or []:
+               ip=item.get('itemPromotion')
+               if item.get('uuid')==pid or (ip and count<6):
+                info={'section':heading,'sku':item.get('uuid'),'name':item.get('title'),'itemPromotion':ip,'promoInfo':item.get('promoInfo'),'catalogItemAnalyticsData':item.get('catalogItemAnalyticsData'),'imageOverlayElements':item.get('imageOverlayElements'),'itemThumbnailElements':item.get('itemThumbnailElements')}
+                print('EXACT_PROMO_PAYLOAD='+json.dumps(info,ensure_ascii=False,default=str)[:10000],flush=True)
+                if ip:count+=1
+            break
+          PY
   audit-soymilk-raw:
     name: Inspect historical HF RAW for 世界豆漿大王 冰豆漿
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[audit-bingdoujiang]') }}
