@@ -170,7 +170,7 @@ def iter_documents(source: str | Iterable[dict[str, Any]]) -> Iterable[dict[str,
     elif tarfile.is_tarfile(p):
         with tarfile.open(p, "r:*") as tf:
             for member in tf:
-                if member.isfile() and member.name.endswith(".json"):
+                if member.isfile() and member.name.endswith(".json") and not member.name.startswith("ApiRaw/"):
                     fh = tf.extractfile(member)
                     if fh:
                         try:
