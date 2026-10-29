@@ -237,7 +237,7 @@ def main():
             has_old = any(len(r["thumbnail_prices"]) >= 2 and
                 max(r["thumbnail_prices"]) > (r["price"] or 0) for r in records)
             has_badge = bool(badge)
-            has_percent = any(re.search(r"\\d+(?:\\.\\d+)?%\\s*off", b, re.I) for b in badge)
+            has_percent = any(re.search(r"[0-9]+(?:[.][0-9]+)?% *off", b, re.I) for b in badge)
             details[ptype]["count"] += 1
             details[ptype]["old_price_in_thumbnail"] += int(has_old)
             details[ptype]["promo_badge"] += int(has_badge)
@@ -256,7 +256,7 @@ def main():
                         item_level=info.get("item_level_promotion"),
                         purchase_info=info.get("purchase_info")))
             by_category = [extract_promo_info(row.get("category") or "",row["title"],"")[0] for row in records]
-            legacy_bogo = any(re.match(r"買\\d+送\\d+", p) for p in by_category)
+            legacy_bogo = any(p.startswith("買") and "送" in p for p in by_category)
             native_bogo = any(row["promo_type"] in ("BOGO", "BOGA", "MULTI_SKU_BXFY") and
                 row["native_type"]=="buyXGetYItemPromotion" for row in records)
             if legacy_bogo and not native_bogo:
