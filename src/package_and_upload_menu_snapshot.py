@@ -104,6 +104,8 @@ def main() -> None:
         fail(batch_id, f"全台網頁已失效店家比例達 {inactive_rate:.2f}% (超過 10% 門檻)", rows)
 
     api_raw_files = sorted(Path(args.api_raw_dir).glob("*.json")) if args.api_raw_dir else []
+    if args.api_raw_dir and len(api_raw_files) != active_count:
+        fail(batch_id, f"Original API capture incomplete: {len(api_raw_files)}/{active_count}", rows)
     for raw_path in api_raw_files:
         with open(raw_path, encoding="utf-8") as source:
             native_response = json.load(source)
