@@ -1264,7 +1264,7 @@ function renderPromotions() {
               <i data-lucide="gift" class="w-3 h-3"></i>
               ${escapeHtml(isPlatformPromotion(p) ? (p.promo_type && p.promo_type !== '無' ? p.promo_type : '多件優惠') : `FoodRadar 實質降價 ${Number(p.discount_pct).toFixed(1)}%`)}
             </span>
-            ${isVerifiedPriceDeal(p) && isPlatformPromotion(p) ? `<span class="text-[11px] font-bold text-rose-600">另有實質降價 ${Number(p.discount_pct).toFixed(1)}%</span>` : '<span class="text-xs text-slate-400 truncate max-w-[120px]">' + '' + '</span>'}
+            ${isVerifiedPriceDeal(p) && isPlatformPromotion(p) ? `<span class="text-[11px] font-bold text-rose-600">另有實質降價 ${Number(p.discount_pct).toFixed(1)}%</span>` : ''}
           </div>
 
           <div class="flex items-center justify-between gap-1 mb-1">
