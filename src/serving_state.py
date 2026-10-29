@@ -493,7 +493,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 # Quantity-changing offers rank over descriptive sale labels.
                 # Resolve ties by stable text, never by API category order.
                 candidate_price = _num((candidate_item.get("offers") or {}).get("price"), float, 0)
-                rank = (int(candidate_qty > 1), int(candidate_price > 0), candidate_promo)
+                rank = (int(candidate_item.get("promotion_source") == "native_structured"),
+                        int(candidate_qty > 1), int(candidate_price > 0), candidate_promo)
                 prior = preferred_promos.get(candidate_pid)
                 if prior is None or rank > prior[0]:
                     preferred_promos[candidate_pid] = (rank, candidate_promo, candidate_qty, candidate_price)
