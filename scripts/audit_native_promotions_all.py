@@ -124,7 +124,9 @@ def main():
                         record = dict(store=data.get("title"), sku=item.get("uuid"), title=item.get("title"),
                             category=category, native_type=native, promo_type=typ, badge=badge,
                             promo_info=item.get("promoInfo"), price=price,
-                            thumbnail_prices=prices, buy=buy, get=get, native_value=struct)
+                            thumbnail_prices=prices, buy=buy, get=get, native_value=struct,
+                            item_level_promotion=item.get("itemLevelPromotion"),
+                            purchase_info=item.get("purchaseInfo"))
                         if key not in unique_products:
                             unique_products[key] = []
                         unique_products[key].append(record)
@@ -207,6 +209,70 @@ def main():
         emit("AUDIT_CATEGORY_CONFLICTS", conflicts[:6])
         emit("AUDIT_BOGO_AND_DISCOUNT_CONFLICTS", error_examples[:6])
         emit("AUDIT_STRUCTURED_EXAMPLES", {k:v[:3] for k,v in samples.items() if k.startswith("native:")})
+        # An additional field-level completeness check, avoiding any text/category
+        # inference except as a *counterexample* to the current parser.
+        import sys
+        sys.path.insert(0, "src")
+        from json_to_db import extract_promo_info
+        details = collections.defaultdict(collections.Counter)
+        type_examples = collections.defaultdict(list)
+        mismatches = []
+        summary_badges = collections.Counter()
+        for key, records in unique_products.items():
+            seen = set()
+            for record in records:
+                seen.add(record["promo_type"])
+            ptype = sorted(seen - {"MISSING"})[0] if seen - {"MISSING"} else "MISSING"
+            info = next((r for r in records if r.get("promo_info")), records[0])
+            badge = set()
+            for row in records:
+                badge.update(row["badge"])
+                raw_info = row.get("promo_info") or {}
+                promo_badge = raw_info.get("promoBadge") or {}
+                if isinstance(promo_badge, dict):
+                    tag = promo_badge.get("accessibilityText")
+                    if tag:badge.add(str(tag))
+                    for x in strings_in(promo_badge):
+                        if PROMO_TEXT.search(x):badge.add(x)
+            has_old = any(len(r["thumbnail_prices"]) >= 2 and
+                max(r["thumbnail_prices"]) > (r["price"] or 0) for r in records)
+            has_badge = bool(badge)
+            has_percent = any(re.search(r"\\d+(?:\\.\\d+)?%\\s*off", b, re.I) for b in badge)
+            details[ptype]["count"] += 1
+            details[ptype]["old_price_in_thumbnail"] += int(has_old)
+            details[ptype]["promo_badge"] += int(has_badge)
+            details[ptype]["explicit_percent_badge"] += int(has_percent)
+            details[ptype]["with_item_promotion"] += int(any(r["native_type"]!="NONE" for r in records))
+            details[ptype]["with_item_level_promotion"] += int(any(bool(r.get("item_level_promotion")) for r in records))
+            details[ptype]["with_promo_uuid"] += int(any(bool((r.get("promo_info") or {}).get("promotionUUID")) for r in records))
+            if ptype!="MISSING":
+                for badge_text in sorted(badge):
+                    summary_badges[(ptype,badge_text)] += 1
+                if len(type_examples[ptype]) < 3:
+                    type_examples[ptype].append(dict(
+                        store=info["store"], title=info["title"], price=info["price"],
+                        prices=info["thumbnail_prices"], promo_uuid=info.get("promo_info",{}).get("promotionUUID"),
+                        badge=sorted(badge), item_promotion=info["native_value"],
+                        item_level=info.get("item_level_promotion"),
+                        purchase_info=info.get("purchase_info")))
+            by_category = [extract_promo_info(row.get("category") or "",row["title"],"")[0] for row in records]
+            legacy_bogo = any(re.match(r"買\\d+送\\d+", p) for p in by_category)
+            native_bogo = any(row["promo_type"] in ("BOGO", "BOGA", "MULTI_SKU_BXFY") and
+                row["native_type"]=="buyXGetYItemPromotion" for row in records)
+            if legacy_bogo and not native_bogo:
+                details["LEGACY_CATEGORY_PARSING"]["FALSE_BOGO_SKUS"] += 1
+                if len(mismatches)<12:
+                    mismatches.append(dict(store=info["store"],title=info["title"],sku=info["sku"],
+                        promo_type=ptype,legacy_categories=sorted(set(r["category"] for r in records)),
+                        badge=sorted(badge),price=info["price"],prices=info["thumbnail_prices"]))
+            if native_bogo and not legacy_bogo:
+                details["LEGACY_CATEGORY_PARSING"]["MISSED_BOGO_SKUS"] += 1
+        emit("AUDIT_UNIQUE_PROMO_TYPE_COVERAGE", {k:dict(v) for k,v in details.items()})
+        emit("AUDIT_REAL_PROMO_EXAMPLES_BY_TYPE", dict(type_examples))
+        emit("AUDIT_PROMO_BADGES_WITH_SOURCE", [
+            {"type":kind,"badge":label,"count":count} for (kind,label),count
+            in summary_badges.most_common(45)])
+        emit("AUDIT_LEGACY_BOGO_FALSE_POSITIVES", mismatches)
         emit("AUDIT_COMPLETE", True)
 
 if __name__=="__main__":
