@@ -7,7 +7,7 @@
 
 ## 2. 採集、保存與驗證
 - 排程每日台北時間 06:30、18:30（GitHub Actions 可能延遲）；人工可重跑。每批完整且驗證後才更新最新指標。
-- HF `FoodRadar/snapshots/<batch>` 存**未更動**的完整原始菜單、店家與 manifest；`FoodRadar/state/<batch>/serving-state.db.gz` 保存正規化持久狀態；HF Parquet 為分析衍生檔。
+- HF `FoodRadar/snapshots/<batch>` 的 `Json/` 是 **getStoreV1 轉換後的 Schema.org 菜單**，不是 API 原始回應。新批次另以同一壓縮包 `ApiRaw/` 完整封存 `getStoreV1` JSON 回應，兩者獨立，原有歷史資料重播只讀 `Json/`；舊批次未保存的原生欄位無法事後還原。`FoodRadar/state/<batch>/serving-state.db.gz` 保存正規化持久狀態；HF Parquet 為分析衍生檔。
 - **菜單存在與配送可用分離。** `menu_catalog_valid()` 接受有標價菜單（即使打烊或不能外送），保留商品供搜尋；`menu_price_observation_valid()` 另外依實際營業時段決定報價能否成為七日比較樣本，不因單純 `Delivery unavailable` 排除；`price_observation_valid()` 更嚴格，只判斷採集時是否確認可外送。三種狀態不可混用。
 - 同批同 SKU 跨菜單分類先合併優惠證據，避免把重複分類當不同商品或錯失買一送一。
 - ID：店家 UUID；商品鍵 `store_uuid + product_uuid`。資料庫保留最後已知的菜單報價（即使目前打烊／暫不可外送），並獨立保存經驗證可外送的價格事件；不以舊菜單報價推測可支付價格。
@@ -77,3 +77,12 @@ CI 驗證包含 `tests/test_price_comparison.py`、`tests/test_seven_day_deals.p
 - 店家明確營業且菜單真的缺少某商品時，正常累計下架觀測；打烊不刪歷史商品。
 - 不能將不同店家、不同 SKU 相互比較，不能只比菜單原價而忽略實質件數，不能將同一 SKU 同批跨分類重複計算；7 日內沒有先前報價者不宣稱降價。
 - `scripts/audit_deal_pipeline.py` 從產品 `menu_quote_history` 獨立重算，核對已發布的 `seven_day_*` 欄位，不一致必須擋下發布。
+
+
+## 原生促銷來源及未知分類（2026-10-29）
+
+- 網站商品卡片不展示 Uber 原始菜單分類文字（例如 Featured items、Offers、一般商品）；分類欄位仍用於查詢及稽核。真正可辨識的促銷標籤仍展示。
+- 優先使用商品級明確的原生結構化優惠類型（僅白名單確認的 BOGO、買 X 送 Y、第二件半價），其次才由菜單分類、商品名稱、描述文字推斷；同一 UUID 多分類去重時，結構化證據優先。
+- 未知促銷種類或僅有 Offers 等籠統標題時，**不擅自用半價計算**；新批次在 report 的 `promotion_source_audit` 留下分類、原始 API 相關欄位路徑及來源數量供後續規則擴充。
+- `ApiRaw/` 原始 API 回應與 `Json/` 派生菜單一同封存於批次 tar.gz，必須完整、檢核數量，兩者不得混入同一份價格重播輸入。完整原生 JSON 於新採集啟用後才會存在，不能把舊 Schema.org 快照冒稱 getStoreV1 原始回應。
+- 因 Uber Web API 可能改版，首次實際採集後須以 `promotion_source_audit.observed_native_promotion_field_paths` 檢查可用欄位，再擴充已證實的映射；不能假設所有優惠皆提供商品級固定欄位。
