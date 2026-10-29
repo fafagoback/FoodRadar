@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sys
+from pathlib import Path
 import tarfile
 import time
 from datetime import datetime, timedelta, timezone
@@ -47,6 +48,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--src-dir", required=True)
     parser.add_argument("--stores-file", required=True)
+    parser.add_argument("--api-raw-dir", default=None, help="Original getStoreV1 JSON responses")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--batch-id", required=True)
     parser.add_argument("--expected-workers", type=int, required=True)
@@ -101,7 +103,14 @@ def main() -> None:
     if not inactive_ok:
         fail(batch_id, f"全台網頁已失效店家比例達 {inactive_rate:.2f}% (超過 10% 門檻)", rows)
 
+    api_raw_files = sorted(Path(args.api_raw_dir).glob("*.json")) if args.api_raw_dir else []
+    for raw_path in api_raw_files:
+        with open(raw_path, encoding="utf-8") as source:
+            native_response = json.load(source)
+        if not isinstance(native_response, dict) or "data" not in native_response:
+            fail(batch_id, f"Invalid original API response: {raw_path.name}", rows)
     manifest = {
+        "api_raw_response_count": len(api_raw_files),
         "batch_id": batch_id,
         "source_run_id": os.environ.get("GITHUB_RUN_ID", "local"),
         "created_at": datetime.now(TW_TZ).isoformat(),
@@ -119,11 +128,14 @@ def main() -> None:
         tar.add(manifest_path, arcname="manifest.json")
         for path in valid_files:
             tar.add(path, arcname=archive_member(path, batch_id))
+        for raw_path in api_raw_files:
+            tar.add(raw_path, arcname="ApiRaw/" + raw_path.name)
 
     with tarfile.open(archive_path, "r:gz") as tar:
         members = tar.getmembers()
     archive_json_count = sum(1 for member in members if member.name.startswith("Json/") and member.name.endswith(".json"))
-    archive_ok = archive_json_count == expected
+    archive_api_count = sum(1 for member in members if member.name.startswith("ApiRaw/") and member.name.endswith(".json"))
+    archive_ok = archive_json_count == expected and archive_api_count == len(api_raw_files)
     digest = sha256_file(archive_path)
     size_mb = os.path.getsize(archive_path) / 1024 / 1024
     rows.append(f"| 壓縮檔回讀 | manifest + `{expected}` 個 JSON | `{archive_json_count}` 個 JSON，`{size_mb:.1f} MB` | {'✅' if archive_ok else '❌'} |")
