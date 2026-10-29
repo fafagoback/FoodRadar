@@ -193,6 +193,61 @@ jobs:
                   con.close()
           except Exception as e:emit('STATE_INSPECT_ERROR',str(e)[:400])
           PY
+      - name: Inspect actual native promotion metadata and UUID meaning
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os,json,tarfile,re,collections
+          from pathlib import Path
+          from huggingface_hub import hf_hub_download
+          dataset='hub-google/UberEat'
+          batch='20261029145834'
+          archive=hf_hub_download(dataset,f'FoodRadar/snapshots/{batch}/taiwan_menus_{batch}.tar.gz',repo_type='dataset',token=os.environ.get('HF_TOKEN'))
+          def is_target(s):
+              return '萊爾富' in str(s) and ('士銓' in str(s) or '3062' in str(s))
+          def summarize(value, depth=0):
+              if depth>2:return '<nested>'
+              if isinstance(value,dict):return {k:summarize(v,depth+1) for k,v in list(value.items())[:30]}
+              if isinstance(value,list):return [summarize(v,depth+1) for v in value[:3]]+(['...'] if len(value)>3 else [])
+              return value if isinstance(value,(int,float,bool,type(None))) or len(str(value))<130 else str(value)[:130]+'...'
+          with tarfile.open(archive,'r:gz') as tf:
+              for member in tf:
+                  if not member.isfile() or not member.name.startswith('ApiRaw/'):continue
+                  wrapper=json.load(tf.extractfile(member)); data=wrapper.get('data') or {}
+                  if not is_target(data.get('title')):continue
+                  print('NATIVE_TOP_KEYS='+json.dumps(sorted(data),ensure_ascii=False),flush=True)
+                  print('NATIVE_TOP_PROMO='+json.dumps({k:summarize(v) for k,v in data.items() if re.search('promo|discount|offer|deal|badge|campaign|marketing|saving',k,re.I)},ensure_ascii=False),flush=True)
+                  for group,sections in (data.get('catalogSectionsMap') or {}).items():
+                      for sec in sections if isinstance(sections,list) else []:
+                          payload=(sec.get('payload') or {}).get('standardItemsPayload') or {}
+                          section=payload.get('title') or {}
+                          name=section.get('text') if isinstance(section,dict) else section
+                          items=payload.get('catalogItems') or []
+                          if '買' in str(name) and '送' in str(name):
+                              print('NATIVE_PROMO_SECTION='+json.dumps({'name':name,'keys':sorted(sec),'payload_keys':sorted(sec.get('payload') or {}),'standard_keys':sorted(payload),'metadata':summarize({k:v for k,v in sec.items() if k!='payload'}),'items':len(items),'first_skus':[(i.get('title'),(i.get('promoInfo') or {}).get('promotionUUID')) for i in items[:15]]},ensure_ascii=False),flush=True)
+                          for item in items:
+                              if '波霸黑糖奶茶' in str(item.get('title') or ''):
+                                  print('NATIVE_TARGET_DEEP='+json.dumps({'section':name,'info':summarize(item)},ensure_ascii=False),flush=True)
+                  hits=[]
+                  keys=collections.Counter()
+                  def walk(node,path='',depth=0):
+                      if depth>24:return
+                      if isinstance(node,dict):
+                          for k,v in node.items():
+                              nextpath=path+'.'+k
+                              if re.search('promo|discount|offer|deal|campaign|bogo|eligib|saving',k,re.I):
+                                  keys[nextpath]+=1
+                              if k.lower()=='promotionuuid' and v:
+                                  hits.append({'path':nextpath,'uuid':v,'context':summarize(node)})
+                              if isinstance(v,(dict,list)):walk(v,nextpath,depth+1)
+                      elif isinstance(node,list):
+                          for e in node[:400]:walk(e,path+'[]',depth+1)
+                  walk(data)
+                  print('NATIVE_PROMO_FIELD_PATHS='+json.dumps(keys.most_common(80),ensure_ascii=False),flush=True)
+                  print('NATIVE_UUID_EVIDENCE='+json.dumps({'count':len(hits),'target':[h for h in hits if h['uuid']=='225b775d-558b-5648-b6e0-4b87ac575453'][:6],'other_uuids':list(dict.fromkeys(h['uuid'] for h in hits))[:30]},ensure_ascii=False),flush=True)
+                  break
+          PY
   audit-soymilk-raw:
     name: Inspect historical HF RAW for 世界豆漿大王 冰豆漿
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[audit-bingdoujiang]') }}
