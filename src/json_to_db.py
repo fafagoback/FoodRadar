@@ -624,6 +624,10 @@ class UberEatsDBImporter:
 
                                 desc = html.unescape(str(item.get("description", ""))).strip() if item.get("description") else None
                                 promo_type, qty = extract_promo_info(sec_name, pname, desc)
+                                source_promo = item.get("promotion_source") == "native_structured"
+                                if source_promo and item.get("promo_type"):
+                                    promo_type = str(item["promo_type"])
+                                    qty = max(1, int(item.get("quantity") or 1))
 
                                 generic_sections = {
                                     "精選商品", "熱門商品", "人氣精選", "熱門", "Best sellers",
@@ -634,10 +638,15 @@ class UberEatsDBImporter:
                                 if pid in store_products:
                                     old_p = store_products[pid]
                                     # 若新舊任一處具有促銷活動標記，保留促銷活動與數量
-                                    if promo_type != "無" and (old_p["promo_type"] == "無" or qty > old_p["quantity"]):
+                                    if promo_type != "無" and (
+                                        (source_promo and old_p.get("promotion_source") != "native_structured")
+                                        or (old_p.get("promotion_source") != "native_structured"
+                                            and (old_p["promo_type"] == "無" or qty > old_p["quantity"]))
+                                    ):
                                         old_p["promo_type"] = promo_type
                                         old_p["quantity"] = qty
                                         old_p["price"] = price_val
+                                        old_p["promotion_source"] = "native_structured" if source_promo else "text"
 
                                     # 若舊分類為通用推薦區塊，而新分類為具體類別，則更新為具體類別與描述
                                     if old_p["category_name"] in generic_sections and sec_name not in generic_sections and sec_name:
@@ -660,6 +669,7 @@ class UberEatsDBImporter:
                                         "description": desc,
                                         "promo_type": promo_type,
                                         "quantity": qty,
+                                        "promotion_source": "native_structured" if source_promo else "text",
                                         "is_open": is_open
                                     }
 
