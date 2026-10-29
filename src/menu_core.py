@@ -29,6 +29,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from snapshot_validation import validate_document
+from promotion_evidence import native_item_promo
 
 TW_TZ = timezone(timedelta(hours=8))
 
@@ -279,7 +280,7 @@ def convert_api_data_to_schema(api_data: dict, store_url: str, fallback_name: st
                     except (ValueError, TypeError):
                         price_num = 0.0
                         
-                    menu_items.append({
+                    converted_item = {
                         "@type": "MenuItem",
                         "identifier": it.get("uuid") or it.get("itemUuid") or it.get("id"),
                         "name": pname,
@@ -289,7 +290,12 @@ def convert_api_data_to_schema(api_data: dict, store_url: str, fallback_name: st
                             "price": f"{price_num:.2f}",
                             "priceCurrency": "TWD"
                         }
-                    })
+                    }
+                    native = native_item_promo(it)
+                    if native is not None:
+                        converted_item.update(promo_type=native[0], quantity=native[1],
+                                              promotion_source="native_structured")
+                    menu_items.append(converted_item)
                     
                 if menu_items or sec_title:
                     sections.append({
@@ -553,9 +559,16 @@ def fetch_single_store(store_item: dict, output_dir: str, time_prefix: str = "",
                         filename = f"{time_prefix}{store_id}_{safe_name}.json"
                         file_path = os.path.join(output_dir, filename)
                         
+                        # Keep the original getStoreV1 response separate from
+                        # Schema.org menus: consumers of Json/ remain compatible.
+                        raw_dir = os.path.join(os.path.dirname(os.path.abspath(output_dir)), "api_raw")
+                        os.makedirs(raw_dir, exist_ok=True)
+                        raw_path = os.path.join(raw_dir, filename)
+                        with open(raw_path, "w", encoding="utf-8") as raw_file:
+                            json.dump(res_json, raw_file, ensure_ascii=False, indent=2)
                         with open(file_path, "w", encoding="utf-8") as f:
                             json.dump(schema_doc, f, ensure_ascii=False, indent=2)
-                            
+
                         sections = schema_doc.get("hasMenu", {}).get("hasMenuSection", [])
                         total_items = sum(len(sec.get("hasMenuItem", [])) for sec in sections)
                         rating_val = schema_doc.get("aggregateRating", {}).get("ratingValue")
@@ -570,7 +583,8 @@ def fetch_single_store(store_item: dict, output_dir: str, time_prefix: str = "",
                             "rating": rating_val,
                             "review_count": rev_cnt,
                             "file_path": file_path,
-                            "filename": filename
+                            "filename": filename,
+                            "api_raw_path": raw_path
                         }
                 last_err = "API 回傳缺少店家資料"
             else:
