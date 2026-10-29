@@ -1,6 +1,10 @@
 """Native promotions, unknown categories, original response archival."""
 import sys
 import unittest
+import json
+import tarfile
+import tempfile
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +51,52 @@ class NativePromotionsTests(unittest.TestCase):
         self.assertNotIn("escapeHtml(item.category_name || '餐飲主食')", page)
         self.assertNotIn("escapeHtml(prod.category_name || '新上架')", page)
         self.assertNotIn("escapeHtml(p.category_name || '一般')", page)
+
+
+    def test_real_archive_keeps_api_response_separate_from_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            menu = root / "menus"
+            native = root / "api_raw"
+            output = root / "archive"
+            menu.mkdir()
+            native.mkdir()
+            batch = "20261029143000"
+            url = "https://www.ubereats.com/tw/store/sample/abc"
+            doc = {
+                "@type": "Restaurant", "@id": url, "name": "sample",
+                "menu_status": "present",
+                "hasMenu": {"hasMenuSection": [{
+                    "@type": "MenuSection", "name": "Buy 1, get 1 free",
+                    "hasMenuItem": [{
+                        "@type": "MenuItem", "name": "coffee",
+                        "offers": {"@type": "Offer", "price": "58.00"}}]}]}}
+            raw = {"status": "success", "data": {
+                "title": "sample", "catalogSectionsMap": {
+                    "DATA": [{"payload": {"standardItemsPayload": {
+                        "title": {"text": "Buy 1, get 1 free"},
+                        "catalogItems": [{"title": "coffee", "price": 5800}]}}}]}}}
+            filename = batch + "_sample.json"
+            (menu / filename).write_text(json.dumps(doc), encoding="utf-8")
+            (native / filename).write_text(json.dumps(raw), encoding="utf-8")
+            (root / "stores.json").write_text(
+                json.dumps([{"store_url": url}]), encoding="utf-8")
+            subprocess.run([
+                sys.executable, str(ROOT / "src/package_and_upload_menu_snapshot.py"),
+                "--src-dir", str(menu), "--api-raw-dir", str(native),
+                "--stores-file", str(root / "stores.json"),
+                "--output-dir", str(output), "--batch-id", batch,
+                "--expected-workers", "1", "--actual-workers", "1",
+                "--minimum-stores", "1", "--repo-id", "test/repo", "--offline"],
+                check=True, capture_output=True, text=True)
+            with tarfile.open(output / ("taiwan_menus_" + batch + ".tar.gz"), "r:gz") as archive:
+                names = archive.getnames()
+                schema_names = [n for n in names if n.startswith("Json/")]
+                native_names = [n for n in names if n.startswith("ApiRaw/")]
+                self.assertEqual(len(schema_names), 1)
+                self.assertEqual(len(native_names), 1)
+                self.assertEqual(json.load(archive.extractfile(native_names[0])), raw)
+                self.assertEqual(json.load(archive.extractfile(schema_names[0])), doc)
 
 
 if __name__ == "__main__":
