@@ -1148,7 +1148,7 @@ def export_all_static_snapshots(
                 member = tar.next()
                 if member is None:
                     break
-                if not member.name.endswith(".json") or member.name.endswith("manifest.json"):
+                if not member.name.endswith(".json") or member.name.endswith("manifest.json") or member.name.startswith("ApiRaw/"):
                     continue
                 f = tar.extractfile(member)
                 if not f: continue
