@@ -218,10 +218,34 @@ def build_snapshot(output, config):
             native_recognized += sum(
                 item.get("promotion_source") == "native_structured"
                 for item in sec.get("hasMenuItem") or [])
+    api_raw_files = sorted((output/'api_raw').glob('*.json'))
+    field_paths = Counter()
+    # A bounded sample of the *actual* API responses exposes new metadata
+    # paths without leaking raw values into public workflow logs.
+    def scan_native_keys(value, prefix="", depth=0):
+        if depth > 12:
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else key
+                if re.search(r"promo|offer|discount|benefit|reward|deal|bogo", key, re.I):
+                    field_paths[path] += 1
+                if isinstance(child, (dict, list)):
+                    scan_native_keys(child, path, depth + 1)
+        elif isinstance(value, list):
+            for child in value[:5]:
+                if isinstance(child, (dict, list)):
+                    scan_native_keys(child, prefix + "[]", depth + 1)
+    for raw_path in api_raw_files[:40]:
+        with raw_path.open(encoding="utf-8") as source:
+            raw_response = json.load(source)
+        scan_native_keys(raw_response.get("data") or {})
     report["promotion_source_audit"] = {
-        "api_raw_response_count": len(list((output/'api_raw').glob('*.json'))),
+        "api_raw_response_count": len(api_raw_files),
         "native_structured_item_occurrences": native_recognized,
         "unrecognized_promotion_sections": dict(unknown_sections.most_common(50)),
+        "sampled_api_responses": min(40, len(api_raw_files)),
+        "observed_native_promotion_field_paths": dict(field_paths.most_common(60)),
         "interpretation": "Unknown promotions are retained, not treated as BOGO."
     }
     print("PROMOTION_SOURCE_AUDIT=" + json.dumps(report["promotion_source_audit"], ensure_ascii=False), flush=True)
