@@ -20,7 +20,7 @@ permissions:
 jobs:
   publish-site:
     name: Publish website without waiting for crawler
-    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[audit-bingdoujiang]')
+    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -94,6 +94,105 @@ jobs:
                   raise SystemExit('Live Pages deployment was not verified')
               time.sleep(6)
           PY
+  audit-lairfu-raw:
+    name: Read-only HF investigation of 3062 士銓 波霸黑糖奶茶
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[audit-lairfu]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read-only HF snapshot reader
+        run: pip install 'huggingface_hub>=0.25,<1'
+      - name: Audit historical raw menu and latest native getStoreV1 evidence
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os,sys,re,json,tarfile,gzip,tempfile,sqlite3,shutil
+          from pathlib import Path
+          from huggingface_hub import HfApi,hf_hub_download
+          sys.path.insert(0,'src')
+          from json_to_db import extract_promo_info
+          repo='hub-google/UberEat'
+          api=HfApi(token=os.environ.get('HF_TOKEN'))
+          files=api.list_repo_files(repo_id=repo,repo_type='dataset')
+          manifests=sorted(p for p in files if p.startswith('FoodRadar/snapshots/') and p.endswith('/complete.json') and p.split('/')[2][:8]>='20261022')
+          print('SELECTED_ARCHIVES',len(manifests),[p.split('/')[2] for p in manifests],flush=True)
+          def match_store(s):
+              s=str(s or '')
+              return ('士銓' in s or '3062' in s) and '萊爾富' in s
+          def emit(name,obj):
+              print(name+'='+json.dumps(obj,ensure_ascii=False,default=str),flush=True)
+          for manifest in manifests:
+              meta=json.loads(Path(hf_hub_download(repo,manifest,repo_type='dataset')).read_text())
+              batch=meta['batch_id']
+              archive=hf_hub_download(repo,meta['archive_path'],repo_type='dataset')
+              found=0
+              with tarfile.open(archive,'r:gz') as tar:
+                  members=tar.getmembers()
+                  for member in members:
+                      if not(member.isfile() and member.name.startswith('Json/') and member.name.endswith('.json')):continue
+                      doc=json.load(tar.extractfile(member))
+                      if not match_store(doc.get('name')):continue
+                      matched=[]
+                      for sec in (doc.get('hasMenu') or {}).get('hasMenuSection') or []:
+                          category=str(sec.get('name') or '')
+                          for item in sec.get('hasMenuItem') or []:
+                              name=str(item.get('name') or '')
+                              if '波霸黑糖奶茶' not in name:continue
+                              promo,qty=extract_promo_info(category,name,str(item.get('description') or ''))
+                              promo=str(item.get('promo_type') or promo)
+                              qty=int(item.get('quantity') or qty)
+                              price=(item.get('offers') or {}).get('price')
+                              matched.append(dict(name=name,uuid=item.get('identifier'),section=category,
+                                 list_price=price,source=item.get('promotion_source'),
+                                 native_promo=item.get('promo_type'),promo=promo,qty=qty,
+                                 unit=round(float(price)/qty,2) if price and qty>0 else None))
+                      if matched:
+                          found+=1
+                          emit('TARGET_RAW',dict(batch=batch,store=doc.get('name'),store_uuid=doc.get('store_uuid'),
+                              time=doc.get('captured_at'),isOpen=doc.get('isOpen'),
+                              closedMessage=doc.get('closedMessage'),hasStorePromotion=doc.get('hasStorePromotion'),
+                              matches=matched))
+                  if batch.startswith('20261029'):
+                      for member in members:
+                          if not(member.isfile() and member.name.startswith('ApiRaw/') and member.name.endswith('.json')):continue
+                          wrapper=json.load(tar.extractfile(member))
+                          data=wrapper.get('data') or {}
+                          if not match_store(data.get('title')):continue
+                          occurrences=[]
+                          for group,secs in (data.get('catalogSectionsMap') or {}).items():
+                              for sec in secs if isinstance(secs,list) else []:
+                                  payload=(sec.get('payload') or {}).get('standardItemsPayload') or {}
+                                  label=payload.get('title') or {}
+                                  label=label.get('text') if isinstance(label,dict) else label
+                                  for item in payload.get('catalogItems') or []:
+                                      if '波霸黑糖奶茶' not in str(item.get('title') or ''):continue
+                                      occurrences.append(dict(group=group,section=label,title=item.get('title'),
+                                          uuid=item.get('uuid') or item.get('itemUuid'),price_cents=item.get('price'),
+                                          keys=sorted(item),promo_fields={k:v for k,v in item.items() if re.search('promo|offer|discount|benefit|reward|bogo|deal',k,re.I)}))
+                          emit('TARGET_NATIVE',dict(batch=batch,store=data.get('title'),
+                              store_promotion=data.get('hasStorePromotion'),occurrences=occurrences))
+              if not found:emit('TARGET_NOT_IN_BATCH',dict(batch=batch))
+          try:
+              manifest=json.loads(Path(hf_hub_download(repo,'FoodRadar/state/latest.json',repo_type='dataset')).read_text())
+              archived_state=hf_hub_download(repo,manifest['state_path'],repo_type='dataset')
+              with tempfile.TemporaryDirectory() as folder:
+                  db=Path(folder)/'state.db'
+                  with gzip.open(archived_state,'rb') as src,db.open('wb') as dst:shutil.copyfileobj(src,dst)
+                  con=sqlite3.connect(db)
+                  con.row_factory=sqlite3.Row
+                  rows=con.execute("SELECT s.name AS store,p.product_name,p.product_uuid,p.price,p.menu_quote_price,p.promo_type,p.menu_quote_promo_type,p.quantity,p.menu_quote_quantity,p.menu_quote_history FROM products p JOIN stores s USING(store_uuid) WHERE p.product_name LIKE '%波霸黑糖奶茶%' AND (s.name LIKE '%士銓%' OR s.name LIKE '%3062%')").fetchall()
+                  for row in rows:
+                      item=dict(row)
+                      item['menu_quote_history']=json.loads(item.get('menu_quote_history') or '[]')
+                      emit('TARGET_HF_DB',dict(state_batch=manifest.get('batch_id'),**item))
+                  con.close()
+          except Exception as e:emit('STATE_INSPECT_ERROR',str(e)[:400])
+          PY
   audit-soymilk-raw:
     name: Inspect historical HF RAW for 世界豆漿大王 冰豆漿
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[audit-bingdoujiang]') }}
@@ -127,7 +226,7 @@ jobs:
         run: python scripts/should_crawl_backup.py
   crawl:
     needs: [schedule-recovery]
-    if: ${{ always() && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
+    if: ${{ always() && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]') && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
     # Limit only the database publisher. Browser QA must not monopolize the
     # release lock or block deployment of a newer commit.
     concurrency:
