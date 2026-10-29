@@ -276,6 +276,10 @@ jobs:
                 if ip:count+=1
             break
           PY
+      - name: Audit ALL current native Uber menu promotions (read only)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/audit_native_promotions_all.py
   audit-soymilk-raw:
     name: Inspect historical HF RAW for 世界豆漿大王 冰豆漿
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[audit-bingdoujiang]') }}
