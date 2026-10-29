@@ -203,6 +203,28 @@ def build_snapshot(output, config):
     report_path = output / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["price_observation_audit"] = audit
+    # Preserve new/unknown category names for maintainers; no unknown
+    # category may silently trigger a guessed BOGO unit-price reduction.
+    import re
+    from json_to_db import extract_promo_info
+    unknown_sections = Counter()
+    native_recognized = 0
+    for doc in documents:
+        for sec in (doc.get("hasMenu") or {}).get("hasMenuSection") or []:
+            section = str(sec.get("name") or "").strip()
+            if (section and re.search(r"優惠|特惠|促銷|折扣|限時|買.*送|offer|deal|promotion|sale|bonus|free", section, re.I)
+                    and extract_promo_info(section, "", "")[0] == "無"):
+                unknown_sections[section] += 1
+            native_recognized += sum(
+                item.get("promotion_source") == "native_structured"
+                for item in sec.get("hasMenuItem") or [])
+    report["promotion_source_audit"] = {
+        "api_raw_response_count": len(list((output/'api_raw').glob('*.json'))),
+        "native_structured_item_occurrences": native_recognized,
+        "unrecognized_promotion_sections": dict(unknown_sections.most_common(50)),
+        "interpretation": "Unknown promotions are retained, not treated as BOGO."
+    }
+    print("PROMOTION_SOURCE_AUDIT=" + json.dumps(report["promotion_source_audit"], ensure_ascii=False), flush=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     # Recompute legacy promotion/discount baselines before building the
     # published web DB and the persisted HF normalized checkpoint.
@@ -216,6 +238,7 @@ def build_snapshot(output, config):
                     str(serving),str(output/'packed-serving.db')],check=True)
     subprocess.run([sys.executable, str(ROOT/'src/package_and_upload_menu_snapshot.py'),
                     '--src-dir', str(output/'menus'), '--stores-file', str(output/'stores.json'),
+                    '--api-raw-dir', str(output/'api_raw'),
                     '--output-dir', str(output/'archive'), '--batch-id', batch,
                     '--expected-workers', '1', '--actual-workers', '1', '--minimum-stores', '1',
                     '--repo-id', config['hf_repo_id'], '--offline'], check=True)
