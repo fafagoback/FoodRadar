@@ -610,9 +610,6 @@ function renderDiscounts() {
           <div class="flex items-start justify-between gap-2 mb-2">
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-1.5 flex-wrap">
-                <span class="inline-block text-xs font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 truncate max-w-full">
-                  ${escapeHtml(item.category_name || '餐飲主食')}
-                </span>
                 ${distanceBadge(item)}
               </div>
               <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 truncate mt-1 flex items-center gap-1.5" title="${escapeHtml(item.store_name)}">
@@ -934,9 +931,6 @@ function renderNewProducts() {
         <div>
           <div class="flex items-center justify-between gap-2 mb-2">
             <div class="flex items-center gap-1.5 flex-wrap">
-              <span class="inline-block text-xs font-semibold px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300">
-                ${escapeHtml(prod.category_name || '新上架')}
-              </span>
               ${hasPromo ? `
                 <span class="inline-flex items-center gap-0.5 text-[11px] font-bold px-1.5 py-0.5 rounded-md bg-purple-50 text-purple-700 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
                   <i data-lucide="gift" class="w-3 h-3"></i>${escapeHtml(prod.promo_type)}
@@ -1270,7 +1264,7 @@ function renderPromotions() {
               <i data-lucide="gift" class="w-3 h-3"></i>
               ${escapeHtml(isPlatformPromotion(p) ? (p.promo_type && p.promo_type !== '無' ? p.promo_type : '多件優惠') : `FoodRadar 實質降價 ${Number(p.discount_pct).toFixed(1)}%`)}
             </span>
-            ${isVerifiedPriceDeal(p) && isPlatformPromotion(p) ? `<span class="text-[11px] font-bold text-rose-600">另有實質降價 ${Number(p.discount_pct).toFixed(1)}%</span>` : '<span class="text-xs text-slate-400 truncate max-w-[120px]">' + escapeHtml(p.category_name || '') + '</span>'}
+            ${isVerifiedPriceDeal(p) && isPlatformPromotion(p) ? `<span class="text-[11px] font-bold text-rose-600">另有實質降價 ${Number(p.discount_pct).toFixed(1)}%</span>` : '<span class="text-xs text-slate-400 truncate max-w-[120px]">' + '' + '</span>'}
           </div>
 
           <div class="flex items-center justify-between gap-1 mb-1">
@@ -1715,9 +1709,6 @@ function renderGlobalProducts() {
                 ${escapeHtml(discountLabel)}
               </span>
             ` : ''}
-            <span class="inline-block text-[11px] px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
-              ${escapeHtml(p.category_name || '一般')}
-            </span>
             ${p.city ? `
               <span class="inline-block text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
                 ${escapeHtml(p.city)}
