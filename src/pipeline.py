@@ -265,13 +265,8 @@ def build_snapshot(output, config):
     }
     print("PROMOTION_SOURCE_AUDIT=" + json.dumps(report["promotion_source_audit"], ensure_ascii=False), flush=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    # Recompute legacy promotion/discount baselines before building the
-    # published web DB and the persisted HF normalized checkpoint.
-    sys.path.insert(0, str(ROOT/'scripts'))
-    # V2 never recomputes native prices from legacy promo text.
-    repair(serving)
-
-    # Old text-only HF histories are explicitly excluded from V2 baselines.
+    # V2 no longer runs legacy heuristic repair / archive restoration.
+    # Historical quotes are reconstructed exclusively from native ApiRaw evidence.
     print(f"VALID_OPEN_STORES={counts['stores']} RAW_ONLY_CLOSED_STORES={counts['skipped_closed_stores']}", flush=True)
     subprocess.run([sys.executable,str(ROOT/'scripts/build_web_db.py'),
                     str(serving),str(output/'packed-serving.db')],check=True)
