@@ -9,7 +9,7 @@ sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
 
 from price_observation import price_observation_valid, menu_catalog_valid
-from serving_state import apply_snapshot
+from test_packed_updates import apply_snapshot
 from test_packed_updates import document
 
 SID='ffffffff-ffff-4fff-8fff-ffffffffffff'
