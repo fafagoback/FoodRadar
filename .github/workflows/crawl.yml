@@ -4,6 +4,10 @@ on:
     branches: [main]
     paths:
       - 'scripts/prototype_pack_db.py'
+      - 'src/crawl.py'
+      - 'src/feed_core.py'
+      - 'src/raw_capture.py'
+      - 'src/pipeline.py'
       - 'scripts/publish_turso_delta.py'
       - '.github/workflows/crawl.yml'
   schedule:
@@ -80,14 +84,14 @@ jobs:
             exit 1
           fi
 
-      - name: 抓取 Uber Eats 並保存原生 JSON 至 HF
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') }}
+      - name: 封存未修改的 Feed / Store 原始 HTTP 回應至 HF FoodRadar/Raw
+        if: >-
+          ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture')) }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
 
-      - name: 由最新 HF 原始資料建立 V2 發布資料
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl') }}
+      - name: 只從 HF FoodRadar/Raw 讀取新資料並轉換為 DB（相容舊批次）
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}

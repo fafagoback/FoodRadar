@@ -51,6 +51,11 @@ def restore_history(config, rebuild_all=False):
     api=HfApi(token=os.environ.get('HF_TOKEN'))
     files=api.list_repo_files(repo_id=config['hf_repo_id'],repo_type='dataset')
     manifests=sorted(p for p in files if p.startswith(f'{folder}/snapshots/') and p.endswith('/complete.json'))
+    # The new immutable HTTP bodies are the ONLY source for new batches.
+    raw_manifests=sorted(p for p in files if p.startswith(f'{folder}/Raw/')
+                         and p.endswith('/manifest.json'))
+    all_manifests=sorted(manifests + raw_manifests,
+                         key=lambda p: p.split('/')[-2])
     previous=ROOT/'data/latest.txt'
     local_batch=previous.read_text(encoding='utf-8').strip() if previous.exists() else ''
     conn=None
@@ -76,15 +81,17 @@ def restore_history(config, rebuild_all=False):
         previous.write_text(local_batch,encoding='utf-8')
     try:
         replay_count = 0
-        print(f'V2_HF_REPLAY_START archives={len(manifests)} full_rebuild={int(bool(rebuild_all))}',flush=True)
-        for manifest_path in manifests:
+        print(f'HF_REPLAY_START legacy={len(manifests)} immutable_raw={len(raw_manifests)} full_rebuild={int(bool(rebuild_all))}',flush=True)
+        for manifest_path in all_manifests:
             meta=json.loads(Path(hf_hub_download(config['hf_repo_id'],manifest_path,repo_type='dataset')).read_text(encoding='utf-8'))
             batch=meta['batch_id']
             if not meta.get('complete') or not (len(batch)==14 and batch.isdigit()) or batch<=local_batch:
                 continue
+            new_raw = manifest_path in raw_manifests
             archive_path=hf_hub_download(config['hf_repo_id'],meta['archive_path'],repo_type='dataset')
-            if hashlib.sha256(Path(archive_path).read_bytes()).hexdigest()!=meta['sha256']:
-                raise ValueError('HF snapshot checksum mismatch')
+            expected_hash = meta['archive_sha256'] if new_raw else meta['sha256']
+            if hashlib.sha256(Path(archive_path).read_bytes()).hexdigest()!=expected_hash:
+                raise ValueError('HF original response archive checksum mismatch')
             target=ROOT/'data'/batch
             target.mkdir(parents=True,exist_ok=True)
             if conn is None:
@@ -95,15 +102,23 @@ def restore_history(config, rebuild_all=False):
                     prior.backup(conn)
                     prior.close()
             with tarfile.open(archive_path,'r:gz') as tar:
-                from archive_pairing import archived_documents_with_native
-                members = {m.name: m for m in tar.getmembers()
-                           if m.isfile() and m.name.endswith('.json')}
-                docs, pairing_audit = archived_documents_with_native(
-                    tar, members, batch, meta)
-                if pairing_audit["raw_files"]:
-                    print("V2_RAW_PAIRING="+json.dumps(pairing_audit),flush=True)
-            if len(docs)!=meta['store_count']:
-                raise ValueError('HF store count mismatch')
+                if new_raw:
+                    from raw_capture import documents_from_hf_raw
+                    docs = documents_from_hf_raw(tar, meta)
+                    print('HF_RAW_TO_DB='+json.dumps({
+                        'batch':batch,'stores':len(docs),
+                        'source':meta['archive_path']},ensure_ascii=False),flush=True)
+                else:
+                    from archive_pairing import archived_documents_with_native
+                    members = {m.name: m for m in tar.getmembers()
+                               if m.isfile() and m.name.endswith('.json')}
+                    docs, pairing_audit = archived_documents_with_native(
+                        tar, members, batch, meta)
+                    if pairing_audit["raw_files"]:
+                        print("V2_RAW_PAIRING="+json.dumps(pairing_audit),flush=True)
+            expected_stores = len(meta['stores']) if new_raw else meta['store_count']
+            if len(docs)!=expected_stores:
+                raise ValueError('HF raw-to-DB store count mismatch')
             apply_snapshot(conn,docs,batch)
             from verified_weekly import update_verified_weekly
             weekly = update_verified_weekly(conn, batch)
@@ -112,14 +127,14 @@ def restore_history(config, rebuild_all=False):
                 'SELECT promotion_type, COUNT(*) FROM product_price_observations '
                 'GROUP BY promotion_type').fetchall())
             print('V2_HF_REPLAY_PROGRESS='+json.dumps({
-                'completed':replay_count,'total':len(manifests),
+                'completed':replay_count,'total':len(all_manifests),
                 'batch':batch,'stores':len(docs),
                 'verified_price_types':counts_by_kind,
                 'weekly_comparisons':weekly['qualified_comparisons'],
                 'weekly_deals':weekly['deals'],
             },ensure_ascii=False),flush=True)
             if rebuild_all:
-                verified_manifest_paths.append(manifest_path + ':' + meta['sha256'])
+                verified_manifest_paths.append(manifest_path + ':' + expected_hash)
             if not rebuild_all:
                 saved=sqlite3.connect(target/'serving.db')
                 conn.backup(saved)
@@ -140,7 +155,7 @@ def restore_history(config, rebuild_all=False):
             # after each complete Raw archive passed SHA256 and store-count
             # verification. The publisher may accept a deliberate catalogue
             # shrink only with this evidence, never with an arbitrary flag.
-            if len(verified_manifest_paths) != len(manifests):
+            if len(verified_manifest_paths) != len(all_manifests):
                 raise ValueError('Incomplete HF Raw replay: cannot authorize replacement')
             evidence = {
                 'format': 'foodradar-full-raw-replay-v2',
@@ -156,7 +171,7 @@ def restore_history(config, rebuild_all=False):
             }
             (target/'verified-rebuild.json').write_text(
                 json.dumps(evidence,indent=2),encoding='utf-8')
-            print(f'REBUILT_VALID_PRICE_HISTORY batch={local_batch} snapshots={len(manifests)}',flush=True)
+            print(f'REBUILT_VALID_PRICE_HISTORY batch={local_batch} snapshots={len(all_manifests)}',flush=True)
         # V2 price and discount history is reconstructed from ApiRaw exclusively.
         # Never download obsolete Parquet pricing history; those inferred values
         # are no longer consumed and only slow down full HF reconstruction.
