@@ -130,7 +130,8 @@ jobs:
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.FOODRADAR_TURSO_WRITE_TOKEN }}
-          FOODRADAR_FULL_REBUILD: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'fix(raw): reset dirty Turso from clean HF Raw')) && '1' || '0' }}
+          FOODRADAR_FULL_REBUILD: >-
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'fix(raw): reset dirty Turso from clean HF Raw')) && '1' || '0' }}
         run: |
           BATCH=$(cat data/latest.txt)
           python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
