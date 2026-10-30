@@ -112,12 +112,10 @@ class PriceValidityTests(unittest.TestCase):
             ('20261027235841',True,True)]:
             apply_snapshot(self.conn,[yuchi(batch,promo,open_hour,'09:30')],batch)
         p=self.conn.execute("SELECT menu_quote_price,menu_quote_effective_price,menu_quote_history FROM products").fetchone()
-        self.assertEqual((p[0],p[1]),(55,27.5))
-        self.assertEqual([point[1] for point in json.loads(p[2])],[27.5,27.5,27.5])
-        self.assertEqual(
-            [(point[2], point[3], point[4]) for point in json.loads(p[2])],
-            [(55, '買1送1', 2)] * 3,
-        )
+        # All captures were marked delivery unavailable. The menu may
+        # remain readable but cannot be certified as payable at that time.
+        self.assertEqual((p[0],p[1]),(55,None))
+        self.assertEqual(json.loads(p[2]),[])
 
     def test_conflicting_isopen_and_missing_hours_are_rejected(self):
         doc=menu('20261014014059',300)
@@ -143,7 +141,7 @@ class PriceValidityTests(unittest.TestCase):
         counts = apply_snapshot(self.conn, [doc], '20261023091759', baseline=False)
         self.assertEqual((counts['stores'], counts['products']), (1, 1))
         row = self.conn.execute('SELECT price,menu_quote_price,menu_quote_effective_price,delivery_available FROM products').fetchone()
-        self.assertEqual(tuple(row), (0, 120, 120, 0))
+        self.assertEqual(tuple(row), (0, 120, None, 0))
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0], 1)
         event = self.conn.execute("SELECT new_state FROM events WHERE event_type='NEW'").fetchone()
         self.assertFalse(json.loads(event[0])['price_valid'])
