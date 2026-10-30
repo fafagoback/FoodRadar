@@ -31,7 +31,9 @@ class NativePromotionsTests(unittest.TestCase):
 
     def test_converter_preserves_native_explicit_promotion(self):
         item = {"uuid": "product-1", "title": "test", "price": 5800,
-                "promotionInfo": {"promotionType": "BOGO"}}
+                "catalogItemAnalyticsData": {"promoType": "BOGO"},
+                "itemPromotion": {"type": "buyXGetYItemPromotion",
+                    "buyXGetYItemPromotion": {"buyQuantity": 1, "getQuantity": 1}}}
         api = {"title": "Shop", "isOpen": True, "catalogSectionsMap": {
             "MAIN": [{"payload": {"standardItemsPayload": {
                 "title": {"text": "一般商品"}, "catalogItems": [item]}}}]
@@ -39,8 +41,9 @@ class NativePromotionsTests(unittest.TestCase):
         doc = convert_api_data_to_schema(api, "https://www.ubereats.com/tw/store/test/abc")
         converted = doc["hasMenu"]["hasMenuSection"][0]["hasMenuItem"][0]
         self.assertEqual(converted["offers"]["price"], "58.00")
-        self.assertEqual((converted["promo_type"], converted["quantity"]), ("買1送1", 2))
-        self.assertEqual(converted["promotion_source"], "native_structured")
+        self.assertEqual(converted["verified_price"]["kind"], "SAME_SKU_BXGY")
+        self.assertEqual(converted["verified_price"]["received_quantity"], 2)
+        self.assertEqual(converted["verified_price"]["payable_total_cents"], 5800)
 
     def test_raw_archival_and_category_badge_removed(self):
         crawler = (ROOT / "src/menu_core.py").read_text(encoding="utf-8")
