@@ -34,10 +34,10 @@
   </script>
 
   <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script defer src="https://unpkg.com/lucide@latest"></script>
 
   <!-- Chart.js CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <!-- 網站圖示 Favicon 與 Apple Touch Icon -->
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -48,7 +48,7 @@
   <!-- 動態時間戳記防快取載入器 (CSS & Config & Favicon) -->
   <script>
     (function() {
-      window.__APP_LOAD_TIME__ = Date.now();
+      window.__APP_LOAD_TIME__ = '__FOODRADAR_RELEASE__';
 
       // 動態更新 Favicon 防止快取地球圖示
       const iconLink = document.createElement('link');
@@ -650,13 +650,6 @@
         navigator.serviceWorker.getRegistrations().then(function(registrations) {
           for (var i = 0; i < registrations.length; i++) {
             registrations[i].unregister();
-          }
-        }).catch(function() {});
-      }
-      if ('caches' in window) {
-        caches.keys().then(function(names) {
-          for (var i = 0; i < names.length; i++) {
-            caches.delete(names[i]);
           }
         }).catch(function() {});
       }
