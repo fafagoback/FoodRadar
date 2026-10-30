@@ -164,7 +164,7 @@ class PackedUpdateTests(unittest.TestCase):
             with contextlib.closing(sqlite3.connect(file)) as verify:
                 p=verify.execute("SELECT menu_quote_price,delivery_available,seven_day_reference_price,seven_day_discount_pct,seven_day_is_price_deal,menu_quote_history FROM products").fetchone()
                 self.assertEqual(tuple(p[:5]),(50,0,None,0,0))
-                self.assertEqual(len(json.loads(p[5])),2)
+                self.assertEqual(len(json.loads(p[5])),0)  # Delivery unavailable: no payable-price history.
             build_web_db(file, Path(tmp)/'packed.db')
             with contextlib.closing(sqlite3.connect(Path(tmp)/'packed.db')) as packed:
                 meta={k:json.loads(v) for k,v in packed.execute('SELECT key,value FROM metadata')}
