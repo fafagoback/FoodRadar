@@ -70,7 +70,7 @@ class ArchiveQuotePriceTests(unittest.TestCase):
         duplicate=copy.deepcopy(original)
         duplicate['name']='買1送1'
         one['hasMenu']['hasMenuSection']=[original,duplicate]
-        self.assertEqual(canonical_menu_quotes(one,SID)[PID],50)
+        self.assertEqual(canonical_menu_quotes(one,SID)[PID],100)  # No native BOGO evidence
         two=copy.deepcopy(one)
         apply_archival_quote_references(self.conn,'20261027091759',[
             ('20261021091759',[one]),('20261023091759',[two])
