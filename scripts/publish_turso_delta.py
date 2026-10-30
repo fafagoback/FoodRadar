@@ -161,7 +161,13 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None, reset
         tables = {r['name'] for r in remote.query("SELECT name FROM sqlite_master WHERE type='table'")}
         old_meta = {r['key']: r['value'] for r in remote.query('SELECT key,value FROM metadata')} if 'metadata' in tables else {}
         if tables and json.loads(old_meta.get('application', 'null')) != 'FoodRadar':
-            raise ValueError('Refusing an existing database owned by another application')
+            # Diagnostics are deliberately read-only and contain no URLs/tokens.
+            # Never disable the ownership check to force a database update.
+            safe_keys = ('application', 'definition_version', 'schema_version', 'latest_batch')
+            diagnostics = {k: old_meta.get(k) for k in safe_keys}
+            raise ValueError('Refusing an existing database owned by another application: '
+                             + json.dumps({'tables': sorted(tables),
+                                           'metadata': diagnostics}, ensure_ascii=False))
         trusted_rebuild = verified_rebuild_evidence(
             verified_rebuild_manifest, local_meta, old_meta)
         if old_meta and old_meta.get('schema_version') != local_meta['schema_version']:
