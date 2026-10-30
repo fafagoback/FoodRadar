@@ -613,6 +613,7 @@ async function cachedCount(where, table) {
   const promise=sql(`SELECT count(*) AS total FROM ${table} WHERE ${where}`)
     .then(rows=>Number(rows[0]?.total||0));
   totalResultsCache.set(key,promise);
+  if (totalResultsCache.size>100) totalResultsCache.delete(totalResultsCache.keys().next().value);
   try { return await promise; } catch(e) {totalResultsCache.delete(key);throw e;}
 }
 export async function hasWebIndex() {
@@ -633,6 +634,7 @@ export async function searchProductsPage({
   const conditions=[...keywordClauses(keyword),locationSql(location)];
   if (city && city !== '全部') conditions.push(`instr(coalesce(city,''),'${escapeSqlText(city)}')>0`);
   if (category && category !== '全部') conditions.push(`instr(coalesce(category,''),'${escapeSqlText(category)}')>0`);
+  if (kind==='global' && sort==='promo_only') conditions.push('promo=1');
   if (kind==='discounts') {
     conditions.push('price_drop=1',`discount_pct>=${Number(minDiscount)||0}`,`savings>=${Number(minSavings)||0}`);
   } else if (kind==='newProducts') conditions.push('new_item=1');
@@ -641,7 +643,7 @@ export async function searchProductsPage({
     if (promoType==='平台優惠') conditions.push('platform_promo=1');
     else if (promoType==='實質降價30') conditions.push('price_drop=1','discount_pct>=30');
     else if (promoType==='買一送一') conditions.push('platform_promo=1',"json_extract(card,'$.promo_type') LIKE '買%送%'");
-    else if (promoType==='折') conditions.push('platform_promo=1',"instr(card,'直接折價')>0");
+    else if (promoType==='折') conditions.push('platform_promo=1',"json_extract(card,'$.promo_type')='直接折價'");
     else if (['半價','加1元','多入'].includes(promoType)) conditions.push('0=1');
   }
   const order = ({
@@ -650,7 +652,7 @@ export async function searchProductsPage({
     price_asc:'unit_price ASC,rating DESC',
     price_desc:'unit_price DESC,rating DESC',
     rating_desc:'rating DESC,unit_price ASC',
-    name_asc:'product_uuid ASC',
+    name_asc:"json_extract(card,'$.product_name') COLLATE NOCASE ASC",
     promo_first:'promo DESC,rating DESC'
   })[sort] || (kind==='discounts'?'discount_pct DESC,savings DESC':
     kind==='promos'?'unit_price ASC':kind==='newProducts'?'new_item DESC,rating DESC':'rating DESC,unit_price ASC');
@@ -681,19 +683,19 @@ export async function searchStoresPage({page=1,pageSize=50,keyword='',city='',ne
     clauses.push(`substr(first_seen,1,10)>substr('${escapeSqlText(meta.baseline_processed_at||'')}',1,10)`);
   }
   const where=clauses.join(' AND ');
-  const order=({rating_desc:'rating DESC,review_count DESC',reviews_desc:'review_count DESC,rating DESC',name_asc:'name ASC',items_desc:'rating DESC'})[sort]||'rating DESC,review_count DESC';
+  const order=({rating_desc:'rating DESC,review_count DESC',reviews_desc:'review_count DESC,rating DESC',name_asc:'name ASC',items_desc:'(SELECT count(*) FROM web_products WHERE web_products.store_uuid=store_directory.store_uuid) DESC'})[sort]||'rating DESC,review_count DESC';
   const size=Math.min(50,Math.max(1,Math.floor(Number(pageSize)||50)));
   const pageNo=Math.max(1,Math.floor(Number(page)||1));
   return cachedPage(JSON.stringify(['stores',where,order,pageNo,size]),async()=>{
     const [rows,total]=await Promise.all([
-      sql(`SELECT * FROM store_directory WHERE ${where} ORDER BY ${order},store_uuid LIMIT ${size} OFFSET ${(pageNo-1)*size}`),
+      sql(`SELECT store_directory.*, (SELECT count(*) FROM web_products WHERE web_products.store_uuid=store_directory.store_uuid) AS total_menu_items FROM store_directory WHERE ${where} ORDER BY ${order},store_uuid LIMIT ${size} OFFSET ${(pageNo-1)*size}`),
       cachedCount(where,'store_directory')
     ]);
     return {total,rows:rows.map(r=>({
       store_id:Number(r.store_id),store_uuid:r.store_uuid,store_name:r.name,name:r.name,
       city:r.city,locality:r.locality,rating_value:r.rating===null?null:Number(r.rating),
       rating:r.rating===null?null:Number(r.rating),review_count:Number(r.review_count||0),
-      total_menu_items:menuCount(r.store_id),latitude:Number(r.latitude),longitude:Number(r.longitude),
+      total_menu_items:Number(r.total_menu_items || 0),latitude:Number(r.latitude),longitude:Number(r.longitude),
       street_address:r.address,address:r.address,order_action_url:r.order_url,
       first_seen:r.first_seen,last_seen:r.last_seen,
       distance_km:location?.enabled?distanceKm(Number(location.latitude),Number(location.longitude),Number(r.latitude),Number(r.longitude)):null
