@@ -56,6 +56,13 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      # 防止未受保護的 main 變更在排程中寫壞正式資料庫。
+      - name: 更新資料前再次執行核心程式回歸測試
+        run: |
+          python -m unittest discover -s tests -v
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/data-contract.js
 
       - name: 禁止未確認的正式資料庫重建
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild' }}
