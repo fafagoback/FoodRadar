@@ -24,8 +24,8 @@ TW = timezone(timedelta(hours=8))
 
 
 def capture_response(directory: Path, filename: str, response) -> str:
-    directory.mkdir(parents=True, exist_ok=True)
     path = directory / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         raise FileExistsError(f"Refusing to replace captured response: {path}")
     path.write_bytes(response.content)
