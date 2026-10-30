@@ -42,7 +42,7 @@ class SevenDayDealTests(unittest.TestCase):
                 from audit_deal_pipeline import report
                 audit=report(db)
                 self.assertEqual(audit['certified_7day_30pct_deals'],1)
-                self.assertEqual(audit['seven_day_discrepancies'],[])
+                self.assertEqual(audit['errors'],[])
                 # This sale is old: the conventional last-crawl comparator
                 # is flat, but the new week-high comparator stays 50% down.
                 self.assertEqual(row['discount_pct'],0)
@@ -53,7 +53,8 @@ class SevenDayDealTests(unittest.TestCase):
                 self.assertEqual(row['seven_day_discount_pct'],0)
                 self.assertEqual(row['seven_day_is_price_deal'],0)
                 audit=report(db)
-                self.assertEqual(audit['comparisons'].get('raw_menu_discounts_30pct',0),0)
+                self.assertEqual(audit['certified_7day_30pct_deals'],0)
+                self.assertEqual(audit['errors'],[])
                 # A deliberate corrupt publisher value must STOP deployment.
                 conn.execute('UPDATE products SET seven_day_discount_pct=50,seven_day_is_price_deal=1')
                 conn.commit()
