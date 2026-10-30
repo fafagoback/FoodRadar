@@ -91,32 +91,30 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(self.observe(f'202601{day:02d}063000',opened=opened,present=False)['missing_streak'],0)
         apply_snapshot(self.conn,[],'20260104063000')
         self.assertEqual(self.conn.execute('SELECT missing_streak FROM products').fetchone()[0],0)
-    def test_permanent_checkpoint_restores_without_raw(self):
-        self.observe('20260101063000')
-        for day in (2,3,4):
-            self.observe(f'202601{day:02d}063000',present=False)
+    def test_old_checkpoint_cannot_restore_after_raw_only_cutover(self):
+        # The previous behaviour was the bug: old HF state could silently
+        # repopulate a user-cleared Turso. Only FoodRadar/Raw is accepted now.
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp)
-            database=root/'original.db'
-            with contextlib.closing(sqlite3.connect(database)) as dest:
-                self.conn.backup(dest)
-            packed=root/'state.gz'
-            packed.write_bytes(gzip.compress(database.read_bytes()))
-            pointer=root/'pointer.json'
-            pointer.write_text(json.dumps({'schema_version':2,'batch_id':'20260104063000','state_path':'FoodRadar/state/state.gz','sha256':hashlib.sha256(packed.read_bytes()).hexdigest()}))
-            paths={'FoodRadar/state/latest.json':pointer,'FoodRadar/state/state.gz':packed}
-            with patch.object(pipeline,'ROOT',root),patch('huggingface_hub.HfApi') as api,patch('huggingface_hub.hf_hub_download',side_effect=lambda repo,path,**kwargs:str(paths[path])):
-                api.return_value.list_repo_files.return_value=list(paths)
-                pipeline.restore_history({'hf_folder':'FoodRadar','hf_repo_id':'test/repo'})
-            with contextlib.closing(sqlite3.connect(root/'data/20260104063000/serving.db')) as restored:
-                restored.row_factory=sqlite3.Row
-                row=dict(restored.execute('SELECT * FROM products').fetchone())
-                self.assertEqual(row['status'],'inactive')
-                self.assertEqual(row['first_seen'],row['listing_started_at'])
-                doc=document(SID,[PID])
-                apply_snapshot(restored,[doc],'20260302063000')
-                row=dict(restored.execute('SELECT * FROM products').fetchone())
-                self.assertEqual(row['first_seen'],'2026-01-01T06:30:00+08:00')
-                self.assertEqual(row['listing_started_at'],'2026-03-02T06:30:00+08:00')
+            root = Path(tmp)
+            pointer = root / 'pointer.json'
+            pointer.write_text(json.dumps({
+                'schema_version': 2,
+                'batch_id': '20260104063000',
+                'state_path': 'FoodRadar/state/state.gz',
+                'sha256': '0'*64,
+            }))
+            with patch.object(pipeline, 'ROOT', root), \
+                 patch('huggingface_hub.HfApi') as api, \
+                 patch('huggingface_hub.hf_hub_download',
+                       side_effect=AssertionError('Old state must never be downloaded')):
+                api.return_value.list_repo_files.return_value = [
+                    'FoodRadar/state/latest.json',
+                    'FoodRadar/snapshots/20260104063000/complete.json',
+                ]
+                with self.assertRaisesRegex(RuntimeError, 'No immutable snapshots'):
+                    pipeline.restore_history({
+                        'hf_folder':'FoodRadar', 'hf_repo_id':'test/repo'
+                    })
+            self.assertFalse((root/'data/20260104063000/serving.db').exists())
 
 if __name__=='__main__': unittest.main()

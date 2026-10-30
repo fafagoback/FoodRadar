@@ -311,6 +311,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     source_meta = dict(src.execute("select key,value from metadata"))
     data_revision = hashlib.sha256(json.dumps(digests, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     info = {"definition_version": "foodradar-native-price-v2", "data_revision": data_revision, "source_revision": source_meta.get("source_revision", "local"),
+            "raw_source": source_meta.get("raw_source", ""),
+            "raw_snapshot_count": int(source_meta.get("raw_snapshot_count", 0)),
             "application": "FoodRadar", "schema_version": 2,
             "active_stores": active_stores, "active_products": active_products,
             "current_verified_products": current_verified_products,

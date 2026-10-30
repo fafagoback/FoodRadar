@@ -137,6 +137,25 @@ def verified_rebuild_evidence(path, local_meta, old_meta):
     previous_counts = json.loads(old_meta.get('source_counts','{}'))
     required_count = int(local_counts.get('crawl_batches',0))
     verified_count = proof.get('verified_manifest_count')
+    if proof.get('format') == 'foodradar-immutable-raw-only-rebuild-v1':
+        # An explicitly requested reset MUST discard the rejected historical
+        # dataset, so comparing to prior (dirty) history counts is incorrect.
+        # The source has independently been SHA256 checked and replayed from
+        # FoodRadar/Raw alone. Never allow legacy paths as reset evidence.
+        if (proof.get('batch_id') != json.loads(local_meta.get('latest_batch', 'null'))
+                or proof.get('source_prefix') != 'FoodRadar/Raw/'
+                or proof.get('legacy_snapshot_count') != 0
+                or not isinstance(verified_count, int) or verified_count < 1
+                or proof.get('raw_manifest_count') != verified_count
+                or verified_count != required_count
+                or proof.get('source_counts', {}).get('stores')
+                    != int(local_counts.get('stores', -1))
+                or proof.get('source_counts', {}).get('products')
+                    != int(local_counts.get('products', -1))
+                or not isinstance(proof.get('manifest_digest'), str)
+                or len(proof['manifest_digest']) != 64):
+            raise ValueError('Raw-only reset evidence does not match candidate')
+        return True
     if (proof.get('format') != 'foodradar-full-raw-replay-v2'
         or proof.get('batch_id') != json.loads(local_meta.get('latest_batch','null'))
         or not isinstance(verified_count,int) or verified_count < 1
