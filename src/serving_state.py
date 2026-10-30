@@ -8,11 +8,11 @@ from __future__ import annotations
 
 try:
     from .city_normalization import canonical_city
-    from .verified_prices import quote_from_converted_item, quote_numbers
+    from .verified_prices import quote_from_converted_item, quote_numbers, reconcile_duplicate_skus
     from .price_change import PriceChange
 except ImportError:
     from city_normalization import canonical_city
-    from verified_prices import quote_from_converted_item, quote_numbers
+    from verified_prices import quote_from_converted_item, quote_numbers, reconcile_duplicate_skus
     from price_change import PriceChange
 
 import argparse
@@ -428,6 +428,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         if sid in seen_stores:
             continue
         seen_stores.add(sid)
+        # Invalidate conflicting duplicate SKU price claims before deduplication.
+        reconcile_duplicate_skus(doc)
         # Delivery availability cannot erase an existing open-hours menu.
         catalog_seen = int(menu_catalog_valid(doc, batch_id))
         conn.execute("INSERT OR REPLACE INTO snapshot_seen_stores VALUES(?,?)", (sid, catalog_seen))
