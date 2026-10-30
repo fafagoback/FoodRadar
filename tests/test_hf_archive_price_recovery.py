@@ -1,5 +1,4 @@
-"""Recovery contract: archived menu quotes are not verified price events."""
-import copy
+"""Legacy Json-only archives may not reconstruct unverified discounts."""
 import sqlite3
 import sys
 import unittest
@@ -8,92 +7,56 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
-sys.path.insert(0,str(ROOT/'tests'))
-from serving_state import apply_snapshot
-from repair_effective_prices import repair
-from restore_hf_menu_quotes import apply_archival_quote_references, canonical_menu_quotes
-from test_price_observation import menu, SID, PID
+from test_packed_updates import document,apply_snapshot
+from restore_hf_menu_quotes import (
+    canonical_menu_quotes,apply_archival_quote_references,
+    restore_archive_price_references)
+from raw_price_enrichment import enrich_converted_with_native
 
-def old_quote(batch,price):
-    doc=menu(batch,price)
-    doc['menu_status']='present'
-    doc['closedMessage']='Delivery unavailable'
-    doc['isOpen']=True
-    return doc
+SID="ffffffff-ffff-4fff-8fff-ffffffffffff"
+PID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
 
 class ArchiveQuotePriceTests(unittest.TestCase):
     def setUp(self):
-        self.conn=sqlite3.connect(':memory:')
+        self.conn=sqlite3.connect(":memory:")
         self.conn.row_factory=sqlite3.Row
         self.addCleanup(self.conn.close)
-        current=menu('20261027091759',50)
-        apply_snapshot(self.conn,[current],'20261027091759')
-        repair_db_needed=False
-        # Full repair requires on-disk DB; verified last-seven price stays zero
-        # with one current observation, so the separation can be tested as is.
+        self.doc=document(SID,[PID])
+        apply_snapshot(self.conn,[self.doc],"20261027063000")
 
-    def row(self):
-        return self.conn.execute('SELECT * FROM products WHERE product_uuid=?',(PID,)).fetchone()
+    def test_legacy_json_never_produces_native_discount(self):
+        old=document(SID,[PID])
+        old["hasMenu"]["hasMenuSection"][0]["name"]="買1送1"
+        self.assertEqual(canonical_menu_quotes(old,SID),{})
+        result=apply_archival_quote_references(self.conn,"20261027063000",[
+            ("20261021063000",[old]),("20261022063000",[old])])
+        self.assertEqual(result["archive_quote_candidates"],0)
+        p=self.conn.execute("SELECT archive_reference_price,archive_discount_pct,archive_is_price_deal FROM products").fetchone()
+        self.assertEqual(tuple(p),(None,0,0))
 
-    def test_repeated_quotes_create_separate_nonverified_suggestion(self):
-        result=apply_archival_quote_references(self.conn,'20261027091759',[
-            ('20261021091759',[old_quote('20261021091759',100)]),
-            ('20261023091759',[old_quote('20261023091759',100)]),
-        ])
-        row=self.row()
-        self.assertEqual(result['archive_quote_candidates'],1)
-        self.assertEqual(row['archive_reference_price'],100)
-        self.assertEqual(row['archive_discount_pct'],50)
-        self.assertEqual(row['archive_evidence_count'],2)
-        self.assertEqual(row['archive_is_price_deal'],1)
-        self.assertEqual(row['seven_day_is_price_deal'],0)
-        self.assertEqual(row['is_price_drop'],0)
+    def test_legacy_repair_entrypoint_fails_closed(self):
+        with self.assertRaisesRegex(ValueError,"uncertified"):
+            restore_archive_price_references("not-a-real-db",{}, "20261027063000")
 
-    def test_single_anomalous_high_quote_is_not_enough(self):
-        result=apply_archival_quote_references(self.conn,'20261027091759',[
-            ('20261021091759',[old_quote('20261021091759',100)]),
-            ('20261023091759',[old_quote('20261023091759',50)]),
-        ])
-        self.assertEqual(result['archive_quote_candidates'],0)
-        self.assertIsNone(self.row()['archive_reference_price'])
+    def test_api_raw_enrichment_adds_numeric_native_proof(self):
+        doc=document(SID,[PID])
+        native={"data":{"catalogSectionsMap":{"main":[{
+            "payload":{"standardItemsPayload":{"catalogItems":[{
+                "uuid": PID, "title":"雞肉飯", "price":10000,
+                "catalogItemAnalyticsData":{"promoType":"BOGO"},
+                "itemPromotion":{"type":"buyXGetYItemPromotion",
+                    "buyXGetYItemPromotion":{"buyQuantity":1,"getQuantity":1}}
+            }]}}}]}}}
+        enriched=enrich_converted_with_native(doc,native)
+        quote=enriched["hasMenu"]["hasMenuSection"][0]["hasMenuItem"][0]["verified_price"]
+        self.assertEqual((quote["kind"],quote["original_total_cents"],quote["payable_total_cents"]),
+            ("SAME_SKU_BXGY",20000,10000))
 
-    def test_closed_outside_hours_or_older_than_seven_days_rejected(self):
-        offhour=old_quote('20261020010344',100)
-        self.assertEqual(apply_archival_quote_references(self.conn,'20261027091759',[
-            ('20261020010344',[offhour]),
-            ('20261018091759',[old_quote('20261018091759',100)]),
-        ])['archive_quote_candidates'],0)
+    def test_json_without_raw_has_no_native_proof(self):
+        item=self.doc["hasMenu"]["hasMenuSection"][0]["hasMenuItem"][0]
+        self.assertNotIn("verified_price",item)
 
-    def test_duplicate_general_and_bogo_sections_do_not_invent_sale(self):
-        one=old_quote('20261021091759',100)
-        original=one['hasMenu']['hasMenuSection'][0]
-        duplicate=copy.deepcopy(original)
-        duplicate['name']='買1送1'
-        one['hasMenu']['hasMenuSection']=[original,duplicate]
-        self.assertEqual(canonical_menu_quotes(one,SID)[PID],100)  # No native BOGO evidence
-        two=copy.deepcopy(one)
-        apply_archival_quote_references(self.conn,'20261027091759',[
-            ('20261021091759',[one]),('20261023091759',[two])
-        ])
-        self.assertEqual(self.row()['archive_discount_pct'],0)
 
-    def test_duplicate_sku_with_conflicting_offer_prices_is_excluded(self):
-        one=old_quote('20261021091759',100)
-        category=copy.deepcopy(one['hasMenu']['hasMenuSection'][0])
-        category['name']='推薦商品'
-        category['hasMenuItem'][0]['offers']['price']=200
-        one['hasMenu']['hasMenuSection'].append(category)
-        self.assertNotIn(PID,canonical_menu_quotes(one,SID))
-        same=copy.deepcopy(one)
-        outcome=apply_archival_quote_references(self.conn,'20261027091759',[
-            ('20261021091759',[one]),('20261023091759',[same])
-        ])
-        self.assertEqual(outcome['archive_quote_candidates'],0)
-
-    def test_restore_resets_old_suggestions_after_expiry(self):
-        self.test_repeated_quotes_create_separate_nonverified_suggestion()
-        apply_archival_quote_references(self.conn,'20261027091759',[])
-        self.assertEqual(self.row()['archive_is_price_deal'],0)
-
-if __name__=='__main__':
+if __name__=="__main__":
     unittest.main()
