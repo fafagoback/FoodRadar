@@ -38,24 +38,25 @@ def needs_recovery(latest: str | None, now: datetime) -> bool:
 
 
 def current_published_time() -> str:
-    url = os.environ["TURSO_DATABASE_URL"].rstrip("/")
+    """Query the same verified Turso HTTP pipeline client as the publisher.
+
+    GitHub secret FOODRADAR_TURSO_DATABASE_URL normally starts with libsql://,
+    which urllib cannot open directly; Remote normalizes it to HTTPS.
+    """
+    from publish_turso_delta import Remote
+    url = os.environ["TURSO_DATABASE_URL"]
     token = os.environ["TURSO_READONLY_TOKEN"]
-    query = json.dumps({"requests": [
-        {"type": "execute", "stmt": {"sql": "SELECT value FROM metadata WHERE key='latest_processed_at'"}},
-        {"type": "close"},
-    ]}).encode()
-    request = Request(url + "/v2/pipeline", data=query,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        method="POST")
-    with urlopen(request, timeout=22) as response:
-        body = json.load(response)
-    result = body["results"][0]
-    if result["type"] != "ok":
-        raise RuntimeError(f"Turso freshness query failed: {result.get('error')}")
-    rows = result["response"]["result"]["rows"]
-    if not rows:
-        return ""
-    return json.loads(rows[0][0]["value"])
+    remote = Remote(url, token)
+    try:
+        rows = remote.query(
+            "SELECT value FROM metadata WHERE key='latest_processed_at'")
+        if not rows:
+            return ""
+        if len(rows) != 1:
+            raise ValueError("Turso metadata latest_processed_at is ambiguous")
+        return json.loads(rows[0]["value"])
+    finally:
+        remote.close()
 
 
 def main() -> None:
