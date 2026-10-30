@@ -46,4 +46,11 @@ manifest = {
     json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
     encoding="utf-8",
 )
+# Fingerprint all browser assets with the verified Pages release rather than
+# a fresh timestamp on every visit. Release changes still invalidate caches.
+index = root / "web/index.html"
+source = index.read_text(encoding="utf-8")
+if source.count("__FOODRADAR_RELEASE__") != 1:
+    raise ValueError("Pages HTML release placeholder not found")
+index.write_text(source.replace("__FOODRADAR_RELEASE__", manifest["version"]), encoding="utf-8")
 print("FOODRADAR_PAGES_VERSION=" + manifest["version"], flush=True)
