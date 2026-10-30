@@ -460,7 +460,9 @@ jobs:
         id: deployment
   live-site-acceptance:
     name: Verify deployed website
-    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')
+    # crawl deliberately uses always() because schedule-recovery is skipped for
+    # normal pushes; downstream must also override skipped ancestor propagation.
+    if: ${{ always() && needs.crawl.result == 'success' && (github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')) }}
     needs: crawl
     # The published Pages URL always points at the newest release. A slow
     # Chromium install for an older SHA must be cancelled once a newer
