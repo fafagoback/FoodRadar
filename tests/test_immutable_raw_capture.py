@@ -49,7 +49,7 @@ class ImmutableRawTests(unittest.TestCase):
             }
             fake_document = {"name":"converted"}
             with tarfile.open(archive_path, "r:gz") as src:
-                with patch("menu_core.convert_api_data_to_schema", return_value=fake_document), \\
+                with patch("menu_core.convert_api_data_to_schema", return_value=fake_document), \
                      patch("snapshot_validation.validate_document"):
                     products = documents_from_hf_raw(src, record)
                 self.assertEqual(
