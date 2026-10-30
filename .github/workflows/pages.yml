@@ -31,8 +31,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -93,8 +91,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
       - name: 安裝 Chromium 瀏覽器
         run: |
           npm install --no-save playwright@1.56.1
