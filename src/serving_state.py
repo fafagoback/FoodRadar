@@ -561,11 +561,20 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                          observed_promo if quote_valid else "未驗證",
                          observed_qty if quote_valid else None,
                          int(bool(price_valid)))
+                # Preserve the last valid price evidence through a closed-hours
+                # response; but invalidate a current open-hours unsupported promo.
+                keep_last = bool(not store_price_valid
+                    and old and old.get("price_evidence_status") == "VERIFIED_MENU")
+                evidence_status = (
+                    "VERIFIED_MENU" if price_valid or keep_last else "UNVERIFIED")
+                evidence_discount = (
+                    native_discount if price_valid else
+                    float(old.get("verified_discount_pct") or 0) if keep_last else 0.0)
+                evidence_hash = (
+                    verified_quote["source_hash"] if price_valid else
+                    old.get("price_evidence_source_hash") if keep_last else None)
                 v2_product_status_batch.append((
-                    native_discount if price_valid else 0.0,
-                    "VERIFIED_MENU" if price_valid else "UNVERIFIED",
-                    verified_quote["source_hash"] if price_valid else None,
-                    sid, pid,
+                    evidence_discount, evidence_status, evidence_hash, sid, pid,
                 ))
                 if quote_valid:
                     v2_observation_batch.append((
@@ -637,6 +646,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         "menu_quote_promo_type": quote[2],
                         "menu_quote_quantity": quote[3],
                         "delivery_available": quote[4],
+                        "price_evidence_status": evidence_status,
+                        "verified_discount_pct": evidence_discount,
+                        "price_evidence_source_hash": evidence_hash,
                     })
                     changed_product_rows.append(key)
                 else:
@@ -760,6 +772,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     old["price_change_amount"] = price_change_amount
                     old["price_change_percent"] = price_change_percent
                     old["menu_quote_history"] = quote_history
+                    old["price_evidence_status"] = evidence_status
+                    old["verified_discount_pct"] = evidence_discount
+                    old["price_evidence_source_hash"] = evidence_hash
                     old.update(zip(("menu_quote_price", "menu_quote_effective_price",
                                     "menu_quote_promo_type", "menu_quote_quantity",
                                     "delivery_available"), quote))
