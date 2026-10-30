@@ -149,6 +149,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                             and product["last_seen"] == latest_time
                             and int(store["is_open"] or 0) == 1
                             and int(product["is_open"] or 0) == 1)
+            native_verified = product["price_evidence_status"] == "VERIFIED_MENU"
+            platform_promo = native_verified and float(product["verified_discount_pct"] or 0) > 0
+            current_menu = current_menu and native_verified
             current_verified = current_menu and int(product["delivery_available"] or 0) == 1
             terms = (store_terms | tokens(product["product_name"]) | tokens(product["category"]) | tokens(product["menu_quote_promo_type"] or product["promo_type"])) if searchable else set()
             price = float(product["menu_quote_effective_price"] or product["effective_price"] or product["price"] or 0)
@@ -160,7 +163,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                     seven_day_reference_products += 1
                 if current_verified:
                     current_verified_products += 1
-                if current_menu and (product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無"):
+                if current_menu and platform_promo:
                     active_platform_promotions += 1
                 if current_menu and int(product["seven_day_is_price_deal"] or 0) == 1:
                     active_30pct_drops += 1
@@ -175,7 +178,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'][:10] > store['first_seen'][:10]
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
-                if current_menu and ((product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無")
+                if current_menu and (platform_promo
                         or float(product["seven_day_discount_pct"] or 0) > 0):
                     terms.add("f:promo")
                 if current_menu and float(product["seven_day_discount_pct"] or 0) > 0:
