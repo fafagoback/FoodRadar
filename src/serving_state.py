@@ -555,7 +555,10 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 # a promo-adjusted effective-price or a seven-day deal.
                 effective = verified_effective if price_valid else (
                     float(old["effective_price"]) if old and old["recent_prices"] else price)
-                quote_valid = bool(quote_price_valid and verified_quote is not None)
+                # A menu visible on getStoreV1 while delivery is unavailable is
+                # not a verified payable-price observation. Keep it in HF Raw,
+                # not in certified V2 history or the seven-day baseline.
+                quote_valid = bool(price_valid)
                 quote = (observed_price if 0 < observed_price < 1_000_000 else None,
                          verified_effective if quote_valid else None,
                          observed_promo if quote_valid else "未驗證",
