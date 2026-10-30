@@ -20,7 +20,7 @@ permissions:
 jobs:
   publish-site:
     name: Publish website without waiting for crawler
-    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]') && !contains(github.event.head_commit.message, '[rebuild-price-history]') && !contains(github.event.head_commit.message, '[prune-actions-history]')
+    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]') && !contains(github.event.head_commit.message, '[rebuild-price-history]')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -313,7 +313,7 @@ jobs:
         run: python scripts/should_crawl_backup.py
   crawl:
     needs: [schedule-recovery]
-    if: ${{ always() && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]') && !contains(github.event.head_commit.message, '[prune-actions-history]') && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
+    if: ${{ always() && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]') && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
     # Limit only the database publisher. Browser QA must not monopolize the
     # release lock or block deployment of a newer commit.
     concurrency:
@@ -490,102 +490,3 @@ jobs:
           path: test-results/
           if-no-files-found: warn
           retention-days: 7
-
-  prune-obsolete-action-runs:
-    name: One-time cleanup of retired Actions workflows
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[prune-actions-history]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: write
-    steps:
-      - name: Delete completed runs of workflows absent from the production branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import time
-          import urllib.error
-          import urllib.request
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          token = os.environ["GH_TOKEN"]
-          root = "https://api.github.com/repos/" + repo
-
-          def req(path, method="GET", allow_missing=False):
-              target = root + path
-              request = urllib.request.Request(target, method=method, headers={
-                  "Authorization": "Bearer " + token,
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-                  "User-Agent": "FoodRadar-retired-workflow-cleanup",
-              })
-              for attempt in range(4):
-                  try:
-                      with urllib.request.urlopen(request, timeout=40) as resp:
-                          raw=resp.read()
-                          return json.loads(raw) if raw else {}
-                  except urllib.error.HTTPError as err:
-                      if allow_missing and err.code == 404:
-                          return None
-                      if err.code in (429,500,502,503,504) and attempt < 3:
-                          time.sleep(2 ** attempt)
-                          continue
-                      raise
-
-          active = req("/contents/.github/workflows?ref=main")
-          active_paths = {entry["path"] for entry in active if entry["type"] == "file"}
-          if active_paths != {".github/workflows/crawl.yml"}:
-              raise RuntimeError("Unexpected live workflow files; refusing history deletion: "+repr(active_paths))
-
-          workflows = []
-          page = 1
-          while True:
-              data = req("/actions/workflows?per_page=100&page=" + str(page))
-              batch = data.get("workflows", [])
-              workflows.extend(batch)
-              if len(batch) < 100:
-                  break
-              page += 1
-
-          print("ACTIVE_WORKFLOW_FILES=" + json.dumps(sorted(active_paths)), flush=True)
-          summary = []
-          removed = 0
-          for wf in workflows:
-              path = wf.get("path","")
-              if path in active_paths or not path.startswith(".github/workflows/"):
-                  continue
-              if wf.get("id") is None:
-                  continue
-              count = 0
-              for _ in range(30):
-                  data = req("/actions/workflows/" + str(wf["id"]) + "/runs?per_page=100&page=1", allow_missing=True)
-                  if data is None:
-                      break
-                  runs = data.get("workflow_runs", [])
-                  if not runs:
-                      break
-                  uncompleted = [run for run in runs if run["status"] != "completed"]
-                  if uncompleted:
-                      print("SKIP_IN_PROGRESS="+json.dumps({"workflow":path,"run_ids":[r["id"] for r in uncompleted]}),flush=True)
-                  completed = [run for run in runs if run["status"] == "completed"]
-                  if not completed:
-                      break
-                  for run in completed:
-                      req("/actions/runs/" + str(run["id"]),method="DELETE",allow_missing=True)
-                      count += 1
-                      removed += 1
-                      if removed > 1200:
-                          raise RuntimeError("Deletion safety cap exceeded")
-                  if len(runs) < 100 and not uncompleted:
-                      break
-              if count:
-                  summary.append({"workflow": wf.get("name"), "path":path, "deleted_runs":count})
-                  print("RETIRED_WORKFLOW_PURGED="+json.dumps(summary[-1],ensure_ascii=False),flush=True)
-          print("OBSOLETE_WORKFLOW_HISTORY_PURGE="+json.dumps({
-              "deleted_runs":removed,"workflows":summary,"retained":list(active_paths)
-          },ensure_ascii=False),flush=True)
-          PY
