@@ -15,14 +15,15 @@ class EffectivePriceTests(unittest.TestCase):
 
     def test_two_digit_sale_label_is_not_six_discount(self):
         promo, qty = extract_promo_info("優惠方案", "66折黑醬烤雞堡超值餐", "")
-        self.assertEqual((promo, qty), ("66折特惠", 1))
+        self.assertEqual((promo, qty), ("無", 1))
         self.assertEqual(calculate_effective_price(168.30, promo, qty), 168.30)
 
-    def test_quantity_offers_still_compute_actual_cost_per_item(self):
-        self.assertEqual(calculate_effective_price(200, "買1送1", 2), 100)
-        self.assertEqual(calculate_effective_price(90, "買2送1", 3), 60)
-        self.assertEqual(calculate_effective_price(100, "第2件半價", 1), 75)
-        self.assertEqual(calculate_effective_price(100, "加1元多1件", 2), 50.50)
+    def test_legacy_text_is_never_allowed_to_reprice_a_product(self):
+        self.assertEqual(calculate_effective_price(200, "買1送1", 2), 200)
+        self.assertEqual(calculate_effective_price(90, "買2送1", 3), 90)
+        self.assertEqual(calculate_effective_price(100, "第2件半價", 1), 100)
+        self.assertEqual(calculate_effective_price(100, "加1元多1件", 2), 100)
+        self.assertEqual(calculate_effective_price(80, "買A送B", 2), 80)
 
     def test_invalid_prices_are_excluded_before_comparison(self):
         for price in (None, 'NaN', float('nan'), float('inf'), float('-inf'), 'not a price', 0, -3):
