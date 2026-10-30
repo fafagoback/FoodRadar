@@ -103,7 +103,12 @@ async function bucketId(term, count) {
   return (((d[0] * 0x1000000) + (d[1] << 16) + (d[2] << 8) + d[3]) >>> 0) % count;
 }
 
+let latestMetadataReadAt = 0;
+let pendingMetadata = null;
 export async function metadata() {
+  if (latestMetadataReadAt && Date.now() - latestMetadataReadAt < 15000) return releaseMeta;
+  if (pendingMetadata) return pendingMetadata;
+  pendingMetadata = (async () => {
   const rows = await sql('select key,value from metadata');
   const meta = Object.fromEntries(rows.map(r => {
     try { return [r.key, JSON.parse(r.value)]; }
@@ -115,11 +120,15 @@ export async function metadata() {
   if (previousRevision && previousRevision !== nextRevision) {
     cacheEpoch++;
     bucketCache.clear(); bundleCache.clear(); pendingBundleLoads.clear();
-    webIndexState=null;pageResultsCache.clear();totalResultsCache.clear();
+    webIndexState=null;webIndexLastChecked=0;pageResultsCache.clear();totalResultsCache.clear();
     locationStoresCache = { key: '', storeIds: new Set(), stores: [] };
   }
   releaseMeta = meta;
+  latestMetadataReadAt = Date.now();
   return meta;
+  })();
+  try { return await pendingMetadata; }
+  finally { pendingMetadata = null; }
 }
 
 async function fetchBuckets(bucketIds) {
@@ -570,6 +579,7 @@ async function sampleProducts(stores, location, limit = 50000) {
 
 // Read-side, materialized SQL index: only requested cards leave Turso.
 let webIndexState = null;
+let webIndexLastChecked = 0;
 const pageResultsCache = new Map();
 const totalResultsCache = new Map();
 const MAX_CACHED_PAGES = 40;
@@ -607,9 +617,10 @@ async function cachedCount(where, table) {
 }
 export async function hasWebIndex() {
   await metadata();
-  if (webIndexState !== null) return webIndexState;
+  if (webIndexState === true || (webIndexState === false && Date.now()-webIndexLastChecked<30000)) return webIndexState;
   const r=await sql("SELECT name FROM sqlite_master WHERE type='table' AND name='web_products'");
   webIndexState=Boolean(r.length);
+  webIndexLastChecked=Date.now();
   return webIndexState;
 }
 // The row is the exact native-price view produced by the Python packer, never
