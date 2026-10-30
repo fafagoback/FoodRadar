@@ -6,7 +6,6 @@ on:
       - 'scripts/prototype_pack_db.py'
       - 'src/crawl.py'
       - 'config.json'
-      - 'scripts/migrate_hf_raw_repository.py'
       - 'scripts/bootstrap_hf_dataset.py'
       - 'src/feed_core.py'
       - 'src/raw_capture.py'
