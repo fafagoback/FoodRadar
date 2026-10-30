@@ -17,7 +17,7 @@ const fs = require('node:fs');
       if (!response.ok) throw new Error('Live version.json HTTP ' + response.status);
       return response.json();
     });
-    const expectedCommit = process.env.GITHUB_SHA || '';
+    const expectedCommit = process.env.FOODRADAR_EXPECTED_COMMIT || process.env.GITHUB_SHA || '';
     assert.ok(expectedCommit, 'GitHub Actions must provide GITHUB_SHA');
     assert.equal(manifest.commit, expectedCommit, 'Live Pages are not running the tested commit');
     assert.ok(String(manifest.version || '').includes(expectedCommit.slice(0,12)),
