@@ -75,6 +75,8 @@ def restore_history(config, rebuild_all=False):
                 raise ValueError('HF permanent state batch mismatch')
         previous.write_text(local_batch,encoding='utf-8')
     try:
+        replay_count = 0
+        print(f'V2_HF_REPLAY_START archives={len(manifests)} full_rebuild={int(bool(rebuild_all))}',flush=True)
         for manifest_path in manifests:
             meta=json.loads(Path(hf_hub_download(config['hf_repo_id'],manifest_path,repo_type='dataset')).read_text(encoding='utf-8'))
             batch=meta['batch_id']
@@ -104,7 +106,18 @@ def restore_history(config, rebuild_all=False):
                 raise ValueError('HF store count mismatch')
             apply_snapshot(conn,docs,batch)
             from verified_weekly import update_verified_weekly
-            update_verified_weekly(conn, batch)
+            weekly = update_verified_weekly(conn, batch)
+            replay_count += 1
+            counts_by_kind = dict(conn.execute(
+                'SELECT promotion_type, COUNT(*) FROM product_price_observations '
+                'GROUP BY promotion_type').fetchall())
+            print('V2_HF_REPLAY_PROGRESS='+json.dumps({
+                'completed':replay_count,'total':len(manifests),
+                'batch':batch,'stores':len(docs),
+                'verified_price_types':counts_by_kind,
+                'weekly_comparisons':weekly['qualified_comparisons'],
+                'weekly_deals':weekly['deals'],
+            },ensure_ascii=False),flush=True)
             if rebuild_all:
                 verified_manifest_paths.append(manifest_path + ':' + meta['sha256'])
             if not rebuild_all:
@@ -144,12 +157,9 @@ def restore_history(config, rebuild_all=False):
             (target/'verified-rebuild.json').write_text(
                 json.dumps(evidence,indent=2),encoding='utf-8')
             print(f'REBUILT_VALID_PRICE_HISTORY batch={local_batch} snapshots={len(manifests)}',flush=True)
-        for path in files:
-            if path.startswith(f'{folder}/Parquet/history/') and path.endswith('.parquet'):
-                batch=Path(path).stem.removeprefix('taiwan_catalog_')
-                target=ROOT/'data'/batch/'site'
-                target.mkdir(parents=True,exist_ok=True)
-                shutil.copy2(hf_hub_download(config['hf_repo_id'],path,repo_type='dataset'),target/Path(path).name)
+        # V2 price and discount history is reconstructed from ApiRaw exclusively.
+        # Never download obsolete Parquet pricing history; those inferred values
+        # are no longer consumed and only slow down full HF reconstruction.
     finally:
         if conn is not None:
             conn.close()
