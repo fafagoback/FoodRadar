@@ -1,303 +1,30 @@
-name: FoodRadar single-coordinate crawl
+name: FoodRadar 02｜爬蟲與資料庫
 on:
-  push:
-    branches: [main]
   schedule:
-    # Asia/Taipei 06:30 and 18:30 daily; GitHub schedules use UTC.
+    # 台灣時間每日 06:30、18:30，GitHub cron 使用 UTC。
     - cron: '30 10,22 * * *'
-    # 07:30/19:30 backup: check Turso first; do NOT duplicate successful crawls.
+    # 台灣時間 07:30、19:30：只在上一輪漏跑時補抓。
     - cron: '30 11,23 * * *'
   workflow_dispatch:
     inputs:
-      publish_existing:
-        description: Initialize/retry Turso from the latest HF Raw (skip a new crawl)
-        type: boolean
-        default: false
+      mode:
+        description: 'crawl=新抓取；republish=重發現有 HF；full-rebuild=全量重建 Turso'
+        required: true
+        type: choice
+        options:
+          - crawl
+          - republish
+          - full-rebuild
+        default: crawl
+      confirm_reset:
+        description: 'full-rebuild 必須輸入 REBUILD_V2，其餘模式留白'
+        required: false
+        type: string
 permissions:
   contents: read
-  pages: write
-  id-token: write
 jobs:
-  publish-site:
-    name: Publish website without waiting for crawler
-    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]') && !contains(github.event.head_commit.message, '[rebuild-price-history]')
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    concurrency:
-      group: foodradar-pages-fast-release
-      cancel-in-progress: true
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install minimal database verification dependency
-        run: pip install 'requests>=2.32,<3'
-      - name: Configure verified read-only site and release manifest
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
-          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
-        run: |
-          python scripts/configure_web.py
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          from datetime import datetime, timezone, timedelta
-          sha = os.environ['GITHUB_SHA']
-          timestamp = datetime.now(timezone(timedelta(hours=8)))
-          manifest = {
-              'version': 'web-' + sha[:12],
-              'buildTime': timestamp.strftime('%Y-%m-%d %H:%M:%S +08:00'),
-              'commit': sha,
-              'batch': 'web-only',
-          }
-          Path('web/version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + chr(10), encoding='utf-8')
-          print('Website-only release:', manifest['version'])
-          PY
-          node --check web/app.js
-          node --check web/packed-turso.js
-          node --check web/data-contract.js
-          if grep -q 'id="archive-quote-section"' web/index.html; then
-            echo 'Retired HF quote section still exists' >&2
-            exit 1
-          fi
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: web
-      - uses: actions/deploy-pages@v4
-        id: deployment
-      - name: Verify published site no longer contains archived menu quotes
-        run: |
-          python - <<'PY'
-          import json, os, time
-          from urllib.request import Request, urlopen
-          base = 'https://fafagoback.github.io/FoodRadar/'
-          expected = os.environ['GITHUB_SHA']
-          for attempt in range(10):
-              try:
-                  url = base + '?_release=' + expected[:12] + '&attempt=' + str(attempt)
-                  with urlopen(Request(url, headers={'Cache-Control':'no-cache'}), timeout=20) as response:
-                      html = response.read().decode('utf-8')
-                  with urlopen(base + 'version.json?_release=' + expected[:12] + '&attempt=' + str(attempt), timeout=20) as response:
-                      manifest = json.load(response)
-                  if manifest.get('commit') == expected and 'archive-quote-section' not in html and 'HF 歷史菜單參考價' not in html:
-                      print('LIVE_PAGE_CONFIRMED_REMOVED', manifest['version'])
-                      break
-                  print('Waiting for current Pages release:', manifest.get('commit'), attempt + 1)
-              except Exception as error:
-                  print('Live release verification retry:', type(error).__name__, str(error)[:200])
-              if attempt == 9:
-                  raise SystemExit('Live Pages deployment was not verified')
-              time.sleep(6)
-          PY
-  audit-lairfu-raw:
-    name: Read-only HF investigation of 3062 士銓 波霸黑糖奶茶
-    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[audit-lairfu]')
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install read-only HF snapshot reader
-        run: pip install 'huggingface_hub>=0.25,<1'
-      - name: Audit historical raw menu and latest native getStoreV1 evidence
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          python - <<'PY'
-          import os,sys,re,json,tarfile,gzip,tempfile,sqlite3,shutil
-          from pathlib import Path
-          from huggingface_hub import HfApi,hf_hub_download
-          sys.path.insert(0,'src')
-          from json_to_db import extract_promo_info
-          repo='hub-google/UberEat'
-          api=HfApi(token=os.environ.get('HF_TOKEN'))
-          files=api.list_repo_files(repo_id=repo,repo_type='dataset')
-          manifests=sorted(p for p in files if p.startswith('FoodRadar/snapshots/') and p.endswith('/complete.json') and p.split('/')[2][:8]>='20261022')
-          print('SELECTED_ARCHIVES',len(manifests),[p.split('/')[2] for p in manifests],flush=True)
-          def match_store(s):
-              s=str(s or '')
-              return ('士銓' in s or '3062' in s) and '萊爾富' in s
-          def emit(name,obj):
-              print(name+'='+json.dumps(obj,ensure_ascii=False,default=str),flush=True)
-          for manifest in manifests:
-              meta=json.loads(Path(hf_hub_download(repo,manifest,repo_type='dataset')).read_text())
-              batch=meta['batch_id']
-              archive=hf_hub_download(repo,meta['archive_path'],repo_type='dataset')
-              found=0
-              with tarfile.open(archive,'r:gz') as tar:
-                  members=tar.getmembers()
-                  for member in members:
-                      if not(member.isfile() and member.name.startswith('Json/') and member.name.endswith('.json')):continue
-                      doc=json.load(tar.extractfile(member))
-                      if not match_store(doc.get('name')):continue
-                      matched=[]
-                      for sec in (doc.get('hasMenu') or {}).get('hasMenuSection') or []:
-                          category=str(sec.get('name') or '')
-                          for item in sec.get('hasMenuItem') or []:
-                              name=str(item.get('name') or '')
-                              if '波霸黑糖奶茶' not in name:continue
-                              promo,qty=extract_promo_info(category,name,str(item.get('description') or ''))
-                              promo=str(item.get('promo_type') or promo)
-                              qty=int(item.get('quantity') or qty)
-                              price=(item.get('offers') or {}).get('price')
-                              matched.append(dict(name=name,uuid=item.get('identifier'),section=category,
-                                 list_price=price,source=item.get('promotion_source'),
-                                 native_promo=item.get('promo_type'),promo=promo,qty=qty,
-                                 unit=round(float(price)/qty,2) if price and qty>0 else None))
-                      if matched:
-                          found+=1
-                          emit('TARGET_RAW',dict(batch=batch,store=doc.get('name'),store_uuid=doc.get('store_uuid'),
-                              time=doc.get('captured_at'),isOpen=doc.get('isOpen'),
-                              closedMessage=doc.get('closedMessage'),hasStorePromotion=doc.get('hasStorePromotion'),
-                              matches=matched))
-                  if batch.startswith('20261029'):
-                      for member in members:
-                          if not(member.isfile() and member.name.startswith('ApiRaw/') and member.name.endswith('.json')):continue
-                          wrapper=json.load(tar.extractfile(member))
-                          data=wrapper.get('data') or {}
-                          if not match_store(data.get('title')):continue
-                          occurrences=[]
-                          for group,secs in (data.get('catalogSectionsMap') or {}).items():
-                              for sec in secs if isinstance(secs,list) else []:
-                                  payload=(sec.get('payload') or {}).get('standardItemsPayload') or {}
-                                  label=payload.get('title') or {}
-                                  label=label.get('text') if isinstance(label,dict) else label
-                                  for item in payload.get('catalogItems') or []:
-                                      if '波霸黑糖奶茶' not in str(item.get('title') or ''):continue
-                                      occurrences.append(dict(group=group,section=label,title=item.get('title'),
-                                          uuid=item.get('uuid') or item.get('itemUuid'),price_cents=item.get('price'),
-                                          keys=sorted(item),promo_fields={k:v for k,v in item.items() if re.search('promo|offer|discount|benefit|reward|bogo|deal',k,re.I)}))
-                          emit('TARGET_NATIVE',dict(batch=batch,store=data.get('title'),
-                              store_promotion=data.get('hasStorePromotion'),occurrences=occurrences))
-              if not found:emit('TARGET_NOT_IN_BATCH',dict(batch=batch))
-          try:
-              manifest=json.loads(Path(hf_hub_download(repo,'FoodRadar/state/latest.json',repo_type='dataset')).read_text())
-              archived_state=hf_hub_download(repo,manifest['state_path'],repo_type='dataset')
-              with tempfile.TemporaryDirectory() as folder:
-                  db=Path(folder)/'state.db'
-                  with gzip.open(archived_state,'rb') as src,db.open('wb') as dst:shutil.copyfileobj(src,dst)
-                  con=sqlite3.connect(db)
-                  con.row_factory=sqlite3.Row
-                  rows=con.execute("SELECT s.name AS store,p.product_name,p.product_uuid,p.price,p.menu_quote_price,p.promo_type,p.menu_quote_promo_type,p.quantity,p.menu_quote_quantity,p.menu_quote_history FROM products p JOIN stores s USING(store_uuid) WHERE p.product_name LIKE '%波霸黑糖奶茶%' AND (s.name LIKE '%士銓%' OR s.name LIKE '%3062%')").fetchall()
-                  for row in rows:
-                      item=dict(row)
-                      item['menu_quote_history']=json.loads(item.get('menu_quote_history') or '[]')
-                      emit('TARGET_HF_DB',dict(state_batch=manifest.get('batch_id'),**item))
-                  con.close()
-          except Exception as e:emit('STATE_INSPECT_ERROR',str(e)[:400])
-          PY
-      - name: Inspect actual native promotion metadata and UUID meaning
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          python - <<'PY'
-          import os,json,tarfile,re,collections
-          from pathlib import Path
-          from huggingface_hub import hf_hub_download
-          dataset='hub-google/UberEat'
-          batch='20261029145834'
-          archive=hf_hub_download(dataset,f'FoodRadar/snapshots/{batch}/taiwan_menus_{batch}.tar.gz',repo_type='dataset',token=os.environ.get('HF_TOKEN'))
-          def is_target(s):
-              return '萊爾富' in str(s) and ('士銓' in str(s) or '3062' in str(s))
-          def summarize(value, depth=0):
-              if depth>2:return '<nested>'
-              if isinstance(value,dict):return {k:summarize(v,depth+1) for k,v in list(value.items())[:30]}
-              if isinstance(value,list):return [summarize(v,depth+1) for v in value[:3]]+(['...'] if len(value)>3 else [])
-              return value if isinstance(value,(int,float,bool,type(None))) or len(str(value))<130 else str(value)[:130]+'...'
-          with tarfile.open(archive,'r:gz') as tf:
-              for member in tf:
-                  if not member.isfile() or not member.name.startswith('ApiRaw/'):continue
-                  wrapper=json.load(tf.extractfile(member)); data=wrapper.get('data') or {}
-                  if not is_target(data.get('title')):continue
-                  print('NATIVE_TOP_KEYS='+json.dumps(sorted(data),ensure_ascii=False),flush=True)
-                  print('NATIVE_TOP_PROMO='+json.dumps({k:summarize(v) for k,v in data.items() if re.search('promo|discount|offer|deal|badge|campaign|marketing|saving',k,re.I)},ensure_ascii=False),flush=True)
-                  for group,sections in (data.get('catalogSectionsMap') or {}).items():
-                      for sec in sections if isinstance(sections,list) else []:
-                          payload=(sec.get('payload') or {}).get('standardItemsPayload') or {}
-                          section=payload.get('title') or {}
-                          name=section.get('text') if isinstance(section,dict) else section
-                          items=payload.get('catalogItems') or []
-                          if '買' in str(name) and '送' in str(name):
-                              print('NATIVE_PROMO_SECTION='+json.dumps({'name':name,'keys':sorted(sec),'payload_keys':sorted(sec.get('payload') or {}),'standard_keys':sorted(payload),'metadata':summarize({k:v for k,v in sec.items() if k!='payload'}),'items':len(items),'first_skus':[(i.get('title'),(i.get('promoInfo') or {}).get('promotionUUID')) for i in items[:15]]},ensure_ascii=False),flush=True)
-                          for item in items:
-                              if '波霸黑糖奶茶' in str(item.get('title') or ''):
-                                  print('NATIVE_TARGET_DEEP='+json.dumps({'section':name,'info':summarize(item)},ensure_ascii=False),flush=True)
-                  hits=[]
-                  keys=collections.Counter()
-                  def walk(node,path='',depth=0):
-                      if depth>24:return
-                      if isinstance(node,dict):
-                          for k,v in node.items():
-                              nextpath=path+'.'+k
-                              if re.search('promo|discount|offer|deal|campaign|bogo|eligib|saving',k,re.I):
-                                  keys[nextpath]+=1
-                              if k.lower()=='promotionuuid' and v:
-                                  hits.append({'path':nextpath,'uuid':v,'context':summarize(node)})
-                              if isinstance(v,(dict,list)):walk(v,nextpath,depth+1)
-                      elif isinstance(node,list):
-                          for e in node[:400]:walk(e,path+'[]',depth+1)
-                  walk(data)
-                  print('NATIVE_PROMO_FIELD_PATHS='+json.dumps(keys.most_common(80),ensure_ascii=False),flush=True)
-                  print('NATIVE_UUID_EVIDENCE='+json.dumps({'count':len(hits),'target':[h for h in hits if h['uuid']=='225b775d-558b-5648-b6e0-4b87ac575453'][:6],'other_uuids':list(dict.fromkeys(h['uuid'] for h in hits))[:30]},ensure_ascii=False),flush=True)
-                  break
-          PY
-      - name: Verify actual itemPromotion structure vs BOGO screenshot
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          python - <<'PY'
-          import os,json,tarfile
-          from huggingface_hub import hf_hub_download
-          batch='20261029145834';repo='hub-google/UberEat';pid='8a0e205b-9257-53a8-bd7e-6067ec1f05d7'
-          archive=hf_hub_download(repo,f'FoodRadar/snapshots/{batch}/taiwan_menus_{batch}.tar.gz',repo_type='dataset',token=os.getenv('HF_TOKEN'))
-          with tarfile.open(archive,'r:gz') as tf:
-           for member in tf:
-            if not(member.isfile() and member.name.startswith('ApiRaw/') and member.name.endswith('.json')):continue
-            data=(json.load(tf.extractfile(member)).get('data') or {})
-            if '萊爾富' not in str(data.get('title')) or '士銓' not in str(data.get('title')):continue
-            count=0
-            for secs in (data.get('catalogSectionsMap') or {}).values():
-             for sec in secs if isinstance(secs,list) else []:
-              payload=(sec.get('payload') or {}).get('standardItemsPayload') or {}
-              heading=payload.get('title') or {}
-              heading=heading.get('text') if isinstance(heading,dict) else heading
-              for item in payload.get('catalogItems') or []:
-               ip=item.get('itemPromotion')
-               if item.get('uuid')==pid or (ip and count<6):
-                info={'section':heading,'sku':item.get('uuid'),'name':item.get('title'),'itemPromotion':ip,'promoInfo':item.get('promoInfo'),'catalogItemAnalyticsData':item.get('catalogItemAnalyticsData'),'imageOverlayElements':item.get('imageOverlayElements'),'itemThumbnailElements':item.get('itemThumbnailElements')}
-                print('EXACT_PROMO_PAYLOAD='+json.dumps(info,ensure_ascii=False,default=str)[:10000],flush=True)
-                if ip:count+=1
-            break
-          PY
-      - name: Audit ALL current native Uber menu promotions (read only)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/audit_native_promotions_all.py
-  audit-soymilk-raw:
-    name: Inspect historical HF RAW for 世界豆漿大王 冰豆漿
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[audit-bingdoujiang]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install HF read-only dependencies
-        run: pip install 'huggingface_hub>=0.25,<1'
-      - name: Read original HF menu captures and promo sections
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/audit_soymilk_raw.py
   schedule-recovery:
-    name: Recover only if scheduled crawl was missed
+    name: 只在排程漏跑時執行補抓
     if: ${{ github.event_name == 'schedule' && github.event.schedule == '30 11,23 * * *' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -305,188 +32,117 @@ jobs:
       needed: ${{ steps.check.outputs.needed }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify Turso has the latest scheduled window
+      - name: 檢查 Turso 是否已有上一時段資料
         id: check
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/should_crawl_backup.py
-  crawl:
+
+  ingest:
+    name: HF 原始資料 → V2 價格 → Turso
     needs: [schedule-recovery]
-    if: ${{ always() && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]') && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
-    # Limit only the database publisher. Browser QA must not monopolize the
-    # release lock or block deployment of a newer commit.
-    concurrency:
-      group: foodradar-publisher-v2
-      cancel-in-progress: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[emergency-stop-rebuild]') }}
+    if: ${{ always() && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    concurrency:
+      group: foodradar-database-publisher
+      cancel-in-progress: false
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: python -m unittest discover -s tests -v
-      - name: Check website JavaScript syntax
+
+      - name: 禁止未確認的正式資料庫重建
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild' }}
+        env:
+          CONFIRM_RESET: ${{ inputs.confirm_reset }}
         run: |
-          node --check web/app.js
-          node --check web/packed-turso.js
-          node --check web/data-contract.js
-          node tests/web_contract.cjs
-          node tests/price_history.cjs
-          node tests/web_interactions.cjs
-          node tests/packed_concurrency.cjs
-      - name: Crawl one location and upload to HF
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.publish_existing) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[crawl-now]')) }}
+          if [ "$CONFIRM_RESET" != "REBUILD_V2" ]; then
+            echo '全量重建需明確輸入 REBUILD_V2' >&2
+            exit 1
+          fi
+
+      - name: 抓取 Uber Eats 並保存原生 JSON 至 HF
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
-      - name: Recover pre-rebuild verified HF checkpoint
-        if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[restore-pre-rebuild-state]') }}
+
+      - name: 由最新 HF 原始資料建立 V2 發布資料
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/restore_pre_rebuild_checkpoint.py
-      - name: Restore latest verified HF Raw for initialization or retry
-        if: ${{ (github.event_name == 'push' && !contains(github.event.head_commit.message, '[crawl-now]')) || (github.event_name == 'workflow_dispatch' && inputs.publish_existing) }}
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[rebuild-price-history]') && '1' || '0' }}
+          FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
         run: python scripts/prepare_hf_release.py
-      - name: Inspect original HF RAW for 士林 楊桃甘露 price and promo
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/audit_yuchi_yangtao_raw.py
-      - name: Audit all HF raw price sources from the last seven days
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/audit_hf_price_history.py
-      - name: Diagnose saved effective-price oscillations
-        run: |
-          BATCH=$(cat data/latest.txt)
-          python scripts/audit_price_oscillations.py "data/$BATCH/serving.db"
-      - name: Verify BOGO category and open-state against stored Raw snapshots
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/verify_bogo_raw_snapshots.py
-      - name: Verify V2 native-only price observations before publishing
+
+      - name: 檢查原生計價證據及不合法優惠
         run: |
           python - <<'PY'
-          import json,sqlite3
+          import json, sqlite3
           from pathlib import Path
-          batch=Path('data/latest.txt').read_text().strip()
-          db=Path('data')/batch/'serving.db'
-          con=sqlite3.connect(db)
-          assert con.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
-          valid=('NONE','SAME_SKU_BXGY','DIRECT_DISCOUNT')
-          types=dict(con.execute('SELECT promotion_type,COUNT(*) FROM product_price_observations GROUP BY promotion_type'))
-          assert types.get('NONE',0)>0, 'No independently verified standard menu prices'
-          assert types.get('SAME_SKU_BXGY',0)>0, 'No native same-SKU BOGO observations'
-          assert types.get('DIRECT_DISCOUNT',0)>0, 'No native strike-through direct-discount observations'
-          assert set(types).issubset(valid), 'Unsupported promotion leaked into priced history'
-          wrong=con.execute("""SELECT COUNT(*) FROM products
-            WHERE seven_day_is_price_deal=1 AND
-            (price_evidence_status!='VERIFIED_MENU' OR delivery_available!=1)""").fetchone()[0]
-          assert wrong==0,'Unverified seven-day discount claim'
-          print('V2_NATIVE_PREPUBLICATION_CHECK='+json.dumps({
-            'batch':batch,'verified_price_types':types,
-            'invalid_active_discounts':wrong},ensure_ascii=False),flush=True)
+          batch = Path('data/latest.txt').read_text().strip()
+          db = Path('data') / batch / 'serving.db'
+          con = sqlite3.connect(db)
+          assert con.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+          types = dict(con.execute(
+              "SELECT promotion_type, COUNT(*) FROM product_price_observations GROUP BY promotion_type"))
+          assert types.get('NONE', 0) > 0, '沒有已驗證的一般商品價格'
+          assert types.get('SAME_SKU_BXGY', 0) > 0, '沒有原生同商品買送資料'
+          assert types.get('DIRECT_DISCOUNT', 0) > 0, '沒有原生直接折價資料'
+          assert set(types) <= {'NONE','SAME_SKU_BXGY','DIRECT_DISCOUNT'}
+          bad = con.execute("""SELECT COUNT(*) FROM products
+              WHERE seven_day_is_price_deal = 1 AND
+              (price_evidence_status != 'VERIFIED_MENU' OR delivery_available != 1)""").fetchone()[0]
+          assert bad == 0, '未驗證價格混入降價商品'
+          print('V2_PREPUBLICATION=' + json.dumps(
+              {'batch': batch,'verified_types': types,'invalid_deals': bad},
+              ensure_ascii=False), flush=True)
           PY
-      - name: Audit latest verified price comparisons and nonzero deal eligibility
+
+      - name: 獨立核對七日最高有效價格
         run: |
           BATCH=$(cat data/latest.txt)
           python scripts/audit_deal_pipeline.py "data/$BATCH/serving.db"
-      - name: Publish only necessary Turso rows and verify before commit
+
+      - name: 完整驗證後才發布 Turso
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.FOODRADAR_TURSO_WRITE_TOKEN }}
-          FOODRADAR_REBUILD: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[rebuild-price-history]') && '1' || '0' }}
-          FOODRADAR_RESET: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[reset-turso]') && '1' || '0' }}
+          FOODRADAR_FULL_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild' && '1' || '0' }}
         run: |
           BATCH=$(cat data/latest.txt)
           python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
           EXTRA=()
-          if [ "$FOODRADAR_REBUILD" = "1" ]; then
-            EXTRA=(--verified-rebuild-manifest "data/$BATCH/verified-rebuild.json")
-          fi
-          if [ "$FOODRADAR_RESET" = "1" ]; then
-            EXTRA+=(--reset-all)
+          if [ "$FOODRADAR_FULL_REBUILD" = "1" ]; then
+            EXTRA=(--verified-rebuild-manifest "data/$BATCH/verified-rebuild.json" --reset-all)
           fi
           python scripts/publish_turso_delta.py "data/$BATCH/packed-serving.db" --apply "${EXTRA[@]}" --report delta-report.json
-      - name: Independently query live Turso price statistics (read only)
+
+      - name: 以獨立唯讀連線驗證正式 Turso
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/audit_live_turso.py
-      - name: Verify Burger King discounted price in published web dataset
-        run: python scripts/verify_burger_king_price.py
-      - name: Persist fully rebuilt valid-price checkpoint after verified Turso write
-        if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[rebuild-price-history]') }}
+
+      - name: 全量重建成功後更新 HF V2 checkpoint
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/persist_valid_price_checkpoint.py
-      - name: Configure verified read-only website connection
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
-          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
-        run: |
-          python scripts/configure_web.py
-          python scripts/prepare_pages.py
-      - uses: actions/upload-artifact@v4
+
+      - name: 保存驗證報告
         if: always()
-        with:
-          name: crawl-report
-          path: data/**/report.json
-          retention-days: 3
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: serving-validation
-          path: |
-            packed-report.json
-            delta-report.json
-          retention-days: 3
-      - uses: actions/configure-pages@v5
-        if: github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')
-      - uses: actions/upload-pages-artifact@v3
-        if: github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')
-        with:
-          path: web
-      - uses: actions/deploy-pages@v4
-        if: github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')
-        id: deployment
-  live-site-acceptance:
-    name: Verify deployed website
-    # crawl deliberately uses always() because schedule-recovery is skipped for
-    # normal pushes; downstream must also override skipped ancestor propagation.
-    if: ${{ always() && needs.crawl.result == 'success' && (github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')) }}
-    needs: crawl
-    # The published Pages URL always points at the newest release. A slow
-    # Chromium install for an older SHA must be cancelled once a newer
-    # deployment queues its acceptance job, not reported as a price failure.
-    # Keep this lock separate from the crawl/Turso publisher so browser
-    # installation never blocks newer database releases.
-    concurrency:
-      group: foodradar-live-qa-${{ github.ref }}
-      cancel-in-progress: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install browser testing dependencies
-        run: |
-          npm install --no-save playwright@1.56.1
-          npx playwright install --with-deps chromium
-      - name: Verify live site (30-percent deals)
-        run: node tests/live_site.cjs
-      - name: Save browser diagnostics on failure
-        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: live-site-diagnostics
-          path: test-results/
-          if-no-files-found: warn
-          retention-days: 7
+          name: foodradar-data-validation
+          path: |
+            data/**/report.json
+            packed-report.json
+            delta-report.json
+          if-no-files-found: ignore
+          retention-days: 5
