@@ -1,10 +1,13 @@
 name: Stage HF ApiRaw V2 rebuilt prices (NO Turso writes)
 on:
+  push:
+    branches: [fix/v2-native-price-only-20261030]
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   stage:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-v2-raw]')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
