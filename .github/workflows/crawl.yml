@@ -5,6 +5,8 @@ on:
     paths:
       - 'scripts/prototype_pack_db.py'
       - 'src/crawl.py'
+      - 'config.json'
+      - 'scripts/migrate_hf_raw_repository.py'
       - 'src/feed_core.py'
       - 'src/raw_capture.py'
       - 'src/pipeline.py'
@@ -84,14 +86,21 @@ jobs:
             exit 1
           fi
 
-      - name: 封存未修改的 Feed / Store 原始 HTTP 回應至 HF FoodRadar/Raw
+      - name: 建立獨立 Hugging Face FoodRadar Dataset 並無損移轉 Raw
+        if: >-
+          ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): launch standalone FoodRadar dataset') }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/migrate_hf_raw_repository.py
+
+      - name: 封存未修改的 Feed / Store 原始 HTTP 回應至獨立 HF Dataset /Raw
         if: >-
           ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture')) }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
 
-      - name: 僅從 HF FoodRadar/Raw 重建 DB（禁止混入舊快照）
+      - name: 僅從獨立 HF Dataset 的 Raw/ 重建 DB（不讀舊倉庫）
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
@@ -146,12 +155,6 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/audit_live_turso.py
-
-      - name: 全量重建成功後更新 HF V2 checkpoint
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild' }}
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/persist_valid_price_checkpoint.py
 
       - name: 保存驗證報告
         if: always()
