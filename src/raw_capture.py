@@ -60,10 +60,23 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 3) -> dict:
                 )
                 relative = f"stores/{uuid}-attempt-{attempt:02d}-status-{response.status_code}.body"
                 capture_response(root, relative, response)
+                # Terminal inactive responses are complete captures too.
+                # Only the DB adapter turns them into an inactive-store record.
+                if response.status_code in (404, 410):
+                    result.update(success=True, inactive=True, response_path=relative,
+                                  captured_at=datetime.now(TW).isoformat())
+                    return result
                 # This parsing only controls retry. Saved response bytes are unchanged.
                 if response.status_code == 200:
                     payload = response.json()
                     data = payload.get("data") if isinstance(payload, dict) else None
+                    code = str(data.get("code") or "") if isinstance(data, dict) else ""
+                    message = str(data.get("message") or "").lower() if isinstance(data, dict) else ""
+                    if (payload.get("status") == "failure" and
+                            (code in ("404", "410") or "inactive_account" in message)):
+                        result.update(success=True, inactive=True, response_path=relative,
+                                      captured_at=datetime.now(TW).isoformat())
+                        return result
                     if isinstance(data, dict) and (data.get("title") or data.get("catalogSectionsMap")):
                         result.update(success=True, response_path=relative,
                                       captured_at=datetime.now(TW).isoformat())
@@ -149,7 +162,7 @@ def archive_and_upload(root: Path, config: dict, batch: str,
 
 def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
     """ETL adapter: only for DB construction; never writes to HF Raw."""
-    from menu_core import convert_api_data_to_schema
+    from menu_core import convert_api_data_to_schema, create_inactive_store_schema
     from snapshot_validation import validate_document
 
     members = {m.name: m for m in archive.getmembers() if m.isfile()}
@@ -167,11 +180,19 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
         if not store.get("success"):
             raise ValueError("Cannot publish an incomplete store capture")
         raw = store["response_path"]
-        envelope = json.loads(archive.extractfile(members[raw]).read())
-        native = envelope.get("data") if isinstance(envelope, dict) else None
-        if not isinstance(native, dict):
-            raise ValueError(f"Missing native menu: {raw}")
-        doc = convert_api_data_to_schema(native, store["store_url"])
+        if store.get("inactive"):
+            doc = create_inactive_store_schema(
+                {"name": "", "city": ""}, store["store_url"],
+                store["store_uuid"],
+                hashlib.md5(store["store_url"].encode()).hexdigest(),
+                batch + "_",
+            )
+        else:
+            envelope = json.loads(archive.extractfile(members[raw]).read())
+            native = envelope.get("data") if isinstance(envelope, dict) else None
+            if not isinstance(native, dict):
+                raise ValueError(f"Missing native menu: {raw}")
+            doc = convert_api_data_to_schema(native, store["store_url"])
         doc.update(
             store_uuid=store["store_uuid"],
             store_id=hashlib.md5(store["store_url"].encode()).hexdigest(),
