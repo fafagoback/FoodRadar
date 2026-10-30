@@ -6,7 +6,7 @@ on:
       - 'scripts/prototype_pack_db.py'
       - 'src/crawl.py'
       - 'config.json'
-      - 'scripts/migrate_hf_raw_repository.py'
+      - 'scripts/bootstrap_hf_dataset.py'
       - 'src/feed_core.py'
       - 'src/raw_capture.py'
       - 'src/pipeline.py'
@@ -86,16 +86,16 @@ jobs:
             exit 1
           fi
 
-      - name: 建立獨立 Hugging Face FoodRadar Dataset 並無損移轉 Raw
+      - name: 建立獨立 Hugging Face FoodRadar Dataset（不讀取舊倉庫）
         if: >-
-          ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): launch standalone FoodRadar dataset') }}
+          ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): bootstrap independent FoodRadar Raw dataset') }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/migrate_hf_raw_repository.py
+        run: python scripts/bootstrap_hf_dataset.py
 
       - name: 封存未修改的 Feed / Store 原始 HTTP 回應至獨立 HF Dataset /Raw
         if: >-
-          ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture')) }}
+          ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): bootstrap independent FoodRadar Raw dataset'))) }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
@@ -140,7 +140,7 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.FOODRADAR_TURSO_WRITE_TOKEN }}
           FOODRADAR_FULL_REBUILD: >-
-            ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'fix(raw): reset dirty Turso from clean HF Raw')) && '1' || '0' }}
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'fix(raw): reset dirty Turso from clean HF Raw') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): bootstrap independent FoodRadar Raw dataset'))) && '1' || '0' }}
         run: |
           BATCH=$(cat data/latest.txt)
           python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
