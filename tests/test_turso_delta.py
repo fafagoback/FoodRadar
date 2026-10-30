@@ -144,6 +144,58 @@ class DeltaTests(unittest.TestCase):
         self.assertEqual([(r['store_id'],r['store_uuid']) for r in self.remote.query(
             'SELECT store_id,store_uuid FROM store_directory')],[(0,'uuid-a')])
 
+    def test_explicit_raw_only_reset_drops_dirty_history_and_reloads_new(self):
+        self.local.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
+        self.local.execute('UPDATE metadata SET value=? WHERE key=?',
+                           (json.dumps('20261030153957'), 'latest_batch'))
+        self.local.execute("INSERT INTO metadata VALUES('source_counts',?)", (
+            json.dumps({'stores':1,'products':1,'crawl_batches':1}),))
+        self.local.commit()
+        publish(self.path, self.remote, True)
+        self.remote.query("INSERT INTO store_directory(store_id,store_uuid,name,chunk_count) VALUES(0,'legacy-uuid','Dirty legacy',1)")
+        self.remote.query('UPDATE metadata SET value=? WHERE key=?',
+                          (json.dumps('20261030100605'), 'latest_batch'))
+        with tempfile.TemporaryDirectory() as temp:
+            proof = Path(temp) / 'verified-rebuild.json'
+            proof.write_text(json.dumps({
+                'format':'foodradar-immutable-raw-only-rebuild-v1',
+                'batch_id':'20261030153957',
+                'source_prefix':'FoodRadar/Raw/',
+                'legacy_snapshot_count':0,
+                'raw_manifest_count':1,
+                'verified_manifest_count':1,
+                'manifest_digest':'a'*64,
+                'source_counts':{'stores':1,'products':1,'crawl_batches':1},
+            }),encoding='utf-8')
+            report = publish(self.path, self.remote, True, proof, True)
+            self.assertTrue(report['applied'])
+            self.assertTrue(report['reset_all'])
+            self.assertEqual(self.remote.query(
+                'SELECT COUNT(*) AS n FROM store_directory')[0]['n'],0)
+            self.assertEqual(json.loads(self.remote.query(
+                "SELECT value FROM metadata WHERE key='latest_batch'")[0]['value']),
+                '20261030153957')
+
+    def test_raw_only_reset_rejects_legacy_source_prefix(self):
+        from publish_turso_delta import verified_rebuild_evidence
+        local = {'latest_batch':'"20261030153957"',
+                 'source_counts':json.dumps({'stores':1,'products':1,'crawl_batches':1})}
+        old = {'source_counts':json.dumps({'stores':200,'products':300,'crawl_batches':58})}
+        with tempfile.TemporaryDirectory() as temp:
+            proof = Path(temp) / 'proof.json'
+            proof.write_text(json.dumps({
+                'format':'foodradar-immutable-raw-only-rebuild-v1',
+                'batch_id':'20261030153957',
+                'source_prefix':'FoodRadar/snapshots/',
+                'legacy_snapshot_count':0,
+                'raw_manifest_count':1,
+                'verified_manifest_count':1,
+                'manifest_digest':'a'*64,
+                'source_counts':{'stores':1,'products':1,'crawl_batches':1},
+            }),encoding='utf-8')
+            with self.assertRaisesRegex(ValueError,'Raw-only reset evidence'):
+                verified_rebuild_evidence(proof,local,old)
+
     def test_original_database_url_is_rejected(self):
         with self.assertRaises(ValueError):
             Remote('https://ubereats-packed-v1-eeetchen.aws-ap-northeast-1.turso.io','unused')
