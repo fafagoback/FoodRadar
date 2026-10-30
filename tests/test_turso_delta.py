@@ -145,7 +145,7 @@ class DeltaTests(unittest.TestCase):
         self.assertFalse(verified_rebuild_evidence(None,local,prior))
         with tempfile.TemporaryDirectory() as temp:
             evidence=Path(temp)/'proof.json'
-            proof={'format':'foodradar-full-raw-replay-v1','batch_id':'20261027144628',
+            proof={'format':'foodradar-full-raw-replay-v2','batch_id':'20261027144628',
                    'verified_manifest_count':49,'manifest_digest':'a'*64,
                    'source_counts':{'stores':546,'products':22357,'crawl_batches':49}}
             evidence.write_text(json.dumps(proof))
