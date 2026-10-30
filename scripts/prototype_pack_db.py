@@ -42,6 +42,18 @@ CREATE TABLE auxiliary_bundles(
   name TEXT PRIMARY KEY,codec TEXT NOT NULL,raw_bytes INTEGER NOT NULL,
   checksum TEXT NOT NULL,payload BLOB NOT NULL
 );
+CREATE TABLE web_products(
+  store_uuid TEXT NOT NULL,product_uuid TEXT NOT NULL,
+  card TEXT NOT NULL,checksum TEXT NOT NULL,search_text TEXT NOT NULL,
+  city TEXT,category TEXT,discount_pct REAL,savings REAL,unit_price REAL,
+  rating REAL,new_item INTEGER,promo INTEGER,price_drop INTEGER,platform_promo INTEGER,
+  latitude REAL,longitude REAL,PRIMARY KEY(store_uuid,product_uuid)
+);
+CREATE INDEX idx_web_deals ON web_products(price_drop,discount_pct DESC,savings DESC);
+CREATE INDEX idx_web_promos ON web_products(promo,unit_price);
+CREATE INDEX idx_web_new ON web_products(new_item,rating DESC);
+CREATE INDEX idx_web_rating ON web_products(rating DESC);
+CREATE INDEX idx_web_city ON web_products(city);
 """
 
 
@@ -183,6 +195,72 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                     terms.add("f:promo")
                 if current_verified and float(product["seven_day_discount_pct"] or 0) > 0:
                     terms.add(f"f:discount:{int(float(product['seven_day_discount_pct']) // 5)}")
+            # Indexed, denormalized browsing cards. The archived bundles remain lossless;
+            # browser searches no longer have to download/decompress entire stores.
+            if searchable and int(store["is_open"] or 0) == 1 and int(product["is_open"] or 0) == 1 and native_verified:
+                effective = float(product["menu_quote_effective_price"] or 0)
+                if effective > 0:
+                    raw_price = float(product["menu_quote_price"] or 0)
+                    normal_price = float(product["price"] or 0)
+                    week_reference = float(product["seven_day_reference_price"] or 0)
+                    week_pct = float(product["seven_day_discount_pct"] or 0) if current_menu else 0
+                    drop = (current_menu and week_pct > 0 and week_reference > effective)
+                    ptype = product["menu_quote_promo_type"] or product["promo_type"] if raw_price > 0 else product["promo_type"]
+                    platform = (float(product["verified_discount_pct"] or 0) > 0
+                                and (re.fullmatch(r"買[0-9]+送[0-9]+",str(ptype or "")) is not None or ptype == "直接折價"))
+                    new_item = (str(product["listing_started_at"] or "")[:10] > str(baseline_time)[:10]
+                                and str(product["listing_started_at"] or "")[:10] > str(store["first_seen"] or "")[:10]
+                                and str(product["listing_started_at"] or "") >= cutoff)
+                    is_current_price = current_verified and normal_price > 0
+                    card = {
+                        "product_id": product["product_uuid"], "product_uuid": product["product_uuid"],
+                        "store_id": sid, "store_uuid": sid, "store_name": store["name"],
+                        "product_name": product["product_name"], "category_name": product["category"],
+                        "description": product["description"],
+                        "price": raw_price if raw_price > 0 else normal_price,
+                        "quantity": int(product["menu_quote_quantity"] or 1) if raw_price > 0 else int(product["quantity"] or 1),
+                        "promo_type": ptype, "eff_price": effective, "effective_price": effective,
+                        "verified_discount_pct": float(product["verified_discount_pct"] or 0),
+                        "price_evidence_status": "VERIFIED_MENU",
+                        "order_action_url": product["order_url"] or store["order_url"],
+                        "rating_value": store["rating"], "review_count": int(store["review_count"] or 0),
+                        "locality": store["locality"], "street_address": store["address"],
+                        "city": store["city"], "latitude": store["latitude"], "longitude": store["longitude"],
+                        "crawled_time": product["last_seen"] or latest_time,
+                        "first_seen": product["first_seen"],
+                        "listing_started_at": product["listing_started_at"] or product["first_seen"],
+                        "original_price": week_reference if drop else effective,
+                        "reference_price": float(product["reference_price"]) if float(product["reference_price"] or 0) > 0 else None,
+                        "seven_day_reference_price": week_reference if week_reference > 0 else None,
+                        "is_new_price_drop": int(is_current_price and int(product["is_price_drop"] or 0) == 1),
+                        "is_verified_delivery_deal": bool(drop and is_current_price),
+                        "archive_reference_price": float(product["archive_reference_price"] or 0) if is_current_price else 0,
+                        "archive_discount_pct": float(product["archive_discount_pct"] or 0) if is_current_price else 0,
+                        "archive_savings_amount": float(product["archive_discount_amount"] or 0) if is_current_price else 0,
+                        "archive_evidence_count": int(product["archive_evidence_count"] or 0) if is_current_price else 0,
+                        "archive_is_price_deal": int(product["archive_is_price_deal"] or 0) if is_current_price else 0,
+                        "current_price": effective, "price_direction": product["price_direction"] or "unknown",
+                        "price_change_amount": float(product["price_change_amount"] or 0),
+                        "price_change_percent": float(product["price_change_percent"] or 0),
+                        "is_price_drop": int(drop), "discount_pct": week_pct if drop else 0,
+                        "savings_amount": float(product["seven_day_discount_amount"] or 0) if drop else 0,
+                        "is_price_deal": int(product["seven_day_is_price_deal"] or 0) if drop else 0,
+                        "is_current_price_observation": bool(is_current_price),
+                        "is_current_menu_observation": bool(current_menu),
+                        "is_menu_catalog_available": True,
+                        "delivery_available": bool(is_current_price) if current_menu else None,
+                        "status": product["status"], "is_open": 1,
+                    }
+                    serialized = json.dumps(card,ensure_ascii=False,separators=(",",":"))
+                    search_text = " ".join((normalize(store["name"]),normalize(product["product_name"]),
+                                            normalize(product["category"]),normalize(store["locality"]),normalize(store["address"])))
+                    dst.execute("""INSERT INTO web_products VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(
+                        sid,product["product_uuid"],serialized,hashlib.sha256(serialized.encode()).hexdigest(),
+                        search_text,store["city"],product["category"],week_pct if drop else 0,
+                        float(product["seven_day_discount_amount"] or 0) if drop else 0,effective,
+                        store["rating"],int(new_item),int((platform or drop) and is_current_price),
+                        int(drop and is_current_price),int(platform and is_current_price),
+                        store["latitude"],store["longitude"]))
             for term in sorted(terms):
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
                 # One integer identifies store and product without a row-per-product
