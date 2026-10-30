@@ -163,9 +163,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                     seven_day_reference_products += 1
                 if current_verified:
                     current_verified_products += 1
-                if current_menu and platform_promo:
+                if current_verified and platform_promo:
                     active_platform_promotions += 1
-                if current_menu and int(product["seven_day_is_price_deal"] or 0) == 1:
+                if current_verified and int(product["seven_day_is_price_deal"] or 0) == 1:
                     active_30pct_drops += 1
                 if current_verified and float(product["archive_reference_price"] or 0) > 0:
                     archive_reference_products += 1
@@ -178,10 +178,10 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'][:10] > store['first_seen'][:10]
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
-                if current_menu and (platform_promo
+                if current_verified and (platform_promo
                         or float(product["seven_day_discount_pct"] or 0) > 0):
                     terms.add("f:promo")
-                if current_menu and float(product["seven_day_discount_pct"] or 0) > 0:
+                if current_verified and float(product["seven_day_discount_pct"] or 0) > 0:
                     terms.add(f"f:discount:{int(float(product['seven_day_discount_pct']) // 5)}")
             for term in sorted(terms):
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
