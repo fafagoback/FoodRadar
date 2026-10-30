@@ -15,15 +15,55 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 concurrency:
   group: foodradar-pages-deployment
   cancel-in-progress: true
 jobs:
+  ingest-gate:
+    name: 確認爬蟲實際成功發布資料
+    if: ${{ github.event_name == 'workflow_run' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      published: ${{ steps.verify.outputs.published }}
+    steps:
+      - name: 只允許實際完成的資料更新觸發網站部署
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from urllib.request import Request, urlopen
+          allowed = os.environ["SOURCE_CONCLUSION"] == "success" and os.environ["SOURCE_BRANCH"] == "main"
+          if allowed:
+              url = (f'https://api.github.com/repos/{os.environ["GH_REPOSITORY"]}'
+                     f'/actions/runs/{os.environ["SOURCE_RUN_ID"]}/jobs?per_page=100')
+              request = Request(url, headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              })
+              with urlopen(request, timeout=25) as response:
+                  jobs = json.load(response).get("jobs", [])
+              allowed = any(j.get("name") == "HF 原始資料 → V2 價格 → Turso"
+                            and j.get("conclusion") == "success" for j in jobs)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f'published={str(allowed).lower()}\n')
+          print('VERIFIED_INGEST_DEPLOY_GATE=' + str(allowed))
+          PY
+
   deploy:
     name: 部署最新程式與已驗證資料版本
-    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
+    needs: [ingest-gate]
+    if: ${{ always() && (github.event_name != 'workflow_run' || needs.ingest-gate.outputs.published == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 18
     environment:
