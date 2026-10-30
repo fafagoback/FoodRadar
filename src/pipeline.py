@@ -136,7 +136,7 @@ def restore_history(config, rebuild_all=False):
             if len(verified_manifest_paths) != len(manifests):
                 raise ValueError('Incomplete HF Raw replay: cannot authorize replacement')
             evidence = {
-                'format': 'foodradar-full-raw-replay-v1',
+                'format': 'foodradar-full-raw-replay-v2',
                 'batch_id': local_batch,
                 'verified_manifest_count': len(verified_manifest_paths),
                 'manifest_digest': hashlib.sha256(
