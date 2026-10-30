@@ -18,7 +18,7 @@ jobs:
       - name: Verify real production V2 site end to end
         env:
           # QA runs on a test branch; the deployed release is the merged main SHA.
-          GITHUB_SHA: ab6e491610a56619a70dbfad0faa59320ecb517d
+          FOODRADAR_EXPECTED_COMMIT: ab6e491610a56619a70dbfad0faa59320ecb517d
         run: node tests/live_site.cjs
       - uses: actions/upload-artifact@v4
         if: failure()
