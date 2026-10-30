@@ -9,8 +9,8 @@ from verified_prices import quote_from_native_item
 from serving_state import apply_snapshot
 from verified_weekly import update_verified_weekly
 
-SID = "v2-store"
-PID = "same-sku"
+SID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+PID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 BATCH1 = "20261029063000"
 BATCH2 = "20261030063000"
 
