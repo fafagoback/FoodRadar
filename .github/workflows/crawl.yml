@@ -91,7 +91,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
 
-      - name: 只從 HF FoodRadar/Raw 讀取新資料並轉換為 DB（相容舊批次）
+      - name: 僅從 HF FoodRadar/Raw 重建 DB（禁止混入舊快照）
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
@@ -130,7 +130,7 @@ jobs:
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.FOODRADAR_TURSO_WRITE_TOKEN }}
-          FOODRADAR_FULL_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild' && '1' || '0' }}
+          FOODRADAR_FULL_REBUILD: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'fix(raw): reset dirty Turso from clean HF Raw')) && '1' || '0' }}
         run: |
           BATCH=$(cat data/latest.txt)
           python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
