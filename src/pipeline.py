@@ -58,6 +58,9 @@ def restore_history(config, rebuild_all=False):
     checkpoint_path=f'{folder}/state/latest.json'
     if not rebuild_all and not local_batch and checkpoint_path in files:
         checkpoint=json.loads(Path(hf_hub_download(config['hf_repo_id'],checkpoint_path,repo_type='dataset')).read_text(encoding='utf-8'))
+        # Never restore V1 text-inferred effective prices as V2 historical truth.
+        if checkpoint.get('schema_version') != 2:
+            raise RuntimeError('Legacy HF checkpoint is V1; rebuild V2 from ApiRaw first')
         packed=Path(hf_hub_download(config['hf_repo_id'],checkpoint['state_path'],repo_type='dataset')).read_bytes()
         if hashlib.sha256(packed).hexdigest()!=checkpoint['sha256']:
             raise ValueError('HF permanent state checksum mismatch')
@@ -90,7 +93,19 @@ def restore_history(config, rebuild_all=False):
                     prior.backup(conn)
                     prior.close()
             with tarfile.open(archive_path,'r:gz') as tar:
-                docs=[json.load(tar.extractfile(m)) for m in tar.getmembers() if m.name.startswith('Json/') and m.name.endswith('.json')]
+                from raw_price_enrichment import enrich_converted_with_native
+                members = {m.name: m for m in tar.getmembers() if m.isfile() and m.name.endswith('.json')}
+                docs = []
+                for name in sorted(members):
+                    if not name.startswith('Json/'):
+                        continue
+                    doc = json.load(tar.extractfile(members[name]))
+                    raw_name = 'ApiRaw/' + name[len('Json/'):]
+                    if raw_name in members:
+                        wrapper = json.load(tar.extractfile(members[raw_name]))
+                        doc = enrich_converted_with_native(doc, wrapper)
+                    # Json-only historical records have no native promo proof.
+                    docs.append(doc)
             if len(docs)!=meta['store_count']:
                 raise ValueError('HF store count mismatch')
             apply_snapshot(conn,docs,batch)
@@ -253,10 +268,10 @@ def build_snapshot(output, config):
     # Recompute legacy promotion/discount baselines before building the
     # published web DB and the persisted HF normalized checkpoint.
     sys.path.insert(0, str(ROOT/'scripts'))
-    from repair_effective_prices import repair
+    # V2 never recomputes native prices from legacy promo text.
     repair(serving)
-    from restore_hf_menu_quotes import restore_archive_price_references
-    restore_archive_price_references(serving, config, batch)
+
+    # Old text-only HF histories are explicitly excluded from V2 baselines.
     print(f"VALID_OPEN_STORES={counts['stores']} RAW_ONLY_CLOSED_STORES={counts['skipped_closed_stores']}", flush=True)
     subprocess.run([sys.executable,str(ROOT/'scripts/build_web_db.py'),
                     str(serving),str(output/'packed-serving.db')],check=True)
@@ -309,7 +324,7 @@ def upload_snapshot(output, config):
     with (output/'serving.db').open('rb') as source, gzip.open(state_path,'wb') as dest:
         shutil.copyfileobj(source,dest)
     state_remote=f'{folder}/state/{batch}/serving-state.db.gz'
-    state_manifest={'schema_version':1,'batch_id':batch,'state_path':state_remote,
+    state_manifest={'schema_version':2,'batch_id':batch,'state_path':state_remote,
                     'sha256':hashlib.sha256(state_path.read_bytes()).hexdigest()}
     operations.extend([
         CommitOperationAdd(path_in_repo=state_remote,path_or_fileobj=str(state_path)),
