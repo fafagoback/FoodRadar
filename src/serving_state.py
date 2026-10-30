@@ -8,7 +8,7 @@ from __future__ import annotations
 
 try:
     from .city_normalization import canonical_city
-    from .json_to_db import extract_promo_info, calculate_effective_price
+    from .verified_prices import quote_from_converted_item, quote_numbers
     from .price_change import PriceChange
 except ImportError:
     from city_normalization import canonical_city
@@ -603,10 +603,10 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     "effective_price": effective, "order_url": order_url,
                     "is_open": is_open,
                 }
-                # A flag on event JSON, not another SQL/Turso column.
+                # Event JSON is an audit trail, not a price inference input.
                 event_state = {**state, "price_valid": bool(price_valid),
-                               "menu_quote_valid": bool(observed_price > 0),
-                               "menu_price_comparable": bool(quote_price_valid and observed_price > 0),
+                               "menu_quote_valid": bool(quote_valid),
+                               "menu_price_comparable": bool(quote_valid),
                                "delivery_available": bool(store_price_valid)}
                 ph = canonical_hash(state)
 
