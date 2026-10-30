@@ -16,6 +16,7 @@ TABLE_KEYS = {
     'search_buckets': ('bucket_id',),
     'auxiliary_bundles': ('name',),
     'metadata': ('key',),
+    'web_products': ('store_uuid', 'product_uuid'),
 }
 MAX_DELTA_BYTES = 262_144_000
 
@@ -101,7 +102,7 @@ def same_row(candidate, published):
 def remote_rows(remote, table, exists):
     if table not in exists:
         return {}
-    cols = ','.join((*TABLE_KEYS[table], 'checksum')) if table.endswith('bundles') or table == 'search_buckets' else '*'
+    cols = ','.join((*TABLE_KEYS[table], 'checksum')) if table.endswith('bundles') or table in ('search_buckets','web_products') else '*'
     rows = remote.query(f'SELECT {cols} FROM {table}')
     return {tuple(row[k] for k in TABLE_KEYS[table]): row for row in rows}
 
@@ -261,6 +262,9 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None, reset
                     pending.append((sql,args,False))
                     size += item_size
             flush()
+            # Create optimized indexes after the bulk upsert, inside the same transaction.
+            for (ddl,) in conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL AND tbl_name='web_products'"):
+                remote.query(ddl)
             # Verify every key/checksum and directory/metadata value before commit.
             for table in TABLE_KEYS:
                 local = [dict(row) for row in conn.execute(f'SELECT * FROM {table}')]
