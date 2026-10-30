@@ -59,7 +59,7 @@ def restore_history(config, rebuild_all=False):
     api = HfApi(token=os.environ.get('HF_TOKEN'))
     files = api.list_repo_files(repo_id=config['hf_repo_id'], repo_type='dataset')
     manifests = sorted(p for p in files
-                       if p.startswith(f'{folder}/Raw/') and p.endswith('/manifest.json'))
+                       if p.startswith(f'{folder}/') and p.endswith('/manifest.json'))
     if not manifests:
         raise RuntimeError(f'No immutable snapshots under {folder}/Raw; refusing DB update')
 
@@ -77,7 +77,7 @@ def restore_history(config, rebuild_all=False):
             'raw_manifests':len(manifests),
             'legacy_snapshots_read':0,
             'legacy_checkpoints_read':0,
-            'path': f'{folder}/Raw/',
+            'path': f'{folder}/',
         },ensure_ascii=False),flush=True)
         for manifest_path in manifests:
             meta = json.loads(Path(hf_hub_download(
@@ -90,7 +90,7 @@ def restore_history(config, rebuild_all=False):
                 raise ValueError(f'Nonmonotonic immutable Raw batch: {manifest_path}')
             if (meta.get('format') != 'foodradar-immutable-http-body-v1'
                     or not str(meta.get('archive_path') or '').startswith(
-                        f'{folder}/Raw/{current_batch}/')):
+                        f'{folder}/{current_batch}/')):
                 raise ValueError(f'Invalid immutable Raw source path: {manifest_path}')
             downloaded = Path(hf_hub_download(
                 config['hf_repo_id'], meta['archive_path'], repo_type='dataset'
@@ -115,7 +115,7 @@ def restore_history(config, rebuild_all=False):
             },ensure_ascii=False),flush=True)
         conn.execute(
             "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-            ('raw_source', f'{folder}/Raw/'))
+            ('raw_source', f'{folder}/'))
         conn.execute(
             "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
             ('raw_snapshot_count', str(len(replayed))))
@@ -134,7 +134,7 @@ def restore_history(config, rebuild_all=False):
             'verified_manifest_count':len(replayed),
             'manifest_digest':hashlib.sha256(
                 '\n'.join(replayed).encode('utf-8')).hexdigest(),
-            'source_prefix':f'{folder}/Raw/',
+            'source_prefix':f'{folder}/',
             'legacy_snapshot_count':0,
             'source_counts':{
                 'stores':conn.execute('SELECT COUNT(*) FROM stores').fetchone()[0],

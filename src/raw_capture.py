@@ -97,9 +97,9 @@ def archive_and_upload(root: Path, config: dict, batch: str,
     from huggingface_hub import CommitOperationAdd, HfApi
 
     folder = config["hf_folder"].strip("/")
-    if folder != "FoodRadar":
-        raise ValueError("Raw captures must be stored below FoodRadar/Raw")
-    prefix = f"{folder}/Raw/{batch}"
+    if config["hf_repo_id"] != "hub-google/FoodRadar" or folder != "Raw":
+        raise ValueError("Raw must go to independent hub-google/FoodRadar dataset /Raw")
+    prefix = f"{folder}/{batch}"
     raw_files = sorted(p for p in root.rglob("*.body") if p.is_file())
     if not raw_files:
         raise RuntimeError("No actual response bodies to archive")
@@ -132,7 +132,7 @@ def archive_and_upload(root: Path, config: dict, batch: str,
     ]
     if complete:
         operations.append(CommitOperationAdd(
-            path_in_repo=f"{folder}/Raw/latest.json", path_or_fileobj=payload))
+            path_in_repo=f"{folder}/latest.json", path_or_fileobj=payload))
     api = HfApi(token=os.environ["HF_TOKEN"])
     api.create_commit(
         repo_id=config["hf_repo_id"], repo_type="dataset", operations=operations,

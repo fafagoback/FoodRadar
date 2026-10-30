@@ -143,7 +143,7 @@ def verified_rebuild_evidence(path, local_meta, old_meta):
         # The source has independently been SHA256 checked and replayed from
         # FoodRadar/Raw alone. Never allow legacy paths as reset evidence.
         if (proof.get('batch_id') != json.loads(local_meta.get('latest_batch', 'null'))
-                or proof.get('source_prefix') != 'FoodRadar/Raw/'
+                or proof.get('source_prefix') != 'Raw/'
                 or proof.get('legacy_snapshot_count') != 0
                 or not isinstance(verified_count, int) or verified_count < 1
                 or proof.get('raw_manifest_count') != verified_count

@@ -4,12 +4,12 @@
 
 ## 2026-10-30 原始資料永久規格（優先於下方舊版流程說明）
 
-**唯一的新採集原始資料路徑：** `hub-google/UberEat/FoodRadar/Raw/<YYYYMMDDHHMMSS>/capture.tar.gz`。
+**唯一的新採集原始資料來源（獨立 Dataset Repository）：** `hub-google/FoodRadar`，其內 `Raw/<YYYYMMDDHHMMSS>/capture.tar.gz`。舊 `hub-google/UberEat` 之任何檔案均不再作為 DB 來源。
 
 - 爬蟲直接以二進位保存 `getFeedV1` 每頁、每次 HTTP 回應，以及 `getStoreV1` 每間店、每次 HTTP 回應的 `response.content`，不重新序列化 JSON、不轉換幣值、不改欄位、不刪促銷內容、不做商品正規化。Tar/Gzip 只做無損封存，解壓後原始回應的 SHA-256 必須一致。
 - `manifest.json` 是獨立的採集索引與 SHA-256 清單，不插入原始回應。失敗與停業回應也必須保留。歷史 Raw 快照不可覆寫；失敗批次可以封存但不可發布到 DB。
 - 只有在原始回應完整上傳 HF、重新下載並逐檔核對成功後，`scripts/prepare_hf_release.py` / `src/pipeline.py:restore_history` 才能**從 HF 讀回 Raw**，進行店家識別、商品解析、單位換算、促銷、營業狀態、七日比較及 Turso 發布。
-- `FoodRadar/snapshots`、`FoodRadar/Parquet`、`FoodRadar/state` 等既有歷史檔案保留不動，僅供舊批次相容或歷史用途；**新爬蟲不再對這些目錄新增資料**。所有新採集從 `FoodRadar/Raw/` 讀取。
+- `hub-google/UberEat` 的任何舊檔、checkpoint、Parquet 都不會讀取，也不會寫入新 Dataset。**新的獨立 Repository `hub-google/FoodRadar` 僅使用 `Raw/` 存放原始回應，DB 只由此讀取**。
 - 爬蟲操作原始回應只為判斷請求成功、下一頁與要抓哪些店，這些操作不得修改或取代 HF 保存的原始回應。DB 轉換的失敗不允許回寫或刪除原始快照。
 
 ## 1. 專案目的與監控範圍
@@ -76,14 +76,14 @@
 ## 3. 資料生命週期與防重複
 
 1. `src/crawl.py` 掃描此配送座標的店家，將同次 feed 依正規化店家 UUID 去重，抓取逐店菜單；任何店家抓取失敗即拒絕發布不完整快照。HF Raw 完整封存所有成功抓取的店家與菜單（含非營業時段）。
-2. `src/pipeline.py:restore_history` 優先從 Hugging Face 永久 normalized state 還原先前 `serving.db`（驗證 SHA-256、SQLite integrity 與批次一致性），再補入新於 checkpoint 的已完成 Raw 快照。
+2. `src/pipeline.py:restore_history` 每次只重播 `hub-google/FoodRadar` Repository 的 `Raw/` 原始批次。**絕不從舊 `hub-google/UberEat` 或 normalized state/checkpoint 還原**。
 3. `src/price_observation.py` **分開**驗證：`menu_catalog_valid()` 允許營業或非營業時段的有價菜單進入一般商品資料庫；`menu_price_observation_valid()` 僅將營業時段報價納入正式比價，與是否可外送分離；`price_observation_valid()` 僅代表採集當批確認可外送。非營業菜單可更新最近目錄報價，但不新增七日比價樣本。
 4. `src/serving_state.py` 對有效菜單報價（無論是否可外送），以店家 UUID、商品複合 UUID 查詢含 inactive 的歷史資料。存在則更新狀態但不重設 `first_seen`；不存在才插入並產生 `STORE_NEW` 或 `NEW` 事件。
 4. 店家缺席會累積 `missing_streak`，達預設門檻成 `inactive`；回歸產生 `STORE_REAPPEARED`，不重設首次日期。
 5. 商品在可見且已驗證營業的店家菜單內缺席累積 `missing_streak`，達門檻成 `inactive`；滿 60 天再觀測時標記季節性回歸並更新本輪上架日期。
 6. `scripts/prototype_pack_db.py` 從歷史 state 建立查詢用 Packed DB：新店保留 `first_seen`；新商品以 `listing_started_at` 的七日視窗、基準日和店家首次日期產生 `f:new` 索引。
 7. 靜態 JSON 及衍生 Parquet 採用同一營業判斷，防止另一條 ETL 路徑重新寫入髒資料。
-8. Turso 使用只寫入必要差異的發布程序，驗證後才提交；原始快照、最後已知菜單報價及獨立的可外送價格驗證狀態保存在 HF。既有髒資料如需重播 HF Raw 重建，**必須先確認歷史 Raw 完整**；若候選店家或商品較既有持久資料減少超過 30%（基準筆數至少 100），發布器會拒絕覆蓋，以免因 Raw 不完整大規模刪除原本有效的資料。
+8. Turso 使用只寫入必要差異的發布程序，驗證後才提交；原始快照、最後已知菜單報價及獨立的可外送價格驗證狀態保存在 HF。來源切換或清庫時，使用已驗證的獨立 Raw 封存及其校驗證明進行交易式完整重建，禁止再灌入舊髒資料。
 
 ## 4. 正式系統架構
 
