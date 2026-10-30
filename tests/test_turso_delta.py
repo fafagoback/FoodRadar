@@ -54,6 +54,32 @@ class DeltaTests(unittest.TestCase):
         self.assertEqual(again['delta_bytes'],0)
         self.assertTrue(all(s['upsert']==s['delete']==0 for s in again['tables'].values()))
 
+    def test_empty_six_table_foodradar_schema_can_initialize(self):
+        # A prior DB cleanup may leave schemas but zero application rows.
+        self.remote.conn.executescript(SCHEMA)
+        result = publish(self.path, self.remote, True)
+        self.assertTrue(result['applied'])
+        self.assertTrue(result['initialization'])
+        self.assertEqual(
+            self.remote.query("SELECT value FROM metadata WHERE key='application'")[0]['value'],
+            '"FoodRadar"')
+
+    def test_missing_owner_with_existing_rows_never_writes(self):
+        self.remote.conn.executescript(SCHEMA)
+        self.remote.query(
+            "INSERT INTO store_bundles VALUES(0,0,'msgpack+zstd',10,'previous',X'1234')")
+        with self.assertRaisesRegex(ValueError, 'partially populated'):
+            publish(self.path, self.remote, True)
+        self.assertEqual(self.remote.query("SELECT COUNT(*) AS count FROM metadata")[0]['count'], 0)
+        self.assertEqual(self.remote.query("SELECT checksum FROM store_bundles")[0]['checksum'], 'previous')
+
+    def test_missing_owner_with_unknown_table_never_writes(self):
+        self.remote.conn.executescript(SCHEMA)
+        self.remote.query('CREATE TABLE third_party(id INTEGER)')
+        with self.assertRaisesRegex(ValueError, 'unidentified'):
+            publish(self.path, self.remote, True)
+        self.assertEqual(self.remote.query("SELECT COUNT(*) AS count FROM metadata")[0]['count'], 0)
+
     def test_only_changed_bundle_is_written(self):
         publish(self.path,self.remote,True)
         self.local.execute("UPDATE store_bundles SET checksum='price-change',payload=X'5678'")

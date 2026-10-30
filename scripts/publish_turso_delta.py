@@ -161,13 +161,28 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None, reset
         tables = {r['name'] for r in remote.query("SELECT name FROM sqlite_master WHERE type='table'")}
         old_meta = {r['key']: r['value'] for r in remote.query('SELECT key,value FROM metadata')} if 'metadata' in tables else {}
         if tables and json.loads(old_meta.get('application', 'null')) != 'FoodRadar':
-            # Diagnostics are deliberately read-only and contain no URLs/tokens.
-            # Never disable the ownership check to force a database update.
-            safe_keys = ('application', 'definition_version', 'schema_version', 'latest_batch')
-            diagnostics = {k: old_meta.get(k) for k in safe_keys}
-            raise ValueError('Refusing an existing database owned by another application: '
-                             + json.dumps({'tables': sorted(tables),
-                                           'metadata': diagnostics}, ensure_ascii=False))
+            # A wiped FoodRadar database may retain its six empty table schemas.
+            # This is safe to initialize ONLY when the exact expected tables
+            # exist and every one is empty. Do not infer ownership of any
+            # populated, partly reset, or unknown application database.
+            row_counts = {
+                table: int(remote.query(f'SELECT COUNT(*) AS count FROM {table}')[0]['count'])
+                for table in sorted(tables)
+            }
+            empty_foodradar_schema = (
+                not old_meta
+                and tables == set(TABLE_KEYS)
+                and all(count == 0 for count in row_counts.values())
+            )
+            if not empty_foodradar_schema:
+                safe_keys = ('application', 'definition_version', 'schema_version', 'latest_batch')
+                diagnostics = {k: old_meta.get(k) for k in safe_keys}
+                raise ValueError('Refusing an unidentified or partially populated Turso database: '
+                                 + json.dumps({'tables': sorted(tables),
+                                               'row_counts': row_counts,
+                                               'metadata': diagnostics}, ensure_ascii=False))
+            print('FOODRADAR_EMPTY_SCHEMA_INIT=' + json.dumps(
+                {'tables': sorted(tables), 'row_counts': row_counts}, ensure_ascii=False), flush=True)
         trusted_rebuild = verified_rebuild_evidence(
             verified_rebuild_manifest, local_meta, old_meta)
         if old_meta and old_meta.get('schema_version') != local_meta['schema_version']:
