@@ -11,6 +11,7 @@ sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
 from serving_state import apply_snapshot as apply_real_snapshot
 from verified_prices import quote_from_native_item
+from verified_weekly import update_verified_weekly
 from build_web_db import build_web_db
 from verify_packed_local import verify
 from publish_turso_delta import plan_table
@@ -68,7 +69,9 @@ def apply_snapshot(conn, docs, batch, *args, **kwargs):
                         "buyXGetYItemPromotion": {"buyQuantity": 1, "getQuantity": 0},
                     }
                 item["verified_price"] = quote_from_native_item(raw)
-    return apply_real_snapshot(conn, docs, batch, *args, **kwargs)
+    result = apply_real_snapshot(conn, docs, batch, *args, **kwargs)
+    update_verified_weekly(conn, batch)
+    return result
 
 
 class PackedUpdateTests(unittest.TestCase):
