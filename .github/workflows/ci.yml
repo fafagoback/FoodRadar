@@ -1,0 +1,57 @@
+name: FoodRadar 01｜品質測試
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'web/**'
+      - '.github/workflows/**'
+      - 'requirements.txt'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'web/**'
+      - '.github/workflows/**'
+      - 'requirements.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: foodradar-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    name: Python、JavaScript 與 Actions 設定驗證
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Python 全套回歸測試
+        run: python -m unittest discover -s tests -v
+      - name: 網站資料契約與 JavaScript 測試
+        run: |
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/data-contract.js
+          node tests/web_contract.cjs
+          node tests/price_history.cjs
+          node tests/web_interactions.cjs
+          node tests/packed_concurrency.cjs
+      - name: 驗證三個 Workflow 的 GitHub Actions 語法
+        run: |
+          go run github.com/rhysd/actionlint/cmd/actionlint@latest -color=false .github/workflows/*.yml
+          python - <<'PY'
+          from pathlib import Path
+          expected={'ci.yml','crawl.yml','pages.yml'}
+          actual={p.name for p in Path('.github/workflows').glob('*.yml')}
+          assert actual==expected, f'Workflow 清單不符：{actual}'
+          PY

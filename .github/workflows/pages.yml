@@ -1,0 +1,107 @@
+name: FoodRadar 03｜網站部署
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'scripts/configure_web.py'
+      - 'scripts/prepare_pages.py'
+      - '.github/workflows/pages.yml'
+  workflow_run:
+    workflows:
+      - 'FoodRadar 02｜爬蟲與資料庫'
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: foodradar-pages-deployment
+  cancel-in-progress: true
+jobs:
+  deploy:
+    name: 部署最新程式與已驗證資料版本
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝網頁設定所需相依套件
+        run: pip install 'requests>=2.32,<3'
+      - name: 驗證唯讀 Turso，產生最新網站版號
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: |
+          python scripts/configure_web.py
+          python scripts/prepare_pages.py
+      - name: 驗證 JavaScript 與網站資料契約
+        run: |
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/data-contract.js
+          node tests/web_contract.cjs
+          node tests/price_history.cjs
+          node tests/web_interactions.cjs
+          node tests/packed_concurrency.cjs
+          if grep -q 'id="archive-quote-section"' web/index.html; then
+            echo '已淘汰的歷史菜單區仍存在' >&2
+            exit 1
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - uses: actions/deploy-pages@v4
+        id: deployment
+      - name: 驗證正式版號已上線
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from urllib.request import urlopen, Request
+          expected = os.environ['GITHUB_SHA']
+          base = 'https://fafagoback.github.io/FoodRadar/'
+          for attempt in range(12):
+              try:
+                  url = base + 'version.json?_release=' + expected[:12] + '-' + str(attempt)
+                  with urlopen(Request(url, headers={'Cache-Control':'no-cache'}), timeout=20) as response:
+                      manifest = json.load(response)
+                  if manifest.get('commit') == expected:
+                      print('FOODRADAR_LIVE_VERSION=' + json.dumps(manifest, ensure_ascii=False), flush=True)
+                      break
+              except Exception as error:
+                  print('頁面版號重試', type(error).__name__, str(error)[:180], flush=True)
+              if attempt == 11:
+                  raise SystemExit('發布後網頁版號不符合這次部署')
+              time.sleep(6)
+          PY
+
+  acceptance:
+    name: 正式網站瀏覽器驗收
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安裝 Chromium 瀏覽器
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: 實際驗證上線網站
+        run: node tests/live_site.cjs
+      - name: 保存失敗診斷
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-pages-browser-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 5
