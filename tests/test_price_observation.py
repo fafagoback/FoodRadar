@@ -98,6 +98,7 @@ class PriceValidityTests(unittest.TestCase):
                 'opens':'09:30','closes':'01:00'}]
             d['hasMenu']['hasMenuSection'][0]['name']='台灣50年經典'
             if bogo:
+                d['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['test_native_bogo']=True
                 sec={'name':'Buy 1, get 1 free','hasMenuItem':[
                     dict(d['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0])]}
                 d['hasMenu']['hasMenuSection'].insert(0,sec)
@@ -186,6 +187,8 @@ class PriceValidityTests(unittest.TestCase):
         item = original['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
         item['promo_type'] = '買1送1'
         item['quantity'] = 2
+        item['test_native_bogo'] = True
+        item['test_native_bogo'] = True
         apply_snapshot(self.conn, [original], '20261013091759')
 
         expired = menu('20261021091759', 55)
@@ -217,8 +220,9 @@ class PriceValidityTests(unittest.TestCase):
         # while the original 100 is only promotional context.
         discounted = menu('20261013091759', 30)
         discounted['hasMenu']['hasMenuSection'][0]['name'] = '3折特惠'
+        discounted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['test_native_direct_old_price'] = 100
         apply_snapshot(self.conn, [discounted], '20261013091759')
-        self.assertEqual(self.conn.execute('SELECT promo_type FROM products').fetchone()[0], '3折特惠')
+        self.assertEqual(self.conn.execute('SELECT promo_type FROM products').fetchone()[0], '直接折價')
 
         regular = menu('20261014091759', 50)
         apply_snapshot(self.conn, [regular], '20261014091759')
@@ -237,6 +241,7 @@ class PriceValidityTests(unittest.TestCase):
         apply_snapshot(self.conn, [regular], '20261013091759')
         discounted = menu('20261014091759', 30)
         discounted['hasMenu']['hasMenuSection'][0]['name'] = '3折特惠'
+        discounted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['test_native_direct_old_price'] = 50
         apply_snapshot(self.conn, [discounted], '20261014091759')
         row = self.conn.execute(
             'SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products'
@@ -284,14 +289,17 @@ class PriceValidityTests(unittest.TestCase):
         promo = copy.deepcopy(plain)
         promo['name'] = '買1送1'
         promo['hasMenuItem'][0]['offers']['price'] = 80
+        promo['hasMenuItem'][0]['test_native_bogo'] = True
         doc['hasMenu']['hasMenuSection'] = [plain, promo]
         apply_snapshot(self.conn, [doc], '20261026091759')
         result = self.conn.execute('SELECT price,promo_type,quantity,effective_price,menu_quote_price FROM products').fetchone()
-        self.assertEqual(tuple(result), (80,'買1送1',2,40,80))
+        self.assertEqual(tuple(result), (100,'未驗證',1,100,100))
         doc['hasMenu']['hasMenuSection'] = [promo, plain]
         apply_snapshot(self.conn, [doc], '20261027091759')
         result = self.conn.execute('SELECT price,promo_type,quantity,effective_price FROM products').fetchone()
-        self.assertEqual(tuple(result), (80,'買1送1',2,40))
+        self.assertEqual(result['promo_type'], '未驗證')
+        self.assertEqual(self.conn.execute(
+            'SELECT COUNT(*) FROM product_price_observations').fetchone()[0], 0)
 
     def test_same_sku_in_normal_and_bogo_sections_is_order_independent(self):
         """A category carousel/order swap must never invent a 50% price jump."""
@@ -299,6 +307,7 @@ class PriceValidityTests(unittest.TestCase):
         first = menu('20261026091759',100)
         regular = first['hasMenu']['hasMenuSection'][0]
         regular['name'] = '所有商品'
+        regular['hasMenuItem'][0]['test_native_bogo'] = True
         featured = copy.deepcopy(regular)
         featured['name'] = '買1送1'
         first['hasMenu']['hasMenuSection'] = [regular, featured]
