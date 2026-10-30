@@ -1,0 +1,26 @@
+name: FoodRadar V2 live Pages browser QA
+on:
+  push:
+    branches: [fix/v2-native-price-only-20261030]
+permissions:
+  contents: read
+jobs:
+  browser:
+    if: contains(github.event.head_commit.message, '[live-v2-qa]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Chromium E2E dependencies
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Verify real production V2 site end to end
+        run: node tests/live_site.cjs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: live-v2-browser-diagnostics
+          path: test-results/
+          retention-days: 3
+          if-no-files-found: ignore
