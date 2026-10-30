@@ -29,7 +29,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from snapshot_validation import validate_document
-from verified_prices import quote_from_native_item
+from verified_prices import quote_from_native_item, reconcile_duplicate_skus
 
 TW_TZ = timezone(timedelta(hours=8))
 
@@ -363,7 +363,7 @@ def convert_api_data_to_schema(api_data: dict, store_url: str, fallback_name: st
             }
         }
     }
-    return schema_doc
+    return reconcile_duplicate_skus(schema_doc)
 
 
 def create_inactive_store_schema(store_item: dict, store_url: str, store_uuid: str, store_id: str, time_prefix: str, reason: str = "inactive_account") -> dict:
