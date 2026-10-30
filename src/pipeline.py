@@ -42,142 +42,108 @@ def assert_useful_price_batch(documents, batch):
 
 
 def restore_history(config, rebuild_all=False):
-    """Rebuild this point's Current/Events state on ephemeral Actions runners."""
+    """Build serving.db from immutable FoodRadar/Raw alone.
+
+    Intentionally never read legacy FoodRadar/snapshots, HF state/latest.json,
+    Parquet, or pre-reset SQLite state. A clean Turso reset must stay clean on
+    every subsequent scheduled crawl.
+    """
     from huggingface_hub import HfApi, hf_hub_download
     import tarfile
     import sqlite3
     from serving_state import apply_snapshot
-    folder=config['hf_folder'].strip('/')
-    api=HfApi(token=os.environ.get('HF_TOKEN'))
-    files=api.list_repo_files(repo_id=config['hf_repo_id'],repo_type='dataset')
-    manifests=sorted(p for p in files if p.startswith(f'{folder}/snapshots/') and p.endswith('/complete.json'))
-    # The new immutable HTTP bodies are the ONLY source for new batches.
-    raw_manifests=sorted(p for p in files if p.startswith(f'{folder}/Raw/')
-                         and p.endswith('/manifest.json'))
-    all_manifests=sorted(manifests + raw_manifests,
-                         key=lambda p: p.split('/')[-2])
-    previous=ROOT/'data/latest.txt'
-    local_batch=previous.read_text(encoding='utf-8').strip() if previous.exists() else ''
-    conn=None
-    verified_manifest_paths=[]
-    checkpoint_path=f'{folder}/state/latest.json'
-    if not rebuild_all and not local_batch and checkpoint_path in files:
-        checkpoint=json.loads(Path(hf_hub_download(config['hf_repo_id'],checkpoint_path,repo_type='dataset')).read_text(encoding='utf-8'))
-        # Never restore V1 text-inferred effective prices as V2 historical truth.
-        if checkpoint.get('schema_version') != 2:
-            raise RuntimeError('Legacy HF checkpoint is V1; rebuild V2 from ApiRaw first')
-        packed=Path(hf_hub_download(config['hf_repo_id'],checkpoint['state_path'],repo_type='dataset')).read_bytes()
-        if hashlib.sha256(packed).hexdigest()!=checkpoint['sha256']:
-            raise ValueError('HF permanent state checksum mismatch')
-        local_batch=checkpoint['batch_id']
-        target=ROOT/'data'/local_batch
-        target.mkdir(parents=True,exist_ok=True)
-        (target/'serving.db').write_bytes(gzip.decompress(packed))
-        with contextlib.closing(sqlite3.connect(target/'serving.db')) as verified:
-            if verified.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
-                raise ValueError('HF permanent state integrity check failed')
-            if verified.execute("SELECT value FROM metadata WHERE key='latest_batch'").fetchone()[0]!=local_batch:
-                raise ValueError('HF permanent state batch mismatch')
-        previous.write_text(local_batch,encoding='utf-8')
+    from raw_capture import documents_from_hf_raw
+    from verified_weekly import update_verified_weekly
+
+    folder = config['hf_folder'].strip('/')
+    api = HfApi(token=os.environ.get('HF_TOKEN'))
+    files = api.list_repo_files(repo_id=config['hf_repo_id'], repo_type='dataset')
+    manifests = sorted(p for p in files
+                       if p.startswith(f'{folder}/Raw/') and p.endswith('/manifest.json'))
+    if not manifests:
+        raise RuntimeError(f'No immutable snapshots under {folder}/Raw; refusing DB update')
+
+    previous = ROOT/'data/latest.txt'
+    previous.parent.mkdir(parents=True, exist_ok=True)
+    temporary_db = ROOT/'data/raw-only-reconstructed.db'
+    if temporary_db.exists():
+        temporary_db.unlink()
+    conn = sqlite3.connect(temporary_db)
+    conn.row_factory = sqlite3.Row
+    replayed = []
+    batch = ''
     try:
-        replay_count = 0
-        print(f'HF_REPLAY_START legacy={len(manifests)} immutable_raw={len(raw_manifests)} full_rebuild={int(bool(rebuild_all))}',flush=True)
-        for manifest_path in all_manifests:
-            meta=json.loads(Path(hf_hub_download(config['hf_repo_id'],manifest_path,repo_type='dataset')).read_text(encoding='utf-8'))
-            batch=meta['batch_id']
-            if not meta.get('complete') or not (len(batch)==14 and batch.isdigit()) or batch<=local_batch:
-                continue
-            new_raw = manifest_path in raw_manifests
-            archive_path=hf_hub_download(config['hf_repo_id'],meta['archive_path'],repo_type='dataset')
-            expected_hash = meta['archive_sha256'] if new_raw else meta['sha256']
-            if hashlib.sha256(Path(archive_path).read_bytes()).hexdigest()!=expected_hash:
-                raise ValueError('HF original response archive checksum mismatch')
-            target=ROOT/'data'/batch
-            target.mkdir(parents=True,exist_ok=True)
-            if conn is None:
-                conn=sqlite3.connect(ROOT/'data/restored-serving.db')
-                conn.row_factory=sqlite3.Row
-                if local_batch and (ROOT/'data'/local_batch/'serving.db').exists():
-                    prior=sqlite3.connect(ROOT/'data'/local_batch/'serving.db')
-                    prior.backup(conn)
-                    prior.close()
-            with tarfile.open(archive_path,'r:gz') as tar:
-                if new_raw:
-                    from raw_capture import documents_from_hf_raw
-                    docs = documents_from_hf_raw(tar, meta)
-                    print('HF_RAW_TO_DB='+json.dumps({
-                        'batch':batch,'stores':len(docs),
-                        'source':meta['archive_path']},ensure_ascii=False),flush=True)
-                else:
-                    from archive_pairing import archived_documents_with_native
-                    members = {m.name: m for m in tar.getmembers()
-                               if m.isfile() and m.name.endswith('.json')}
-                    docs, pairing_audit = archived_documents_with_native(
-                        tar, members, batch, meta)
-                    if pairing_audit["raw_files"]:
-                        print("V2_RAW_PAIRING="+json.dumps(pairing_audit),flush=True)
-            expected_stores = len(meta['stores']) if new_raw else meta['store_count']
-            if len(docs)!=expected_stores:
-                raise ValueError('HF raw-to-DB store count mismatch')
-            apply_snapshot(conn,docs,batch)
-            from verified_weekly import update_verified_weekly
-            weekly = update_verified_weekly(conn, batch)
-            replay_count += 1
-            counts_by_kind = dict(conn.execute(
-                'SELECT promotion_type, COUNT(*) FROM product_price_observations '
-                'GROUP BY promotion_type').fetchall())
-            print('V2_HF_REPLAY_PROGRESS='+json.dumps({
-                'completed':replay_count,'total':len(all_manifests),
-                'batch':batch,'stores':len(docs),
-                'verified_price_types':counts_by_kind,
-                'weekly_comparisons':weekly['qualified_comparisons'],
-                'weekly_deals':weekly['deals'],
+        print('FOODRADAR_RAW_ONLY_REPLAY_START='+json.dumps({
+            'raw_manifests':len(manifests),
+            'legacy_snapshots_read':0,
+            'legacy_checkpoints_read':0,
+            'path': f'{folder}/Raw/',
+        },ensure_ascii=False),flush=True)
+        for manifest_path in manifests:
+            meta = json.loads(Path(hf_hub_download(
+                config['hf_repo_id'], manifest_path, repo_type='dataset'
+            )).read_text(encoding='utf-8'))
+            current_batch = str(meta.get('batch_id') or '')
+            if not meta.get('complete') or not (len(current_batch) == 14 and current_batch.isdigit()):
+                raise ValueError(f'Incomplete or invalid immutable Raw batch: {manifest_path}')
+            if batch and current_batch <= batch:
+                raise ValueError(f'Nonmonotonic immutable Raw batch: {manifest_path}')
+            if (meta.get('format') != 'foodradar-immutable-http-body-v1'
+                    or not str(meta.get('archive_path') or '').startswith(
+                        f'{folder}/Raw/{current_batch}/')):
+                raise ValueError(f'Invalid immutable Raw source path: {manifest_path}')
+            downloaded = Path(hf_hub_download(
+                config['hf_repo_id'], meta['archive_path'], repo_type='dataset'
+            ))
+            digest = hashlib.sha256(downloaded.read_bytes()).hexdigest()
+            if digest != meta.get('archive_sha256'):
+                raise ValueError('HF immutable Raw archive SHA-256 mismatch')
+            with tarfile.open(downloaded, 'r:gz') as raw_archive:
+                docs = documents_from_hf_raw(raw_archive, meta)
+            if len(docs) != len(meta['stores']):
+                raise ValueError('HF original store count mismatch')
+            apply_snapshot(conn, docs, current_batch)
+            audit = update_verified_weekly(conn, current_batch)
+            replayed.append(manifest_path + ':' + digest)
+            batch = current_batch
+            print('HF_RAW_TO_DB='+json.dumps({
+                'batch':batch,
+                'stores':len(docs),
+                'qualified_comparisons':audit['qualified_comparisons'],
+                'deals':audit['deals'],
+                'legacy_batches':0,
             },ensure_ascii=False),flush=True)
-            if rebuild_all:
-                verified_manifest_paths.append(manifest_path + ':' + expected_hash)
-            if not rebuild_all:
-                saved=sqlite3.connect(target/'serving.db')
-                conn.backup(saved)
-                saved.close()
-            previous.write_text(batch,encoding='utf-8')
-            local_batch=batch
-        # A clean rebuild does not trust the old HF checkpoint: every archived
-        # menu is replayed to eliminate previously recorded closed-hour prices.
-        # Save only the final state to avoid dozens of huge SQLite copies.
-        if rebuild_all:
-            if conn is None:
-                raise RuntimeError('Cannot rebuild prices without complete archived snapshots')
-            target=ROOT/'data'/local_batch
-            saved=sqlite3.connect(target/'serving.db')
-            conn.backup(saved)
-            saved.close()
-            # This attestation is written ONLY by an uninterrupted replay
-            # after each complete Raw archive passed SHA256 and store-count
-            # verification. The publisher may accept a deliberate catalogue
-            # shrink only with this evidence, never with an arbitrary flag.
-            if len(verified_manifest_paths) != len(all_manifests):
-                raise ValueError('Incomplete HF Raw replay: cannot authorize replacement')
-            evidence = {
-                'format': 'foodradar-full-raw-replay-v2',
-                'batch_id': local_batch,
-                'verified_manifest_count': len(verified_manifest_paths),
-                'manifest_digest': hashlib.sha256(
-                    '\\n'.join(verified_manifest_paths).encode()).hexdigest(),
-                'source_counts': {
-                    'stores': conn.execute('SELECT COUNT(*) FROM stores').fetchone()[0],
-                    'products': conn.execute('SELECT COUNT(*) FROM products').fetchone()[0],
-                    'crawl_batches': conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0],
-                },
-            }
-            (target/'verified-rebuild.json').write_text(
-                json.dumps(evidence,indent=2),encoding='utf-8')
-            print(f'REBUILT_VALID_PRICE_HISTORY batch={local_batch} snapshots={len(all_manifests)}',flush=True)
-        # V2 price and discount history is reconstructed from ApiRaw exclusively.
-        # Never download obsolete Parquet pricing history; those inferred values
-        # are no longer consumed and only slow down full HF reconstruction.
+        conn.commit()
+        destination = ROOT/'data'/batch
+        destination.mkdir(parents=True,exist_ok=True)
+        published_copy = sqlite3.connect(destination/'serving.db')
+        try:
+            conn.backup(published_copy)
+        finally:
+            published_copy.close()
+        evidence = {
+            'format':'foodradar-immutable-raw-only-rebuild-v1',
+            'batch_id':batch,
+            'raw_manifest_count':len(replayed),
+            'verified_manifest_count':len(replayed),
+            'manifest_digest':hashlib.sha256(
+                '\n'.join(replayed).encode('utf-8')).hexdigest(),
+            'source_prefix':f'{folder}/Raw/',
+            'legacy_snapshot_count':0,
+            'source_counts':{
+                'stores':conn.execute('SELECT COUNT(*) FROM stores').fetchone()[0],
+                'products':conn.execute('SELECT COUNT(*) FROM products').fetchone()[0],
+                'crawl_batches':conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0],
+            },
+        }
+        (destination/'verified-rebuild.json').write_text(
+            json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
+        previous.write_text(batch, encoding='utf-8')
+        print('FOODRADAR_RAW_ONLY_REBUILT='+json.dumps(
+            evidence,ensure_ascii=False),flush=True)
     finally:
-        if conn is not None:
-            conn.close()
+        conn.close()
+
 
 
 def build_snapshot(output, config):
