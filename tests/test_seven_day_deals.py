@@ -41,7 +41,7 @@ class SevenDayDealTests(unittest.TestCase):
                 self.assertEqual(row['seven_day_is_price_deal'],1)
                 from audit_deal_pipeline import report
                 audit=report(db)
-                self.assertEqual(audit['comparisons']['raw_menu_discounts_30pct'],1)
+                self.assertEqual(audit['certified_7day_30pct_deals'],1)
                 self.assertEqual(audit['seven_day_discrepancies'],[])
                 # This sale is old: the conventional last-crawl comparator
                 # is flat, but the new week-high comparator stays 50% down.
