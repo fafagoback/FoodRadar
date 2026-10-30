@@ -307,7 +307,7 @@ let discountsSearchSequence = 0;
 let newProductsSearchSequence = 0;
 let promotionsRequestSequence = 0;
 async function getPackedTursoClient() {
-  if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import(`./packed-turso.js?_t=${Date.now()}`);
+  if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import(`./packed-turso.js?_t=${window.__APP_LOAD_TIME__ || 'v2'}`);
   return PACKED_TURSO_CLIENT;
 }
 
