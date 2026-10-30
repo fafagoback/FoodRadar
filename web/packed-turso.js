@@ -106,7 +106,7 @@ async function bucketId(term, count) {
 let latestMetadataReadAt = 0;
 let pendingMetadata = null;
 export async function metadata() {
-  if (latestMetadataReadAt && Date.now() - latestMetadataReadAt < 15000) return releaseMeta;
+  // Do not reuse completed metadata calls: same-batch HF RAW rebuilds can change revisions.
   if (pendingMetadata) return pendingMetadata;
   pendingMetadata = (async () => {
   const rows = await sql('select key,value from metadata');
