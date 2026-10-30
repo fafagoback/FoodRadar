@@ -128,6 +128,10 @@ jobs:
   acceptance:
     name: 正式網站瀏覽器驗收
     needs: deploy
+    # A skipped ingest-gate is normal on web-only pushes. GitHub's default
+    # success() propagates transitive skips, so explicitly require the actual
+    # deploy job to succeed and ALWAYS run browser verification afterward.
+    if: ${{ always() && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
