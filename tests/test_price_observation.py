@@ -188,7 +188,6 @@ class PriceValidityTests(unittest.TestCase):
         item['promo_type'] = '買1送1'
         item['quantity'] = 2
         item['test_native_bogo'] = True
-        item['test_native_bogo'] = True
         apply_snapshot(self.conn, [original], '20261013091759')
 
         expired = menu('20261021091759', 55)
@@ -207,6 +206,7 @@ class PriceValidityTests(unittest.TestCase):
         item = promoted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
         item['promo_type'] = '買1送1'
         item['quantity'] = 2
+        item['test_native_bogo'] = True
         apply_snapshot(self.conn, [promoted], '20261014091759')
         row = self.conn.execute('SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products').fetchone()
         self.assertEqual((row['price'], row['effective_price'], row['reference_price']), (89, 44.5, 89))
