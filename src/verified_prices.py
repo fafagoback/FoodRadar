@@ -152,5 +152,35 @@ def quote_numbers(quote):
     }
 
 
+def reconcile_duplicate_skus(doc):
+    """Never prefer one carousel's price/promo when duplicate SKU terms conflict."""
+    grouped = {}
+    for section in (doc.get("hasMenu") or {}).get("hasMenuSection") or []:
+        for item in section.get("hasMenuItem") or []:
+            sku = item.get("identifier")
+            if not sku:
+                continue
+            quote = item.get("verified_price")
+            signature = None
+            if isinstance(quote, dict):
+                signature = (
+                    quote.get("status"), quote.get("kind"),
+                    quote.get("menu_price_cents"),
+                    quote.get("original_total_cents"),
+                    quote.get("payable_total_cents"),
+                    quote.get("received_quantity"),
+                )
+            grouped.setdefault(sku, []).append((signature, item))
+    for entries in grouped.values():
+        if len({repr(signature) for signature, _ in entries}) <= 1:
+            continue
+        for _, item in entries:
+            item["verified_price"] = {
+                "schema_version": 2, "status": "UNVERIFIED",
+                "kind": "UNKNOWN", "reason": "CONFLICTING_DUPLICATE_SKU"
+            }
+    return doc
+
+
 def ui_percent(value):
     return Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
