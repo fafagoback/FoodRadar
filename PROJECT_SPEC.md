@@ -2,6 +2,16 @@
 
 > 本文件為 FoodRadar 現行實作的定義與架構說明（2026-10-28 核對，亦見根目錄 `PRD.md`）。本專案不使用根目錄 README.md。以下「新」代表 FoodRadar 的觀測定義，不代表現實世界的開幕或實際新品上市日期。
 
+## 2026-10-30 原始資料永久規格（優先於下方舊版流程說明）
+
+**唯一的新採集原始資料路徑：** `hub-google/UberEat/FoodRadar/Raw/<YYYYMMDDHHMMSS>/capture.tar.gz`。
+
+- 爬蟲直接以二進位保存 `getFeedV1` 每頁、每次 HTTP 回應，以及 `getStoreV1` 每間店、每次 HTTP 回應的 `response.content`，不重新序列化 JSON、不轉換幣值、不改欄位、不刪促銷內容、不做商品正規化。Tar/Gzip 只做無損封存，解壓後原始回應的 SHA-256 必須一致。
+- `manifest.json` 是獨立的採集索引與 SHA-256 清單，不插入原始回應。失敗與停業回應也必須保留。歷史 Raw 快照不可覆寫；失敗批次可以封存但不可發布到 DB。
+- 只有在原始回應完整上傳 HF、重新下載並逐檔核對成功後，`scripts/prepare_hf_release.py` / `src/pipeline.py:restore_history` 才能**從 HF 讀回 Raw**，進行店家識別、商品解析、單位換算、促銷、營業狀態、七日比較及 Turso 發布。
+- `FoodRadar/snapshots`、`FoodRadar/Parquet`、`FoodRadar/state` 等既有歷史檔案保留不動，僅供舊批次相容或歷史用途；**新爬蟲不再對這些目錄新增資料**。所有新採集從 `FoodRadar/Raw/` 讀取。
+- 爬蟲操作原始回應只為判斷請求成功、下一頁與要抓哪些店，這些操作不得修改或取代 HF 保存的原始回應。DB 轉換的失敗不允許回寫或刪除原始快照。
+
 ## 1. 專案目的與監控範圍
 
 - 以**單一固定外送座標** (25.123246847935267, 121.52951826298867) 蒐集 Uber Eats 當時在該配送位置可見的店家及菜單。
