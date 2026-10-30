@@ -14,7 +14,7 @@ async function main() {
   assert.equal(typeof current, 'function');
   const stamp = '2026-10-27T14:46:28+08:00';
   const store = { last_seen: stamp, is_open: 1 };
-  const product = { last_seen: stamp, is_open: 1, price: 1080 };
+  const product = { last_seen: stamp, is_open: 1, price: 1080, price_evidence_status:'VERIFIED_MENU' };
   assert.equal(current(product, store, stamp), true);
   assert.equal(current({...product, last_seen:'2026-10-27T09:35:52+08:00'}, store, stamp), false);
   assert.equal(current(product, {...store, last_seen:'2026-10-26T18:30:00+08:00'}, stamp), false);
@@ -22,7 +22,8 @@ async function main() {
   assert.equal(current(product, store, ''), false);
 
   const state = (price, more = {}) => JSON.stringify({
-    price, effective_price: price, is_open: 1, price_valid: true, promo_type: '無', quantity: 1, ...more
+    price, effective_price: price, is_open: 1, price_valid: true,
+    price_evidence_status:'VERIFIED_MENU', promo_type: '無', quantity: 1, ...more
   });
   const event = (id, event_type, event_time, price, old_state = null) => ({
     id, event_type, event_time, old_state, new_state: state(price)
