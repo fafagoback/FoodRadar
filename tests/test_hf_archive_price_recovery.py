@@ -54,7 +54,8 @@ class ArchiveQuotePriceTests(unittest.TestCase):
             ("SAME_SKU_BXGY",20000,10000))
 
     def test_json_without_raw_has_no_native_proof(self):
-        item=self.doc["hasMenu"]["hasMenuSection"][0]["hasMenuItem"][0]
+        original=document(SID,[PID])  # Never passed through the test fixture enricher.
+        item=original["hasMenu"]["hasMenuSection"][0]["hasMenuItem"][0]
         self.assertNotIn("verified_price",item)
 
 
