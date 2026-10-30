@@ -575,7 +575,7 @@ const totalResultsCache = new Map();
 const MAX_CACHED_PAGES = 40;
 function escapeSqlText(value) { return String(value ?? '').replace(/'/g, "''"); }
 function keywordClauses(value, field = 'search_text') {
-  return String(value || '').trim().split(/\\s+/).filter(Boolean)
+  return String(value || '').trim().split(/\s+/).filter(Boolean)
     .map(word => `instr(${field},'${escapeSqlText(normalize(word))}') > 0`);
 }
 function locationSql(location, alias = '') {
@@ -629,7 +629,7 @@ export async function searchProductsPage({
     conditions.push('promo=1');
     if (promoType==='平台優惠') conditions.push('platform_promo=1');
     else if (promoType==='實質降價30') conditions.push('price_drop=1','discount_pct>=30');
-    else if (promoType==='買一送一') conditions.push('platform_promo=1',"(instr(card,'買1送1')>0 OR instr(card,'買2送1')>0 OR instr(card,'買3送1')>0)");
+    else if (promoType==='買一送一') conditions.push('platform_promo=1',"json_extract(card,'$.promo_type') LIKE '買%送%'");
     else if (promoType==='折') conditions.push('platform_promo=1',"instr(card,'直接折價')>0");
     else if (['半價','加1元','多入'].includes(promoType)) conditions.push('0=1');
   }
