@@ -32,8 +32,11 @@ const fs = require('node:fs');
     assert.match(homeText, /^\d[\d,]*$/, 'dashboard must display a numeric count');
     const home = Number(homeText.replace(/,/g, ''));
     const coverage = (await page.locator('#discounts-coverage').innerText()).trim();
-    assert.match(coverage, /可搜尋最近取得的菜單商品 [\d,]+ 件，其中本批可確認外送價格 [\d,]+ 件；[\d,]+ 件有前次有效單價，[\d,]+ 件有七日有效價格基準/,
-      'dashboard must disclose the valid comparison denominator, not only a zero');
+    console.log('V2_LIVE_COVERAGE_RAW='+JSON.stringify(coverage));
+    assert.match(coverage, /可搜尋最近取得的菜單商品 [\d,]+ 件，其中最近採集批次確認可外送 [\d,]+ 件；[\d,]+ 件具有七日價格比較基準；最近七天有 \d+ 個菜單價格採集日；[\d,]+ 件屬平台促銷/,
+      'dashboard must disclose certified delivery and seven-day comparison denominators');
+    const verifiedCount=Number(coverage.match(/最近採集批次確認可外送 ([\d,]+) 件/)[1].replace(/,/g,''));
+    assert.ok(verifiedCount>0,'native verified deliverable product count must be nonzero');
     console.log('DEAL_COMPARISON_COVERAGE ' + coverage);
 
     // The legacy HF archive quote section was intentionally removed.
