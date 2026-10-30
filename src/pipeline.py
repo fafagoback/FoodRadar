@@ -93,19 +93,13 @@ def restore_history(config, rebuild_all=False):
                     prior.backup(conn)
                     prior.close()
             with tarfile.open(archive_path,'r:gz') as tar:
-                from raw_price_enrichment import enrich_converted_with_native
-                members = {m.name: m for m in tar.getmembers() if m.isfile() and m.name.endswith('.json')}
-                docs = []
-                for name in sorted(members):
-                    if not name.startswith('Json/'):
-                        continue
-                    doc = json.load(tar.extractfile(members[name]))
-                    raw_name = 'ApiRaw/' + name[len('Json/'):]
-                    if raw_name in members:
-                        wrapper = json.load(tar.extractfile(members[raw_name]))
-                        doc = enrich_converted_with_native(doc, wrapper)
-                    # Json-only historical records have no native promo proof.
-                    docs.append(doc)
+                from archive_pairing import archived_documents_with_native
+                members = {m.name: m for m in tar.getmembers()
+                           if m.isfile() and m.name.endswith('.json')}
+                docs, pairing_audit = archived_documents_with_native(
+                    tar, members, batch, meta)
+                if pairing_audit["raw_files"]:
+                    print("V2_RAW_PAIRING="+json.dumps(pairing_audit),flush=True)
             if len(docs)!=meta['store_count']:
                 raise ValueError('HF store count mismatch')
             apply_snapshot(conn,docs,batch)
