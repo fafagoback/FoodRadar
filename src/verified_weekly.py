@@ -58,7 +58,10 @@ def update_verified_weekly(conn, latest_batch_id, minimum_discount_pct=30):
         seven_day_discount_amount=?,seven_day_is_price_deal=?
         WHERE store_uuid=? AND product_uuid=? AND last_seen=?
           AND price_evidence_status='VERIFIED_MENU'
-          AND delivery_available=1 AND is_open=1 AND status='active'""", updates)
+          AND delivery_available=1 AND is_open=1 AND status='active'
+          AND EXISTS (SELECT 1 FROM stores s WHERE s.store_uuid=products.store_uuid
+                      AND s.status='active' AND s.is_open=1
+                      AND s.last_seen=products.last_seen)""", updates)
     conn.commit()
     return {"qualified_comparisons": len(updates),
             "deals": conn.execute("""SELECT COUNT(*) FROM products
