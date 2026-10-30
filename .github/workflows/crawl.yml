@@ -85,7 +85,7 @@ jobs:
           fi
 
       - name: 封存未修改的 Feed / Store 原始 HTTP 回應至 HF FoodRadar/Raw
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture')) }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
