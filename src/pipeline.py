@@ -109,6 +109,8 @@ def restore_history(config, rebuild_all=False):
             if len(docs)!=meta['store_count']:
                 raise ValueError('HF store count mismatch')
             apply_snapshot(conn,docs,batch)
+            from verified_weekly import update_verified_weekly
+            update_verified_weekly(conn, batch)
             if rebuild_all:
                 verified_manifest_paths.append(manifest_path + ':' + meta['sha256'])
             if not rebuild_all:
@@ -190,6 +192,9 @@ def build_snapshot(output, config):
     # Run the release gate before mutating normalized prices / advancing batch.
     assert_useful_price_batch(documents, batch)
     counts=apply_snapshot(conn, documents, batch)
+    from verified_weekly import update_verified_weekly
+    weekly_audit = update_verified_weekly(conn, batch)
+    print("VERIFIED_V2_WEEKLY_AUDIT=" + json.dumps(weekly_audit), flush=True)
     conn.close()
     # Distinguish successful menu downloads from *valid payable-price*
     # observations. A run containing only rejected observations is not a
