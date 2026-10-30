@@ -922,7 +922,7 @@ function renderNewProducts() {
     const promoInfo = productPromo(prod);
     const hasPromo = promoInfo.isPromo;
     const hasQtyPromo = promoInfo.totalQty > 1;
-    const unitPrice = promoInfo.effPrice;
+    const unitPrice = promoInfo.displayPrice;
     const displayUnitPrice = Math.round(unitPrice);
     const discountLabel = promoInfo.discountText ? `折合 ${promoInfo.discountText}` : '';
 
@@ -1006,6 +1006,8 @@ function productPromo(row) {
   const eff = verified && Number(p.effective_price) > 0 ? Number(p.effective_price) : null;
   return {
     effPrice: eff,
+    // Listings always show an observed menu price when available; verification is only for promotions.
+    displayPrice: eff ?? p.price,
     totalQty: verified ? Number(p.quantity || 1) : 1,
     buyQty: null, freeQty: null,
     isPromo: verified && discount > 0,
@@ -1574,7 +1576,7 @@ function renderGlobalProducts() {
     const promoInfo = productPromo(p);
     const hasPromo = promoInfo.isPromo;
     const hasQtyPromo = promoInfo.totalQty > 1;
-    const unitPrice = promoInfo.effPrice;
+    const unitPrice = promoInfo.displayPrice;
     const displayUnitPrice = Math.round(unitPrice);
     const discountLabel = promoInfo.discountText ? `折合 ${promoInfo.discountText}` : '';
     const ratingHtml = p.rating_value 
