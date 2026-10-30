@@ -160,7 +160,7 @@ class DeltaTests(unittest.TestCase):
             proof.write_text(json.dumps({
                 'format':'foodradar-immutable-raw-only-rebuild-v1',
                 'batch_id':'20261030153957',
-                'source_prefix':'FoodRadar/Raw/',
+                'source_prefix':'Raw/',
                 'legacy_snapshot_count':0,
                 'raw_manifest_count':1,
                 'verified_manifest_count':1,
