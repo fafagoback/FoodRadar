@@ -286,6 +286,11 @@ def build_snapshot(output, config):
     stats = export_all_static_snapshots(src_dir=str(output/'menus'), output_dir=str(site),
                                        db_path=str(output/'export.db'), batch_id=batch,
                                        stores_file=str(output/'stores.json'), scope='regional', upload_hf=False)
+    # Replace legacy Parquet-derived static offers and historical discounts with
+    # the same certified numeric V2 prices used in Turso.
+    from export_verified_public import export_verified_public
+    public_audit = export_verified_public(serving, site, batch)
+    print("V2_PUBLIC_EXPORT_AUDIT="+json.dumps(public_audit),flush=True)
     archive = output/'archive'/f'taiwan_menus_{batch}.tar.gz'
     manifest = json.loads((output/'archive/manifest.json').read_text(encoding='utf-8'))
     manifest.update(complete=True, schema_version=1,
