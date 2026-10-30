@@ -58,6 +58,9 @@ def restore_history(config, rebuild_all=False):
     checkpoint_path=f'{folder}/state/latest.json'
     if not rebuild_all and not local_batch and checkpoint_path in files:
         checkpoint=json.loads(Path(hf_hub_download(config['hf_repo_id'],checkpoint_path,repo_type='dataset')).read_text(encoding='utf-8'))
+        # Never restore V1 text-inferred effective prices as V2 historical truth.
+        if checkpoint.get('schema_version') != 2:
+            raise RuntimeError('Legacy HF checkpoint is V1; rebuild V2 from ApiRaw first')
         packed=Path(hf_hub_download(config['hf_repo_id'],checkpoint['state_path'],repo_type='dataset')).read_bytes()
         if hashlib.sha256(packed).hexdigest()!=checkpoint['sha256']:
             raise ValueError('HF permanent state checksum mismatch')
@@ -72,6 +75,8 @@ def restore_history(config, rebuild_all=False):
                 raise ValueError('HF permanent state batch mismatch')
         previous.write_text(local_batch,encoding='utf-8')
     try:
+        replay_count = 0
+        print(f'V2_HF_REPLAY_START archives={len(manifests)} full_rebuild={int(bool(rebuild_all))}',flush=True)
         for manifest_path in manifests:
             meta=json.loads(Path(hf_hub_download(config['hf_repo_id'],manifest_path,repo_type='dataset')).read_text(encoding='utf-8'))
             batch=meta['batch_id']
@@ -90,10 +95,29 @@ def restore_history(config, rebuild_all=False):
                     prior.backup(conn)
                     prior.close()
             with tarfile.open(archive_path,'r:gz') as tar:
-                docs=[json.load(tar.extractfile(m)) for m in tar.getmembers() if m.name.startswith('Json/') and m.name.endswith('.json')]
+                from archive_pairing import archived_documents_with_native
+                members = {m.name: m for m in tar.getmembers()
+                           if m.isfile() and m.name.endswith('.json')}
+                docs, pairing_audit = archived_documents_with_native(
+                    tar, members, batch, meta)
+                if pairing_audit["raw_files"]:
+                    print("V2_RAW_PAIRING="+json.dumps(pairing_audit),flush=True)
             if len(docs)!=meta['store_count']:
                 raise ValueError('HF store count mismatch')
             apply_snapshot(conn,docs,batch)
+            from verified_weekly import update_verified_weekly
+            weekly = update_verified_weekly(conn, batch)
+            replay_count += 1
+            counts_by_kind = dict(conn.execute(
+                'SELECT promotion_type, COUNT(*) FROM product_price_observations '
+                'GROUP BY promotion_type').fetchall())
+            print('V2_HF_REPLAY_PROGRESS='+json.dumps({
+                'completed':replay_count,'total':len(manifests),
+                'batch':batch,'stores':len(docs),
+                'verified_price_types':counts_by_kind,
+                'weekly_comparisons':weekly['qualified_comparisons'],
+                'weekly_deals':weekly['deals'],
+            },ensure_ascii=False),flush=True)
             if rebuild_all:
                 verified_manifest_paths.append(manifest_path + ':' + meta['sha256'])
             if not rebuild_all:
@@ -119,7 +143,7 @@ def restore_history(config, rebuild_all=False):
             if len(verified_manifest_paths) != len(manifests):
                 raise ValueError('Incomplete HF Raw replay: cannot authorize replacement')
             evidence = {
-                'format': 'foodradar-full-raw-replay-v1',
+                'format': 'foodradar-full-raw-replay-v2',
                 'batch_id': local_batch,
                 'verified_manifest_count': len(verified_manifest_paths),
                 'manifest_digest': hashlib.sha256(
@@ -133,12 +157,9 @@ def restore_history(config, rebuild_all=False):
             (target/'verified-rebuild.json').write_text(
                 json.dumps(evidence,indent=2),encoding='utf-8')
             print(f'REBUILT_VALID_PRICE_HISTORY batch={local_batch} snapshots={len(manifests)}',flush=True)
-        for path in files:
-            if path.startswith(f'{folder}/Parquet/history/') and path.endswith('.parquet'):
-                batch=Path(path).stem.removeprefix('taiwan_catalog_')
-                target=ROOT/'data'/batch/'site'
-                target.mkdir(parents=True,exist_ok=True)
-                shutil.copy2(hf_hub_download(config['hf_repo_id'],path,repo_type='dataset'),target/Path(path).name)
+        # V2 price and discount history is reconstructed from ApiRaw exclusively.
+        # Never download obsolete Parquet pricing history; those inferred values
+        # are no longer consumed and only slow down full HF reconstruction.
     finally:
         if conn is not None:
             conn.close()
@@ -175,6 +196,9 @@ def build_snapshot(output, config):
     # Run the release gate before mutating normalized prices / advancing batch.
     assert_useful_price_batch(documents, batch)
     counts=apply_snapshot(conn, documents, batch)
+    from verified_weekly import update_verified_weekly
+    weekly_audit = update_verified_weekly(conn, batch)
+    print("VERIFIED_V2_WEEKLY_AUDIT=" + json.dumps(weekly_audit), flush=True)
     conn.close()
     # Distinguish successful menu downloads from *valid payable-price*
     # observations. A run containing only rejected observations is not a
@@ -250,13 +274,8 @@ def build_snapshot(output, config):
     }
     print("PROMOTION_SOURCE_AUDIT=" + json.dumps(report["promotion_source_audit"], ensure_ascii=False), flush=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    # Recompute legacy promotion/discount baselines before building the
-    # published web DB and the persisted HF normalized checkpoint.
-    sys.path.insert(0, str(ROOT/'scripts'))
-    from repair_effective_prices import repair
-    repair(serving)
-    from restore_hf_menu_quotes import restore_archive_price_references
-    restore_archive_price_references(serving, config, batch)
+    # V2 no longer runs legacy heuristic repair / archive restoration.
+    # Historical quotes are reconstructed exclusively from native ApiRaw evidence.
     print(f"VALID_OPEN_STORES={counts['stores']} RAW_ONLY_CLOSED_STORES={counts['skipped_closed_stores']}", flush=True)
     subprocess.run([sys.executable,str(ROOT/'scripts/build_web_db.py'),
                     str(serving),str(output/'packed-serving.db')],check=True)
@@ -271,6 +290,11 @@ def build_snapshot(output, config):
     stats = export_all_static_snapshots(src_dir=str(output/'menus'), output_dir=str(site),
                                        db_path=str(output/'export.db'), batch_id=batch,
                                        stores_file=str(output/'stores.json'), scope='regional', upload_hf=False)
+    # Replace legacy Parquet-derived static offers and historical discounts with
+    # the same certified numeric V2 prices used in Turso.
+    from export_verified_public import export_verified_public
+    public_audit = export_verified_public(serving, site, batch)
+    print("V2_PUBLIC_EXPORT_AUDIT="+json.dumps(public_audit),flush=True)
     archive = output/'archive'/f'taiwan_menus_{batch}.tar.gz'
     manifest = json.loads((output/'archive/manifest.json').read_text(encoding='utf-8'))
     manifest.update(complete=True, schema_version=1,
@@ -309,7 +333,7 @@ def upload_snapshot(output, config):
     with (output/'serving.db').open('rb') as source, gzip.open(state_path,'wb') as dest:
         shutil.copyfileobj(source,dest)
     state_remote=f'{folder}/state/{batch}/serving-state.db.gz'
-    state_manifest={'schema_version':1,'batch_id':batch,'state_path':state_remote,
+    state_manifest={'schema_version':2,'batch_id':batch,'state_path':state_remote,
                     'sha256':hashlib.sha256(state_path.read_bytes()).hexdigest()}
     operations.extend([
         CommitOperationAdd(path_in_repo=state_remote,path_or_fileobj=str(state_path)),

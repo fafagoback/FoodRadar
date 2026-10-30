@@ -12,8 +12,8 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
-from serving_state import apply_snapshot, ServingStateCache
-from test_packed_updates import document
+from serving_state import ServingStateCache
+from test_packed_updates import document, apply_snapshot
 from build_web_db import build_web_db
 import pipeline
 
@@ -103,7 +103,7 @@ class LifecycleTests(unittest.TestCase):
             packed=root/'state.gz'
             packed.write_bytes(gzip.compress(database.read_bytes()))
             pointer=root/'pointer.json'
-            pointer.write_text(json.dumps({'batch_id':'20260104063000','state_path':'FoodRadar/state/state.gz','sha256':hashlib.sha256(packed.read_bytes()).hexdigest()}))
+            pointer.write_text(json.dumps({'schema_version':2,'batch_id':'20260104063000','state_path':'FoodRadar/state/state.gz','sha256':hashlib.sha256(packed.read_bytes()).hexdigest()}))
             paths={'FoodRadar/state/latest.json':pointer,'FoodRadar/state/state.gz':packed}
             with patch.object(pipeline,'ROOT',root),patch('huggingface_hub.HfApi') as api,patch('huggingface_hub.hf_hub_download',side_effect=lambda repo,path,**kwargs:str(paths[path])):
                 api.return_value.list_repo_files.return_value=list(paths)

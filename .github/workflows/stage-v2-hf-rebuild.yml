@@ -1,0 +1,63 @@
+name: Stage HF ApiRaw V2 rebuilt prices (NO Turso writes)
+on:
+  push:
+    branches: [fix/v2-native-price-only-20261030]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stage:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-v2-raw]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Rebuild new V2 SQLite from complete checksum-verified HF archives
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FOODRADAR_REBUILD_VALID_PRICE_HISTORY: '1'
+        run: python scripts/prepare_hf_release.py
+      - name: Audit V2 SQLite and packed database (read-only)
+        run: |
+          BATCH=$(cat data/latest.txt)
+          python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-v2-report.json
+          python - <<'PY'
+          import json, sqlite3
+          from pathlib import Path
+          batch=Path('data/latest.txt').read_text().strip()
+          db=Path('data')/batch/'serving.db'
+          con=sqlite3.connect(db)
+          con.row_factory=sqlite3.Row
+          assert con.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          counts=dict(con.execute('SELECT promotion_type, COUNT(*) FROM product_price_observations GROUP BY promotion_type'))
+          assert all(k in ('NONE','SAME_SKU_BXGY','DIRECT_DISCOUNT') for k in counts)
+          assert counts.get('NONE',0)>0, 'No native verified regular quotes'
+          assert counts.get('SAME_SKU_BXGY',0)>0, 'No native BOGO samples: check extraction'
+          assert counts.get('DIRECT_DISCOUNT',0)>0, 'No native marked sale samples'
+          wrong=con.execute("""SELECT COUNT(*) FROM products WHERE seven_day_is_price_deal=1 AND
+            price_evidence_status!='VERIFIED_MENU'""").fetchone()[0]
+          assert wrong==0, 'Unverified product in seven-day deal list'
+          proof=json.loads((Path('data')/batch/'verified-rebuild.json').read_text())
+          assert proof['format']=='foodradar-full-raw-replay-v2'
+          assert proof['verified_manifest_count']>=1
+          meta=json.loads(Path('packed-v2-report.json').read_text())['metadata']
+          assert meta['schema_version']==2
+          report={'batch':batch,'native_observations':counts,'verified_manifest_count':proof['verified_manifest_count'],
+            'products':con.execute('SELECT COUNT(*) FROM products').fetchone()[0],
+            'invalid_seven_day_deals':wrong,'packed_schema_version':meta['schema_version']}
+          Path('v2-rebuild-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print('V2_RAW_REBUILD_VERIFIED='+json.dumps(report,ensure_ascii=False),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v2-source-audit-and-validation
+          path: |
+            v2-rebuild-report.json
+            packed-v2-report.json
+          if-no-files-found: ignore
+          retention-days: 3

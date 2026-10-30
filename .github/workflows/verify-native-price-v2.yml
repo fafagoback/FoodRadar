@@ -1,0 +1,36 @@
+name: Verify FoodRadar native price V2 (read-only)
+on:
+  push:
+    branches:
+      - fix/v2-native-price-only-20261030
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'web/**'
+      - 'tests/**'
+      - '.github/workflows/verify-native-price-v2.yml'
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Full Python regression suite
+        run: python -m unittest discover -s tests -v
+      - name: V2 native price fixture checks
+        run: python -m unittest discover -s tests -p test_verified_prices_v2.py -v
+      - name: Browser contract regression
+        run: |
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/data-contract.js
+          node tests/web_contract.cjs
+          node tests/price_history.cjs
+          node tests/web_interactions.cjs
+          node tests/packed_concurrency.cjs

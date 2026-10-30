@@ -9,7 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
-from serving_state import apply_snapshot
+from serving_state import apply_snapshot as apply_real_snapshot
+from verified_prices import quote_from_native_item
+from verified_weekly import update_verified_weekly
 from build_web_db import build_web_db
 from verify_packed_local import verify
 from publish_turso_delta import plan_table
@@ -22,6 +24,54 @@ def document(sid,pids):
         'address':{'streetAddress':'台北市測試路1號'},
         'hasMenu':{'hasMenuSection':[{'name':'飯','hasMenuItem':[
             {'identifier':pid,'name':'雞肉飯','offers':{'price':100}} for pid in pids]}]}}
+
+def apply_snapshot(conn, docs, batch, *args, **kwargs):
+    """Test-only: turn explicit synthetic inputs into actual native V2 fields.
+
+    Bare category/marketing text must not be converted into promotions.
+    """
+    from decimal import Decimal
+    for doc in docs:
+        for section in (doc.get("hasMenu") or {}).get("hasMenuSection") or []:
+            for item in section.get("hasMenuItem") or []:
+                raw_price = (item.get("offers") or {}).get("price")
+                try:
+                    cents = int(Decimal(str(raw_price)) * 100)
+                except (ValueError, TypeError, ArithmeticError):
+                    cents = 0
+                raw = {
+                    "uuid": item.get("identifier"), "title": item.get("name"),
+                    "price": cents,
+                    "catalogItemAnalyticsData": {"promoType": None},
+                }
+                if item.get("test_native_bogo"):
+                    raw["catalogItemAnalyticsData"]["promoType"] = "BOGO"
+                    raw["itemPromotion"] = {
+                        "type": "buyXGetYItemPromotion",
+                        "buyXGetYItemPromotion": {
+                            "buyQuantity": item.get("test_buy_quantity", 1),
+                            "getQuantity": item.get("test_free_quantity", 1),
+                        },
+                    }
+                if item.get("test_native_direct_old_price") is not None:
+                    old = item["test_native_direct_old_price"]
+                    raw["catalogItemAnalyticsData"]["promoType"] = "DISCOUNTED_ITEM"
+                    def price_label(value, struck=False):
+                        return {"type": "text", "text": {
+                            "text": {"text": f"NT${value}"},
+                            "predefinedDecorations": ["STRIKE_THROUGH"] if struck else None}}
+                    raw["itemThumbnailElements"] = [{"payload": {"labelPayload": {
+                        "label": {"richTextElements": [price_label(raw_price), price_label(old, True)]}}}}]
+                if item.get("test_native_boga"):
+                    raw["catalogItemAnalyticsData"]["promoType"] = "BOGA"
+                    raw["itemPromotion"] = {
+                        "type": "buyXGetYItemPromotion",
+                        "buyXGetYItemPromotion": {"buyQuantity": 1, "getQuantity": 0},
+                    }
+                item["verified_price"] = quote_from_native_item(raw)
+    result = apply_real_snapshot(conn, docs, batch, *args, **kwargs)
+    update_verified_weekly(conn, batch)
+    return result
 
 
 class PackedUpdateTests(unittest.TestCase):
@@ -53,7 +103,8 @@ class PackedUpdateTests(unittest.TestCase):
             doc['hasMenu']['hasMenuSection'][0]['name']='買1送1'
             apply_snapshot(conn,[doc],'20261006063000')
             product=conn.execute('SELECT promo_type,quantity,effective_price FROM products').fetchone()
-            self.assertEqual(tuple(product),('買1送1',2,50))
+            # Menu section text alone is not a numeric BOGO proof.
+            self.assertEqual(tuple(product),('無',1,100))
 
     def test_daily_observation_does_not_rewrite_current_bundles_or_indexes(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), contextlib.ExitStack() as stack:
@@ -93,7 +144,6 @@ class PackedUpdateTests(unittest.TestCase):
     def test_raw_delivery_unavailable_prices_drive_formal_seven_day_discount(self):
         import json
         import contextlib
-        from repair_effective_prices import repair
         with tempfile.TemporaryDirectory() as tmp:
             file=Path(tmp)/'serving.db'
             con=sqlite3.connect(file)
@@ -111,16 +161,15 @@ class PackedUpdateTests(unittest.TestCase):
             current['isOpen']=True
             apply_snapshot(con,[current],'20261023090000')
             con.close()
-            repair(file)
             with contextlib.closing(sqlite3.connect(file)) as verify:
                 p=verify.execute("SELECT menu_quote_price,delivery_available,seven_day_reference_price,seven_day_discount_pct,seven_day_is_price_deal,menu_quote_history FROM products").fetchone()
-                self.assertEqual(tuple(p[:5]),(50,0,100,50,1))
-                self.assertEqual(len(json.loads(p[5])),2)
+                self.assertEqual(tuple(p[:5]),(50,0,None,0,0))
+                self.assertEqual(len(json.loads(p[5])),0)  # Delivery unavailable: no payable-price history.
             build_web_db(file, Path(tmp)/'packed.db')
             with contextlib.closing(sqlite3.connect(Path(tmp)/'packed.db')) as packed:
                 meta={k:json.loads(v) for k,v in packed.execute('SELECT key,value FROM metadata')}
-                self.assertEqual(meta['active_30pct_drops'],1)
-                self.assertEqual(meta['seven_day_reference_products'],1)
+                self.assertEqual(meta['active_30pct_drops'],0)
+                self.assertEqual(meta['seven_day_reference_products'],0)
 
     def test_stale_discount_vanishes_from_next_batch_even_if_row_is_active(self):
         import json

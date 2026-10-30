@@ -136,7 +136,7 @@ def verified_rebuild_evidence(path, local_meta, old_meta):
     previous_counts = json.loads(old_meta.get('source_counts','{}'))
     required_count = int(local_counts.get('crawl_batches',0))
     verified_count = proof.get('verified_manifest_count')
-    if (proof.get('format') != 'foodradar-full-raw-replay-v1'
+    if (proof.get('format') != 'foodradar-full-raw-replay-v2'
         or proof.get('batch_id') != json.loads(local_meta.get('latest_batch','null'))
         or not isinstance(verified_count,int) or verified_count < 1
         or verified_count != required_count
@@ -161,10 +161,12 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None, reset
         old_meta = {r['key']: r['value'] for r in remote.query('SELECT key,value FROM metadata')} if 'metadata' in tables else {}
         if tables and json.loads(old_meta.get('application', 'null')) != 'FoodRadar':
             raise ValueError('Refusing an existing database owned by another application')
-        if old_meta and old_meta.get('schema_version') != local_meta['schema_version']:
-            raise ValueError('Schema changes require a new versioned database')
         trusted_rebuild = verified_rebuild_evidence(
             verified_rebuild_manifest, local_meta, old_meta)
+        if old_meta and old_meta.get('schema_version') != local_meta['schema_version']:
+            if not (reset_all and trusted_rebuild
+                    and json.loads(local_meta['schema_version']) == 2):
+                raise ValueError('Schema changes require verified V2 rebuild/reset')
         if reset_all and not trusted_rebuild:
             raise ValueError('Refusing to erase Turso without full checksum-verified HF RAW replay')
         # A historical Raw archive can be incomplete even when its checksum is

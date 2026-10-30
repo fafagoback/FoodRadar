@@ -8,11 +8,11 @@ from __future__ import annotations
 
 try:
     from .city_normalization import canonical_city
-    from .json_to_db import extract_promo_info, calculate_effective_price
+    from .verified_prices import quote_from_converted_item, quote_numbers, reconcile_duplicate_skus
     from .price_change import PriceChange
 except ImportError:
     from city_normalization import canonical_city
-    from json_to_db import extract_promo_info, calculate_effective_price
+    from verified_prices import quote_from_converted_item, quote_numbers, reconcile_duplicate_skus
     from price_change import PriceChange
 
 import argparse
@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS products(
   PRIMARY KEY(store_uuid, product_uuid),
   FOREIGN KEY(store_uuid) REFERENCES stores(store_uuid)
 );
+CREATE TABLE IF NOT EXISTS product_price_observations(
+  batch_id TEXT NOT NULL, store_uuid TEXT NOT NULL, product_uuid TEXT NOT NULL,
+  observed_at TEXT NOT NULL, menu_price_cents INTEGER NOT NULL,
+  promotion_type TEXT NOT NULL CHECK(promotion_type IN ('NONE','SAME_SKU_BXGY','DIRECT_DISCOUNT')),
+  buy_quantity INTEGER NOT NULL, free_quantity INTEGER NOT NULL,
+  received_quantity INTEGER NOT NULL, original_total_cents INTEGER NOT NULL,
+  payable_total_cents INTEGER NOT NULL, source_hash TEXT NOT NULL,
+  PRIMARY KEY(batch_id,store_uuid,product_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_v2_quotes_product_time
+ ON product_price_observations(store_uuid,product_uuid,observed_at DESC);
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_time TEXT NOT NULL, store_uuid TEXT NOT NULL,
   product_uuid TEXT, event_type TEXT NOT NULL, old_state TEXT, new_state TEXT
@@ -255,6 +266,9 @@ def ensure_schema_and_migrations(conn: sqlite3.Connection) -> None:
         ("menu_quote_promo_type", "TEXT"),
         ("menu_quote_quantity", "INTEGER"),
         ("delivery_available", "INTEGER NOT NULL DEFAULT 1"),
+        ("verified_discount_pct", "REAL NOT NULL DEFAULT 0"),
+        ("price_evidence_status", "TEXT NOT NULL DEFAULT 'UNVERIFIED'"),
+        ("price_evidence_source_hash", "TEXT"),
     ):
         if name not in product_columns:
             conn.execute(f"ALTER TABLE products ADD COLUMN {name} {definition}")
@@ -368,6 +382,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
     seen_product_rows: list[tuple[str, str]] = []
     changed_product_rows: list[tuple[str, str]] = []
     quote_history_batch: list[tuple[str, str, str]] = []
+    v2_observation_batch: list[tuple] = []
+    v2_product_status_batch: list[tuple] = []
 
     def flush_snapshot_batches() -> None:
         if insert_stores_batch:
@@ -391,6 +407,18 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         if quote_history_batch:
             conn.executemany("UPDATE products SET menu_quote_history=? WHERE store_uuid=? AND product_uuid=?", quote_history_batch)
             quote_history_batch.clear()
+        if v2_observation_batch:
+            conn.executemany("""INSERT OR REPLACE INTO product_price_observations(
+                batch_id,store_uuid,product_uuid,observed_at,menu_price_cents,
+                promotion_type,buy_quantity,free_quantity,received_quantity,
+                original_total_cents,payable_total_cents,source_hash
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", v2_observation_batch)
+            v2_observation_batch.clear()
+        if v2_product_status_batch:
+            conn.executemany("""UPDATE products SET verified_discount_pct=?,
+                price_evidence_status=?,price_evidence_source_hash=?
+                WHERE store_uuid=? AND product_uuid=?""", v2_product_status_batch)
+            v2_product_status_batch.clear()
         if changed_product_rows:
             conn.executemany("INSERT OR IGNORE INTO pending_product_changes VALUES(?,?)", changed_product_rows)
             changed_product_rows.clear()
@@ -400,6 +428,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         if sid in seen_stores:
             continue
         seen_stores.add(sid)
+        # Invalidate conflicting duplicate SKU price claims before deduplication.
+        reconcile_duplicate_skus(doc)
         # Delivery availability cannot erase an existing open-hours menu.
         catalog_seen = int(menu_catalog_valid(doc, batch_id))
         conn.execute("INSERT OR REPLACE INTO snapshot_seen_stores VALUES(?,?)", (sid, catalog_seen))
@@ -471,33 +501,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         store_price_valid = price_observation_valid(doc, batch_id)
         quote_price_valid = menu_price_observation_valid(doc, batch_id)
         sections = (doc.get("hasMenu") or {}).get("hasMenuSection") or []
-        # A SKU may appear both in a normal category and in the live BOGO
-        # category. Selecting the first occurrence makes prices jump when
-        # getStoreV1 changes section order. Gather all explicit promo-category
-        # evidence first, then apply it consistently to each deduplicated SKU.
-        preferred_promos = {}
-        for candidate_section in sections:
-            candidate_category = html.unescape(str(candidate_section.get("name") or "一般"))
-            for candidate_item in candidate_section.get("hasMenuItem") or []:
-                candidate_name = html.unescape(str(candidate_item.get("name") or "")).strip()
-                if not candidate_name:
-                    continue
-                candidate_pid, _ = product_identity(candidate_item, sid)
-                inferred, inferred_qty = extract_promo_info(
-                    candidate_category, candidate_name,
-                    str(candidate_item.get("description") or ""))
-                candidate_promo = str(candidate_item.get("promo_type") or inferred)
-                candidate_qty = max(1, _num(candidate_item.get("quantity"), int, inferred_qty))
-                if candidate_promo == "無":
-                    continue
-                # Quantity-changing offers rank over descriptive sale labels.
-                # Resolve ties by stable text, never by API category order.
-                candidate_price = _num((candidate_item.get("offers") or {}).get("price"), float, 0)
-                rank = (int(candidate_item.get("promotion_source") == "native_structured"),
-                        int(candidate_qty > 1), int(candidate_price > 0), candidate_promo)
-                prior = preferred_promos.get(candidate_pid)
-                if prior is None or rank > prior[0]:
-                    preferred_promos[candidate_pid] = (rank, candidate_promo, candidate_qty, candidate_price)
+        # No promotion text/category heuristics. Converted native V2 evidence
+        # has already been validated against the original getStoreV1 item.
         store_product_keys: set[str] = set()
         for sec in sections:
             category = html.unescape(str(sec.get("name") or "一般"))
@@ -517,29 +522,71 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 old = state_cache.get_product(key)
                 observed_price = _num((item.get("offers") or {}).get("price"), float, 0)
                 desc = str(item.get("description") or "")
-                # Original Restaurant JSON describes offers in section/name/
-                # description; it does not carry ETL-only promo_type fields.
-                inferred_promo, inferred_qty = extract_promo_info(category, name, desc)
-                observed_promo = str(item.get("promo_type") or inferred_promo)
-                observed_qty = max(1, _num(item.get("quantity"), int, inferred_qty))
-                preferred = preferred_promos.get(pid)
-                if preferred is not None:
-                    observed_promo, observed_qty = preferred[1], preferred[2]
-                    # A SKU can have different list prices in its promotional
-                    # section; never combine BOGO terms with the first category's price.
-                    if preferred[3] > 0:
-                        observed_price = preferred[3]
-                price_valid = store_price_valid and observed_price > 0
-                # Never replace the last verified price/promotion with an
-                # unpurchasable closed-hours menu snapshot.
-                price = observed_price if price_valid else (float(old["price"]) if old and old["recent_prices"] else 0.0)
-                promo = observed_promo if price_valid else (str(old["promo_type"]) if old else "無")
-                qty = observed_qty if price_valid else (int(old["quantity"]) if old else 1)
-                effective = calculate_effective_price(price, promo, qty)
-                quote_unit = calculate_effective_price(observed_price, observed_promo, observed_qty) if observed_price > 0 else 0
+                verified_quote = quote_from_converted_item(item)
+                # A native-evidence failure must not be treated as a verified
+                # normal-priced menu or as a missing gift with quantity 1.
+                observed_promo = "未驗證"
+                observed_qty = 1
+                verified_effective = None
+                native_discount = 0.0
+                if verified_quote is not None:
+                    kind = verified_quote["kind"]
+                    if kind == "SAME_SKU_BXGY":
+                        observed_promo = (
+                            f'買{verified_quote["buy_quantity"]}送{verified_quote["free_quantity"]}')
+                    elif kind == "DIRECT_DISCOUNT":
+                        observed_promo = "直接折價"
+                    else:
+                        observed_promo = "無"
+                    observed_qty = verified_quote["received_quantity"]
+                    native_numbers = quote_numbers(verified_quote)
+                    verified_effective = float(native_numbers["effective_unit_price"])
+                    native_discount = float(native_numbers["discount_rate"])
+                    observed_price = verified_quote["menu_price_cents"] / 100.0
+                price_valid = bool(store_price_valid and verified_quote is not None
+                                   and observed_price > 0)
+                price = observed_price if store_price_valid else (
+                    float(old["price"]) if old and old["recent_prices"] else 0.0)
+                promo = observed_promo if store_price_valid else (
+                    str(old["promo_type"]) if old else "未驗證")
+                qty = observed_qty if store_price_valid else (
+                    int(old["quantity"]) if old else 1)
+                # Non-verified menu prices remain searchable but never become
+                # a promo-adjusted effective-price or a seven-day deal.
+                effective = verified_effective if price_valid else (
+                    float(old["effective_price"]) if old and old["recent_prices"] else price)
+                # A menu visible on getStoreV1 while delivery is unavailable is
+                # not a verified payable-price observation. Keep it in HF Raw,
+                # not in certified V2 history or the seven-day baseline.
+                quote_valid = bool(price_valid)
                 quote = (observed_price if 0 < observed_price < 1_000_000 else None,
-                         quote_unit if 0 < quote_unit < 1_000_000 else None,
-                         observed_promo, observed_qty, int(bool(price_valid)))
+                         verified_effective if quote_valid else None,
+                         observed_promo if quote_valid else "未驗證",
+                         observed_qty if quote_valid else None,
+                         int(bool(price_valid)))
+                # Preserve the last valid price evidence through a closed-hours
+                # response; but invalidate a current open-hours unsupported promo.
+                keep_last = bool((not store_price_valid or observed_price <= 0)
+                    and old and old.get("price_evidence_status") == "VERIFIED_MENU")
+                evidence_status = (
+                    "VERIFIED_MENU" if price_valid or keep_last else "UNVERIFIED")
+                evidence_discount = (
+                    native_discount if price_valid else
+                    float(old.get("verified_discount_pct") or 0) if keep_last else 0.0)
+                evidence_hash = (
+                    verified_quote["source_hash"] if price_valid else
+                    old.get("price_evidence_source_hash") if keep_last else None)
+                v2_product_status_batch.append((
+                    evidence_discount, evidence_status, evidence_hash, sid, pid,
+                ))
+                if quote_valid:
+                    v2_observation_batch.append((
+                        batch_id,sid,pid,now,verified_quote["menu_price_cents"],
+                        verified_quote["kind"],verified_quote["buy_quantity"],
+                        verified_quote["free_quantity"],verified_quote["received_quantity"],
+                        verified_quote["original_total_cents"],
+                        verified_quote["payable_total_cents"],verified_quote["source_hash"],
+                    ))
                 # Keep all menu quotes visible, but only observations made when
                 # the store is ACTUALLY OPEN may become a historical price
                 # baseline. Delivery unavailable never rejects an open-hours quote.
@@ -558,7 +605,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     and isinstance(point[0], str) and cutoff <= point[0] < now
                     and isinstance(point[1], (int, float)) and 0 < point[1] < 1_000_000
                 ]
-                if quote_price_valid and quote[1] is not None:
+                if quote_valid and quote[1] is not None:
                     quote_history.append([
                         now, round(quote[1], 2), round(quote[0], 2),
                         quote[2] or "無", quote[3]
@@ -570,10 +617,10 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     "effective_price": effective, "order_url": order_url,
                     "is_open": is_open,
                 }
-                # A flag on event JSON, not another SQL/Turso column.
+                # Event JSON is an audit trail, not a price inference input.
                 event_state = {**state, "price_valid": bool(price_valid),
-                               "menu_quote_valid": bool(observed_price > 0),
-                               "menu_price_comparable": bool(quote_price_valid and observed_price > 0),
+                               "menu_quote_valid": bool(quote_valid),
+                               "menu_price_comparable": bool(quote_valid),
                                "delivery_available": bool(store_price_valid)}
                 ph = canonical_hash(state)
 
@@ -602,6 +649,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         "menu_quote_promo_type": quote[2],
                         "menu_quote_quantity": quote[3],
                         "delivery_available": quote[4],
+                        "price_evidence_status": evidence_status,
+                        "verified_discount_pct": evidence_discount,
+                        "price_evidence_source_hash": evidence_hash,
                     })
                     changed_product_rows.append(key)
                 else:
@@ -617,7 +667,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     if price_valid:
                         # Price drops, price rises and promotion start/end MUST be
                         # compared on the same per-unit basis (not menu list price).
-                        previous_unit = float(old["effective_price"] or 0) if old["recent_prices"] else 0
+                        previous_unit = (float(old["effective_price"] or 0)
+                            if old["recent_prices"] and old.get("price_evidence_status") == "VERIFIED_MENU"
+                            else 0)
                         comparison = PriceChange.compare(previous_unit, effective)
                         price_novel = int(bool(comparison and comparison["change"] != 0))
                         change_fields = PriceChange.persisted(comparison)
@@ -662,6 +714,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         or old.get("price_change_amount") != price_change_amount
                         or old.get("price_change_percent") != price_change_percent
                         or old.get("menu_quote_history") != quote_history
+                        or old.get("price_evidence_status") != (
+                            "VERIFIED_MENU" if price_valid else "UNVERIFIED")
                         or (old.get("menu_quote_price"), old.get("menu_quote_effective_price"),
                             old.get("menu_quote_promo_type"), old.get("menu_quote_quantity"),
                             old.get("delivery_available", 1)) != quote
@@ -721,6 +775,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     old["price_change_amount"] = price_change_amount
                     old["price_change_percent"] = price_change_percent
                     old["menu_quote_history"] = quote_history
+                    old["price_evidence_status"] = evidence_status
+                    old["verified_discount_pct"] = evidence_discount
+                    old["price_evidence_source_hash"] = evidence_hash
                     old.update(zip(("menu_quote_price", "menu_quote_effective_price",
                                     "menu_quote_promo_type", "menu_quote_quantity",
                                     "delivery_available"), quote))

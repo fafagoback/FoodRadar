@@ -28,7 +28,7 @@ vm.runInContext(fs.readFileSync('web/app.js','utf8'),context);
   element('theme-toggle').listeners.click();
   assert(element('price-history-modal').classList.contains('hidden'));
   assert.equal(vm.runInContext('APP_STATE.chartInstance',context),null);
-  vm.runInContext("APP_STATE.allProducts = [{store_id:'wrong',product_id:'p',price:999},{store_id:'s',product_id:'p',price:100,quantity:2,promo_type:'買1送1',eff_price:50,is_open:1}]",context);
+  vm.runInContext("APP_STATE.allProducts = [{store_id:'wrong',product_id:'p',price:999},{store_id:'s',product_id:'p',price:100,quantity:2,promo_type:'買1送1',effective_price:50,eff_price:50,price_evidence_status:'VERIFIED_MENU',is_open:1}]",context);
   await context.showPriceHistoryModal('s','p','商品','店家','');
   assert.equal(vm.runInContext('APP_STATE.chartInstance.data.datasets[0].data[0]',context),50);
   context.window.UBER_RADAR_CONFIG.ENABLE_TURSO=true;

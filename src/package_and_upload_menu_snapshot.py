@@ -106,6 +106,14 @@ def main() -> None:
     api_raw_files = sorted(Path(args.api_raw_dir).glob("*.json")) if args.api_raw_dir else []
     if args.api_raw_dir and len(api_raw_files) != active_count:
         fail(batch_id, f"Original API capture incomplete: {len(api_raw_files)}/{active_count}", rows)
+    # Both archive subfolders MUST use the same canonical filename.
+    # Crawled raw files originally use a store URL MD5 and a display name,
+    # while Json/ is keyed by the URL SHA256. Pair using the original source
+    # file basename before packaging, not after packaging.
+    canonical_names = {Path(path).name: Path(archive_member(path, batch_id)).name
+                       for path in valid_files}
+    if any(path.name not in canonical_names for path in api_raw_files):
+        fail(batch_id, "Native raw file has no matching converted menu file", rows)
     for raw_path in api_raw_files:
         with open(raw_path, encoding="utf-8") as source:
             native_response = json.load(source)
@@ -131,7 +139,7 @@ def main() -> None:
         for path in valid_files:
             tar.add(path, arcname=archive_member(path, batch_id))
         for raw_path in api_raw_files:
-            tar.add(raw_path, arcname="ApiRaw/" + raw_path.name)
+            tar.add(raw_path, arcname="ApiRaw/" + canonical_names[raw_path.name])
 
     with tarfile.open(archive_path, "r:gz") as tar:
         members = tar.getmembers()

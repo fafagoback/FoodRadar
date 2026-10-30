@@ -1001,131 +1001,35 @@ function formatTaiwanDiscount(ratio) {
 
 function productPromo(row) {
   const p = window.UBER_DATA_CONTRACT.product(row);
-  const promo = calculateEffectivePromo(p.price, p.promo_type, p.quantity);
-  if (!p.valid_price) return {...promo, effPrice: null, isPromo: false, totalQty: 1, discountText: ''};
-  // Every card uses the same canonical price as the graph and deal comparison.
-  return {...promo, effPrice: window.UBER_DATA_CONTRACT.unitPrice(p.price, p.promo_type, p.quantity)};
-}
-
-function calculateEffectivePromo(price, promoType, quantity) {
-  const p = Number(price);
-  if (!Number.isFinite(p) || p <= 0) return {effPrice: null, totalQty: 1, isPromo: false, discountText: '', rawPrice: null};
-  const qty = Number(quantity) || 1;
-  const type = String(promoType || '').trim();
-
-  // 1. 匹配「買X送Y」中文或數字
-  const mBuy = type.match(/買\s*([0-9一二兩三四五])\s*送\s*([0-9一二兩三四五])/);
-  if (mBuy) {
-    const digitMap = { '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4, '五': 5 };
-    const b = digitMap[mBuy[1]] || 1;
-    const f = digitMap[mBuy[2]] || 1;
-    const totalQty = b + f;
-    const totalCost = p * b;
-    const eff = totalQty > 0 ? (totalCost / totalQty) : p;
-    const ratio = totalQty > 0 ? (b / totalQty) : 1;
-    return {
-      effPrice: eff,
-      totalQty: totalQty,
-      buyQty: b,
-      freeQty: f,
-      ratio: ratio,
-      discountText: formatTaiwanDiscount(ratio),
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
-  // 2. English BOGO / archived 買A送B are equivalent to 買1送1.
-  if (type === '買A送B' || type.toUpperCase() === 'BOGO') {
-    return { effPrice: p / 2, totalQty: 2, buyQty: 1, freeQty: 1, ratio: 0.5,
-      discountText: '5折', rawPrice: p, isPromo: true };
-  }
-
-  // 3. 匹配「第2件半價」/「第2杯半價」
-  if (/第\s*[2二兩]\s*[件杯項份]\s*半價/.test(type)) {
-    const eff = (p * 1.5) / 2;
-    const ratio = 0.75;
-    return {
-      effPrice: eff,
-      totalQty: 2,
-      buyQty: 2,
-      freeQty: 0,
-      ratio: ratio,
-      discountText: '75折',
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
-  // 3. 匹配「加1元多1件」
-  if (/加\s*[1一]\s*元多\s*[1一]\s*件/.test(type)) {
-    const eff = (p + 1) / 2;
-    const ratio = p > 0 ? (eff / p) : 0.5;
-    return {
-      effPrice: eff,
-      totalQty: 2,
-      buyQty: 1,
-      freeQty: 1,
-      ratio: ratio,
-      discountText: formatTaiwanDiscount(ratio),
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
-  // 4. 匹配「N折」/「N折特惠」
-  const mDisc = type.match(/(?:^|[^\d])(\d{1,2}(?:\.\d+)?)\s*折/);
-  if (mDisc) {
-    const discNum = parseFloat(mDisc[1]);
-    const ratio = discNum < 10 ? (discNum / 10) : (discNum / 100);
-    // Platform price is already discounted: never apply ratio again.
-    return {
-      effPrice: p,
-      totalQty: qty,
-      buyQty: qty,
-      freeQty: 0,
-      ratio: ratio,
-      discountText: `${discNum}折`,
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
-  // 5. Normal multi-unit packs have a unit cost but no promotional discount.
-  if (qty > 1) {
-    return {
-      effPrice: p / qty,
-      totalQty: qty,
-      buyQty: qty,
-      freeQty: 0,
-      ratio: 1,
-      discountText: '',
-      rawPrice: p,
-      isPromo: false
-    };
-  }
-
+  const verified = p.price_evidence_status === 'VERIFIED_MENU';
+  const discount = verified ? Number(p.verified_discount_pct || 0) : 0;
+  const eff = verified && Number(p.effective_price) > 0 ? Number(p.effective_price) : null;
   return {
-    effPrice: p,
-    totalQty: 1,
-    buyQty: 1,
-    freeQty: 0,
-    ratio: 1,
-    discountText: '',
-    rawPrice: p,
-    isPromo: (type !== '無' && type !== '')
+    effPrice: eff,
+    totalQty: verified ? Number(p.quantity || 1) : 1,
+    buyQty: null, freeQty: null,
+    isPromo: verified && discount > 0,
+    discountText: discount > 0 ? `折扣率 ${discount.toFixed(2)}%` : '',
+    rawPrice: p.price,
   };
 }
 
 // -----------------------------------------------------------------------------
 function isPlatformPromotion(p) {
-  return Boolean(String(p.promo_type || '').trim() && String(p.promo_type).trim() !== '無');
+  return p.price_evidence_status === 'VERIFIED_MENU'
+    && Number(p.verified_discount_pct) > 0
+    && (/^買[0-9]+送[0-9]+$/.test(String(p.promo_type || ''))
+      || p.promo_type === '直接折價');
 }
 function isVerifiedPriceDeal(p) {
-  return p.is_price_drop === true || p.is_price_drop === 1;
+  return p.price_evidence_status === 'VERIFIED_MENU'
+    && (p.is_price_drop === true || p.is_price_drop === 1);
 }
 function isAnyPromotion(p) { return isPlatformPromotion(p) || isVerifiedPriceDeal(p); }
-function displayUnitPrice(p) { return window.UBER_DATA_CONTRACT.unitPrice(p.price, p.promo_type, p.quantity) ?? 0; }
+function displayUnitPrice(p) {
+  return p.price_evidence_status === 'VERIFIED_MENU'
+    ? Number(p.effective_price || p.eff_price || 0) : 0;
+}
 function productIdentity(p) { return `${p.store_uuid || p.store_id}\u001f${p.product_uuid || p.product_id}`; }
 function matchesProductKeyword(item, query) {
   const haystack = [item.product_name, item.store_name, item.category_name]
@@ -1182,15 +1086,15 @@ async function fetchPromotions(page = 1) {
     } else if (promoType === '實質降價30') {
       items = items.filter(p => isVerifiedPriceDeal(p) && Number(p.discount_pct) >= 30);
     } else if (promoType === '買一送一') {
-      items = items.filter(p => /買.*送/.test(p.promo_type));
+      items = items.filter(p => isPlatformPromotion(p) && /^買[0-9]+送[0-9]+$/.test(p.promo_type));
     } else if (promoType === '半價') {
-      items = items.filter(p => /半價/.test(p.promo_type));
+      items = []; // Removed unsupported second-item discount.
     } else if (promoType === '加1元') {
-      items = items.filter(p => /加.*元多.*件/.test(p.promo_type));
+      items = []; // Removed unsupported add-a-dollar offer.
     } else if (promoType === '折') {
-      items = items.filter(p => /折/.test(p.promo_type));
+      items = items.filter(p => isPlatformPromotion(p) && p.promo_type === '直接折價');
     } else if (promoType === '多入') {
-      items = items.filter(p => p.quantity > 1);
+      items = []; // Removed unsupported multi-item package filter.
     }
   }
 
@@ -1801,14 +1705,17 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         history = events
           .filter(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
-            return state.menu_quote_valid === true || (state.price_valid === true && (state.is_open === 1 || state.is_open === true));
+            return state.price_evidence_status === 'VERIFIED_MENU'
+              && (state.menu_quote_valid === true ||
+                (state.price_valid === true && (state.is_open === 1 || state.is_open === true)));
           })
           .map(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
             const unitOnly = state.effective_unit_only === true;
             const p = unitOnly ? null : Number(state.price || 0);
             const eff = unitOnly ? Number(state.price || 0)
-              : window.UBER_DATA_CONTRACT.unitPrice(p, state.promo_type, state.quantity);
+              : (state.price_evidence_status === 'VERIFIED_MENU'
+                  ? Number(state.effective_price || 0) : null);
             return {
               crawled_time: e.event_time,
               price: p,
@@ -1835,8 +1742,9 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         && String(x.product_uuid || x.product_id) === String(productId)
         && String(x.store_uuid || x.store_id || '') === String(storeUuid));
 
-    if (found && (found.is_open === 1 || found.is_open === true) && Number(found.price || 0) > 0) {
-      const eff = window.UBER_DATA_CONTRACT.unitPrice(found.price, found.promo_type, found.quantity);
+    if (found && found.price_evidence_status === 'VERIFIED_MENU'
+        && (found.is_open === 1 || found.is_open === true) && Number(found.price || 0) > 0) {
+      const eff = Number(found.effective_price || found.eff_price || 0);
       if (Number(eff) > 0) {
         history = [{
           crawled_time: found.crawled_time || (APP_STATE.stats && APP_STATE.stats.latest_batch) || '最新',
@@ -1858,7 +1766,8 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     const at = String(currentComparison.crawled_time || '');
     const price = Number(currentComparison.price);
     const unit = Number(currentComparison.current_price);
-    if (at && Number.isFinite(price) && price > 0 && Number.isFinite(unit) && unit > 0) {
+    if (currentComparison.price_evidence_status === 'VERIFIED_MENU'
+        && at && Number.isFinite(price) && price > 0 && Number.isFinite(unit) && unit > 0) {
       history.push({
         crawled_time: at,
         price,

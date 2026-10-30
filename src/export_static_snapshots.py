@@ -1020,7 +1020,8 @@ def export_all_static_snapshots(
 
     # 1. 高速讀取與解析所有菜單 JSON
     print("\n⚙️ 【步驟 6.1】執行高速資料湖解析與 ETL 入庫...")
-    from json_to_db import get_md5_hash, extract_promo_info, calculate_effective_price, menu_identity_keys
+    from json_to_db import get_md5_hash, menu_identity_keys
+    from verified_prices import quote_from_converted_item, quote_numbers
 
     store_rows = []
     product_rows = []
@@ -1124,8 +1125,20 @@ def export_all_static_snapshots(
                     continue
 
                 desc = html.unescape(str(item.get("description", ""))).strip() if item.get("description") else None
-                promo_type, qty = extract_promo_info(sec_name, pname, desc)
-                eff_price = calculate_effective_price(price_val, promo_type, qty)
+                proof = quote_from_converted_item(item)
+                if proof is not None:
+                    promo_type = (
+                        f'買{proof["buy_quantity"]}送{proof["free_quantity"]}'
+                        if proof["kind"] == "SAME_SKU_BXGY"
+                        else "直接折價" if proof["kind"] == "DIRECT_DISCOUNT"
+                        else "無"
+                    )
+                    qty = proof["received_quantity"]
+                    eff_price = float(quote_numbers(proof)["effective_unit_price"])
+                else:
+                    # Unknown/legacy discounts are not promotions or historical
+                    # unit-price proof, but raw catalogue prices stay searchable.
+                    promo_type, qty, eff_price = "無", 1, price_val
 
                 product_rows.append((
                     pid, c_time, store_id, store_name, sec_name or "一般",

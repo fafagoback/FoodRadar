@@ -207,7 +207,8 @@ export function isCurrentMenuObservation(product, store, latestProcessedAt = rel
   return Boolean(latest && String(store?.last_seen || '') === latest &&
     String(product?.last_seen || '') === latest &&
     Number(store?.is_open) === 1 && Number(product?.is_open) === 1 &&
-    Number(product?.menu_quote_price || product?.price) > 0);
+    product?.price_evidence_status === 'VERIFIED_MENU' &&
+    Number(product?.menu_quote_effective_price) > 0);
 }
 
 export function isCurrentPriceObservation(product, store, latestProcessedAt = releaseMeta.latest_processed_at) {
@@ -217,7 +218,9 @@ export function isCurrentPriceObservation(product, store, latestProcessedAt = re
     String(store?.last_seen || '') === latest &&
     String(product?.last_seen || '') === latest &&
     Number(store?.is_open) === 1 && Number(product?.is_open) === 1 &&
-    Number(product?.price) > 0 && Number(product?.delivery_available ?? 1) === 1);
+    Number(product?.price) > 0 &&
+    product?.price_evidence_status === 'VERIFIED_MENU' &&
+    Number(product?.delivery_available ?? 1) === 1);
 }
 
 function productView(product, store) {
@@ -226,10 +229,11 @@ function productView(product, store) {
   const price = quoted > 0 ? quoted : Number(product.price || 0);
   const promo = quoted > 0 ? (product.menu_quote_promo_type || product.promo_type) : product.promo_type;
   const quantity = quoted > 0 ? Number(product.menu_quote_quantity || 1) : Number(product.quantity || 1);
-  // Show real menu price regardless of delivery; this is not proof of orderability.
-  // Do not trust legacy effective_price (it could double-apply a direct discount).
-  // Historical reference_price is now the PREVIOUS effective unit cost.
-  const effective = window.UBER_DATA_CONTRACT.unitPrice(price, promo, quantity);
+  // V2: price comes from native numeric evidence. Never parse promo labels
+  // in the browser or halve a BOGA price by guessing it is BOGO.
+  const verified = product.price_evidence_status === 'VERIFIED_MENU';
+  const effective = verified && Number(product.menu_quote_effective_price) > 0
+    ? Number(product.menu_quote_effective_price) : null;
   // Derived change data comes only from Python PriceChange, persisted in Turso.
   // This read adapter must not recompare reference_price with effective.
   const refPrice = Number(product.reference_price || 0) > 0 ? Number(product.reference_price) : null;
@@ -240,7 +244,8 @@ function productView(product, store) {
   const weekReference = Number(product.seven_day_reference_price || 0) > 0
     ? Number(product.seven_day_reference_price) : null;
   const weekPct = menuCurrent ? Number(product.seven_day_discount_pct || 0) : 0;
-  const currentDrop = menuCurrent && weekPct > 0 && weekReference > effective;
+  const currentDrop = menuCurrent && verified && effective !== null
+    && weekPct > 0 && weekReference > effective;
   const originalPrice = currentDrop ? weekReference : effective;
   const historicalSaving = Number(product.seven_day_discount_amount || 0);
   return {
@@ -257,6 +262,8 @@ function productView(product, store) {
     promo_type: promo,
     eff_price: effective,
     effective_price: effective,
+    verified_discount_pct: verified ? Number(product.verified_discount_pct || 0) : 0,
+    price_evidence_status: verified ? 'VERIFIED_MENU' : 'UNVERIFIED',
     order_action_url: product.order_url || store.order_url,
     rating_value: store.rating || store.rating_value,
     review_count: Number(store.review_count || 0),
@@ -745,6 +752,8 @@ export async function packedHistory(storeUuid, productUuid) {
             quantity:hasRawEvidence ? Number(count || 1) : 1,
             promo_type:hasRawEvidence ? promoType : null,
             effective_unit_only:!hasRawEvidence,
+            effective_price:Number(unit),
+            price_evidence_status:'VERIFIED_MENU',
             menu_quote_valid:true,price_valid:false,
             delivery_available:false
           })});

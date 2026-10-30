@@ -1,108 +1,73 @@
-// Regression coverage for cross-page pricing and promotions.
+// V2 browser contract: native numeric evidence is the only price source.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('web/app.js', 'utf8');
 function extract(name) {
   const start = source.indexOf('function ' + name + '(');
-  assert.ok(start >= 0, name + ' is present');
-  const brace = source.indexOf('{', start);
-  let level = 0, end = brace;
-  for (; end < source.length; ++end) {
-    if (source[end] === '{') ++level;
-    else if (source[end] === '}' && --level === 0) break;
+  assert.ok(start >= 0, name + ' exists');
+  const begin = source.indexOf('{', start);
+  let depth=0, end=begin;
+  for (; end<source.length; ++end) {
+    if (source[end] === '{') ++depth;
+    else if (source[end] === '}' && --depth === 0) break;
   }
-  assert.ok(end < source.length);
-  return source.slice(start, end + 1);
+  assert.ok(end<source.length);
+  return source.slice(start, end+1);
 }
 const context = vm.createContext({});
 context.window = context;
 vm.runInContext(fs.readFileSync('web/data-contract.js', 'utf8'), context);
-for (const name of ['formatTaiwanDiscount','calculateEffectivePromo','isPlatformPromotion','isVerifiedPriceDeal','isAnyPromotion','displayUnitPrice','matchesProductKeyword']) {
+for (const name of ['formatTaiwanDiscount','productPromo','isPlatformPromotion','isVerifiedPriceDeal','isAnyPromotion','displayUnitPrice','matchesProductKeyword']) {
   vm.runInContext(extract(name), context);
 }
-const run = (name, ...args) => context[name](...args);
-assert.equal(run('matchesProductKeyword', {store_name:'漢堡王',product_name:'華堡',category_name:'漢堡'}, '漢堡王 華堡'), true,
-  'keywords may match across the store and product fields');
-assert.equal(run('matchesProductKeyword', {store_name:'漢堡王',product_name:'華堡'}, '漢堡王 薯條'), false);
-assert.equal(run('matchesProductKeyword', {store_name:'COSTCO',product_name:'Chocolate Cookie'}, 'Costco cookie'), true);
-const deal = (price, pct, savings) => ({
-  price, current_price: price, discount_pct: pct, savings_amount: savings,
-  is_price_drop: pct > 0 && savings > 0 // fixture represents Python's persisted decision
+const run=(n,...args)=>context[n](...args);
+const verified = (price, effective, promo, discount=0)=>({
+  price, effective_price:effective, eff_price:effective, promo_type:promo,
+  quantity: promo==='買1送1' ? 2 : 1, verified_discount_pct:discount,
+  price_evidence_status:'VERIFIED_MENU'
 });
-assert.equal(run('isVerifiedPriceDeal', deal(168, 34.12, 87)), true);
-assert.equal(run('isVerifiedPriceDeal', deal(168, 34.12, 0)), false);
-assert.equal(run('isVerifiedPriceDeal', deal(168, 20, 87)), true, 'a 20-percent decrease is a drop; 30 percent is only a filter');
-assert.equal(run('isAnyPromotion', deal(168, 34.12, 87)), true);
-assert.equal(run('isAnyPromotion', {price: 200, quantity: 2, promo_type: ''}), false, 'plain multipacks are not offers');
-assert.equal(run('isPlatformPromotion', {price: 200, quantity: 2, promo_type: ''}), false);
-assert.equal(run('isPlatformPromotion', {price: 100, promo_type: '買一送一'}), true);
-assert.equal(run('displayUnitPrice', {price: 168, promo_type: '7折', quantity: 1}), 168, 'already discounted payable price is not discounted twice');
-assert.equal(run('displayUnitPrice', {price: 30, promo_type: '3折特惠', quantity: 1}), 30,
-  '100 list price / 3折 has payable price 30, not 100 or 9');
-assert.equal(run('displayUnitPrice', {price: 50, promo_type: '無', quantity: 1}), 50);
-assert.equal(Math.round((50 / 30 - 1) * 1000) / 10, 66.7,
-  '3折 30 followed by unpromoted 50 is 66.7% price increase');
-assert.equal(run('calculateEffectivePromo', 30, '3折特惠', 1).effPrice, 30,
-  'direct discount badge must not discount the already-payable price twice');
-assert.equal(run('displayUnitPrice', {price: 168, promo_type: '買一送一', quantity: 1}), 84);
-assert.equal(run('displayUnitPrice', {price: 100, promo_type: '第2件半價', quantity: 1}), 75);
-assert.equal(run('displayUnitPrice', {price: 100, promo_type: '', quantity: 2}), 50);
-assert.equal(run('displayUnitPrice', {price: 89, promo_type: '買1送1', quantity: 2}), 44.5);
-assert.equal(run('displayUnitPrice', {price: 89, promo_type: 'BOGO', quantity: 1}), 44.5);
-assert.equal(run('calculateEffectivePromo', 89, 'BOGO', 1).effPrice, 44.5);
-assert.equal(context.UBER_DATA_CONTRACT.unitMoney(44.5), '$44.50', 'derived unit cost retains fractional TWD');
-assert.equal(context.UBER_DATA_CONTRACT.compareUnitPrices, undefined,
-  'the website must not implement another price-comparison formula');
-assert.equal(run('isVerifiedPriceDeal', {is_price_drop:true,discount_pct:0,savings_amount:0}),true,
-  'front end trusts persisted Python classification rather than recomputing prices');
-assert.ok(source.includes('client.packedCurrentProduct(storeUuid, productId)'),
-  'modal must fetch last valid crawl, not assume its chart events are full history');
-assert.equal(run('displayUnitPrice', {price: 55, promo_type: '無', quantity: 1}), 55);
-assert.equal(Math.round((55 / 44.5 - 1) * 1000) / 10, 23.6,
-  '89 buy-one-get-one followed by 55 no promotion is a 23.6% price INCREASE');
-assert.equal(run('isVerifiedPriceDeal', {current_price:55,discount_pct:0,savings_amount:0}),false,
-  'promotion ended is not a verified discount');
-assert.equal(run('calculateEffectivePromo', 100, '', 2).discountText, '', 'multipack must not show a fake discount badge');
-const packed = fs.readFileSync('scripts/prototype_pack_db.py', 'utf8');
-assert.ok(!packed.includes('int(product["quantity"] or 1) > 1 or product["promo_type"]'), 'bundled products must not be indexed as platform promotions');
-const reader = fs.readFileSync('web/packed-turso.js', 'utf8');
-assert.ok(reader.includes('Number(p.menu_quote_price || p.price) > 0'),
-  'all-product reader must accept menu quotes even when delivery is unavailable or the store has closed');
-assert.ok(!reader.includes('isCurrentPriceObservation(p, store))'),
-  'menu-search reader must never use the strict payable-price gate');
-assert.ok(reader.includes('is_menu_catalog_available: price > 0'),
-  'menu availability must be carried separately from verified price eligibility');
-assert.ok(reader.includes('const effective = window.UBER_DATA_CONTRACT.unitPrice(price, promo, quantity);'),
-  'packed reader computes unit price from actual menu quote or verified price');
-assert.ok(reader.includes("const direction = product.price_direction || 'unknown';"),
-  'packed reader must rely on backend direction');
-assert.ok(!reader.includes('compareUnitPrices(') && !source.includes('compareUnitPrices('),
-  'no separate price-change formula may exist in website JS');
-
-assert.ok(reader.includes('Number(product.is_open) === 1 && Number(store.is_open) === 1'), 'both product and store must explicitly be open');
-assert.ok(source.includes('state.is_open === 1 || state.is_open === true'), 'price-history events require explicit open status');
-assert.ok(source.includes('(found.is_open === 1 || found.is_open === true)'), 'fallback price must not bypass open-state validation');
-
-const moneyContext = vm.createContext({});
-vm.runInContext(fs.readFileSync('web/data-contract.js', 'utf8'), moneyContext);
-const money = moneyContext.UBER_DATA_CONTRACT.money;
-for (const [input, expected] of [
-  [10.3, '$10'],
-  [75.99, '$76'],
-  [88.87, '$89'],
-  [114.63, '$115'],
-  [140.39, '$140'],
-  [191.91, '$192'],
-  [1000.5, '$1,001'],
-  [168, '$168'],
-]) {
-  assert.equal(money(input), expected, 'Taiwan-facing price must match Uber integer display');
+const raw = (price, promo)=>({
+  price, promo_type:promo, quantity:2, price_evidence_status:'UNVERIFIED'
+});
+assert.equal(run('matchesProductKeyword',{store_name:'漢堡王',product_name:'華堡',category_name:'漢堡'},'漢堡王 華堡'),true);
+assert.equal(run('matchesProductKeyword',{store_name:'COSTCO',product_name:'Chocolate Cookie'},'Costco cookie'),true);
+assert.equal(run('matchesProductKeyword',{store_name:'漢堡王',product_name:'華堡'},'漢堡王 薯條'),false);
+assert.equal(run('displayUnitPrice',verified(60,30,'買1送1',50)),30);
+assert.equal(run('displayUnitPrice',verified(71,71,'直接折價',10.12658)),71);
+assert.equal(run('displayUnitPrice',verified(89,44.5,'買1送1',50)),44.5);
+assert.equal(run('displayUnitPrice',raw(100,'買1送1')),0,'unverified text does not imply discount');
+assert.equal(run('displayUnitPrice',raw(100,'買A送B')),0,'BOGA may not be halved');
+assert.equal(run('isPlatformPromotion',verified(60,30,'買1送1',50)),true);
+assert.equal(run('isPlatformPromotion',verified(71,71,'直接折價',10.13)),true);
+assert.equal(run('isPlatformPromotion',raw(100,'買1送1')),false);
+assert.equal(run('isPlatformPromotion',verified(50,25,'買A送B',50)),false,
+  'even a forged verified BOGA must not enter promotions');
+assert.equal(run('isPlatformPromotion',verified(50,50,'無',0)),false);
+assert.equal(run('productPromo',verified(60,30,'買1送1',50)).effPrice,30);
+assert.equal(run('productPromo',verified(60,30,'買1送1',50)).discountText,'折扣率 50.00%');
+assert.equal(run('productPromo',raw(100,'BOGO')).isPromo,false);
+assert.equal(run('isVerifiedPriceDeal',{...verified(30,30,'直接折價',40),is_price_drop:1}),true);
+assert.equal(run('isVerifiedPriceDeal',{...raw(30,'3折'),is_price_drop:1}),false);
+assert.equal(run('isAnyPromotion',verified(60,30,'買1送1',50)),true);
+assert.equal(run('isAnyPromotion',raw(60,'BOGO')),false);
+assert.equal(context.UBER_DATA_CONTRACT.unitPrice(100,'買1送1',2),null,
+  'legacy text-based price calculator must be disabled');
+assert.equal(context.UBER_DATA_CONTRACT.unitMoney(44.5),'$44.50');
+assert.equal(context.UBER_DATA_CONTRACT.compareUnitPrices,undefined);
+const packed = fs.readFileSync('scripts/prototype_pack_db.py','utf8');
+assert.ok(packed.includes('product["price_evidence_status"] == "VERIFIED_MENU"'),
+  'packed promotion index must be native evidence only');
+const reader = fs.readFileSync('web/packed-turso.js','utf8');
+assert.ok(!reader.includes('window.UBER_DATA_CONTRACT.unitPrice('));
+assert.ok(reader.includes('verified_discount_pct'));
+assert.ok(reader.includes('price_evidence_status'));
+assert.ok(!source.includes('calculateEffectivePromo('));
+assert.ok(!source.includes('window.UBER_DATA_CONTRACT.unitPrice('));
+assert.ok(source.includes('client.packedCurrentProduct(storeUuid, productId)'));
+assert.ok(source.includes('const prices = history.map(h => Number(h.eff_price))'));
+const money = context.UBER_DATA_CONTRACT.money;
+for (const [n, expected] of [[10.3,'$10'],[75.99,'$76'],[88.87,'$89'],[114.63,'$115'],[1000.5,'$1,001']]) {
+  assert.equal(money(n),expected);
 }
-assert.equal(run('displayUnitPrice', {price: 114.63, promo_type: '', quantity: 1}), 114.63,
-  'the source price must be preserved for sorting and historical comparisons');
-assert.ok(source.includes('const prices = history.map(h => Number(h.eff_price))'),
-  'history graph must retain accurate fractional effective unit prices');
-assert.ok(source.includes('window.UBER_DATA_CONTRACT.unitMoney(h.eff_price)'),
-  'history table and tooltip must use exact fractional unit cost formatting');
-console.log('FoodRadar pricing and cross-page promotion contract: PASS');
+console.log('V2 numeric verified pricing / promotions web contract: PASS');

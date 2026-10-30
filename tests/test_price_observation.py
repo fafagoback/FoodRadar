@@ -9,7 +9,7 @@ sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
 
 from price_observation import price_observation_valid, menu_catalog_valid
-from serving_state import apply_snapshot
+from test_packed_updates import apply_snapshot
 from test_packed_updates import document
 
 SID='ffffffff-ffff-4fff-8fff-ffffffffffff'
@@ -98,6 +98,7 @@ class PriceValidityTests(unittest.TestCase):
                 'opens':'09:30','closes':'01:00'}]
             d['hasMenu']['hasMenuSection'][0]['name']='台灣50年經典'
             if bogo:
+                d['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['test_native_bogo']=True
                 sec={'name':'Buy 1, get 1 free','hasMenuItem':[
                     dict(d['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0])]}
                 d['hasMenu']['hasMenuSection'].insert(0,sec)
@@ -111,12 +112,10 @@ class PriceValidityTests(unittest.TestCase):
             ('20261027235841',True,True)]:
             apply_snapshot(self.conn,[yuchi(batch,promo,open_hour,'09:30')],batch)
         p=self.conn.execute("SELECT menu_quote_price,menu_quote_effective_price,menu_quote_history FROM products").fetchone()
-        self.assertEqual((p[0],p[1]),(55,27.5))
-        self.assertEqual([point[1] for point in json.loads(p[2])],[27.5,27.5,27.5])
-        self.assertEqual(
-            [(point[2], point[3], point[4]) for point in json.loads(p[2])],
-            [(55, '買1送1', 2)] * 3,
-        )
+        # All captures were marked delivery unavailable. The menu may
+        # remain readable but cannot be certified as payable at that time.
+        self.assertEqual((p[0],p[1]),(55,None))
+        self.assertEqual(json.loads(p[2]),[])
 
     def test_conflicting_isopen_and_missing_hours_are_rejected(self):
         doc=menu('20261014014059',300)
@@ -142,7 +141,7 @@ class PriceValidityTests(unittest.TestCase):
         counts = apply_snapshot(self.conn, [doc], '20261023091759', baseline=False)
         self.assertEqual((counts['stores'], counts['products']), (1, 1))
         row = self.conn.execute('SELECT price,menu_quote_price,menu_quote_effective_price,delivery_available FROM products').fetchone()
-        self.assertEqual(tuple(row), (0, 120, 120, 0))
+        self.assertEqual(tuple(row), (0, 120, None, 0))
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0], 1)
         event = self.conn.execute("SELECT new_state FROM events WHERE event_type='NEW'").fetchone()
         self.assertFalse(json.loads(event[0])['price_valid'])
@@ -186,6 +185,7 @@ class PriceValidityTests(unittest.TestCase):
         item = original['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
         item['promo_type'] = '買1送1'
         item['quantity'] = 2
+        item['test_native_bogo'] = True
         apply_snapshot(self.conn, [original], '20261013091759')
 
         expired = menu('20261021091759', 55)
@@ -204,6 +204,7 @@ class PriceValidityTests(unittest.TestCase):
         item = promoted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]
         item['promo_type'] = '買1送1'
         item['quantity'] = 2
+        item['test_native_bogo'] = True
         apply_snapshot(self.conn, [promoted], '20261014091759')
         row = self.conn.execute('SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products').fetchone()
         self.assertEqual((row['price'], row['effective_price'], row['reference_price']), (89, 44.5, 89))
@@ -217,8 +218,9 @@ class PriceValidityTests(unittest.TestCase):
         # while the original 100 is only promotional context.
         discounted = menu('20261013091759', 30)
         discounted['hasMenu']['hasMenuSection'][0]['name'] = '3折特惠'
+        discounted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['test_native_direct_old_price'] = 100
         apply_snapshot(self.conn, [discounted], '20261013091759')
-        self.assertEqual(self.conn.execute('SELECT promo_type FROM products').fetchone()[0], '3折特惠')
+        self.assertEqual(self.conn.execute('SELECT promo_type FROM products').fetchone()[0], '直接折價')
 
         regular = menu('20261014091759', 50)
         apply_snapshot(self.conn, [regular], '20261014091759')
@@ -237,6 +239,7 @@ class PriceValidityTests(unittest.TestCase):
         apply_snapshot(self.conn, [regular], '20261013091759')
         discounted = menu('20261014091759', 30)
         discounted['hasMenu']['hasMenuSection'][0]['name'] = '3折特惠'
+        discounted['hasMenu']['hasMenuSection'][0]['hasMenuItem'][0]['test_native_direct_old_price'] = 50
         apply_snapshot(self.conn, [discounted], '20261014091759')
         row = self.conn.execute(
             'SELECT price,effective_price,reference_price,discount_amount,discount_pct,is_price_deal FROM products'
@@ -284,14 +287,17 @@ class PriceValidityTests(unittest.TestCase):
         promo = copy.deepcopy(plain)
         promo['name'] = '買1送1'
         promo['hasMenuItem'][0]['offers']['price'] = 80
+        promo['hasMenuItem'][0]['test_native_bogo'] = True
         doc['hasMenu']['hasMenuSection'] = [plain, promo]
         apply_snapshot(self.conn, [doc], '20261026091759')
         result = self.conn.execute('SELECT price,promo_type,quantity,effective_price,menu_quote_price FROM products').fetchone()
-        self.assertEqual(tuple(result), (80,'買1送1',2,40,80))
+        self.assertEqual(tuple(result), (100,'未驗證',1,100,100))
         doc['hasMenu']['hasMenuSection'] = [promo, plain]
         apply_snapshot(self.conn, [doc], '20261027091759')
         result = self.conn.execute('SELECT price,promo_type,quantity,effective_price FROM products').fetchone()
-        self.assertEqual(tuple(result), (80,'買1送1',2,40))
+        self.assertEqual(result['promo_type'], '未驗證')
+        self.assertEqual(self.conn.execute(
+            'SELECT COUNT(*) FROM product_price_observations').fetchone()[0], 0)
 
     def test_same_sku_in_normal_and_bogo_sections_is_order_independent(self):
         """A category carousel/order swap must never invent a 50% price jump."""
@@ -299,6 +305,7 @@ class PriceValidityTests(unittest.TestCase):
         first = menu('20261026091759',100)
         regular = first['hasMenu']['hasMenuSection'][0]
         regular['name'] = '所有商品'
+        regular['hasMenuItem'][0]['test_native_bogo'] = True
         featured = copy.deepcopy(regular)
         featured['name'] = '買1送1'
         first['hasMenu']['hasMenuSection'] = [regular, featured]

@@ -149,6 +149,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                             and product["last_seen"] == latest_time
                             and int(store["is_open"] or 0) == 1
                             and int(product["is_open"] or 0) == 1)
+            native_verified = product["price_evidence_status"] == "VERIFIED_MENU"
+            platform_promo = native_verified and float(product["verified_discount_pct"] or 0) > 0
+            current_menu = current_menu and native_verified
             current_verified = current_menu and int(product["delivery_available"] or 0) == 1
             terms = (store_terms | tokens(product["product_name"]) | tokens(product["category"]) | tokens(product["menu_quote_promo_type"] or product["promo_type"])) if searchable else set()
             price = float(product["menu_quote_effective_price"] or product["effective_price"] or product["price"] or 0)
@@ -160,9 +163,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                     seven_day_reference_products += 1
                 if current_verified:
                     current_verified_products += 1
-                if current_menu and (product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無"):
+                if current_verified and platform_promo:
                     active_platform_promotions += 1
-                if current_menu and int(product["seven_day_is_price_deal"] or 0) == 1:
+                if current_verified and int(product["seven_day_is_price_deal"] or 0) == 1:
                     active_30pct_drops += 1
                 if current_verified and float(product["archive_reference_price"] or 0) > 0:
                     archive_reference_products += 1
@@ -175,10 +178,10 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         and product['listing_started_at'][:10] > store['first_seen'][:10]
                         and product['listing_started_at'] >= cutoff):
                     terms.add('f:new')
-                if current_menu and ((product["menu_quote_promo_type"] or product["promo_type"]) not in (None, "", "無")
+                if current_verified and (platform_promo
                         or float(product["seven_day_discount_pct"] or 0) > 0):
                     terms.add("f:promo")
-                if current_menu and float(product["seven_day_discount_pct"] or 0) > 0:
+                if current_verified and float(product["seven_day_discount_pct"] or 0) > 0:
                     terms.add(f"f:discount:{int(float(product['seven_day_discount_pct']) // 5)}")
             for term in sorted(terms):
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
@@ -229,8 +232,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
         digests[table] = {"count": count, "sha256": digest}
     source_meta = dict(src.execute("select key,value from metadata"))
     data_revision = hashlib.sha256(json.dumps(digests, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    info = {"definition_version": "foodradar-daily-v1", "data_revision": data_revision, "source_revision": source_meta.get("source_revision", "local"),
-            "application": "FoodRadar", "schema_version": 1,
+    info = {"definition_version": "foodradar-native-price-v2", "data_revision": data_revision, "source_revision": source_meta.get("source_revision", "local"),
+            "application": "FoodRadar", "schema_version": 2,
             "active_stores": active_stores, "active_products": active_products,
             "current_verified_products": current_verified_products,
             "active_comparable_products": active_comparable_products,
