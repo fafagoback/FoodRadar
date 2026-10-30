@@ -20,7 +20,7 @@ permissions:
 jobs:
   publish-site:
     name: Publish website without waiting for crawler
-    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]')
+    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[audit-bingdoujiang]') && !contains(github.event.head_commit.message, '[audit-lairfu]') && !contains(github.event.head_commit.message, '[rebuild-price-history]')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -457,17 +457,17 @@ jobs:
             delta-report.json
           retention-days: 3
       - uses: actions/configure-pages@v5
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')
       - uses: actions/upload-pages-artifact@v3
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')
         with:
           path: web
       - uses: actions/deploy-pages@v4
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')
         id: deployment
   live-site-acceptance:
     name: Verify deployed website
-    if: github.event_name != 'push'
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[rebuild-price-history]')
     needs: crawl
     # The published Pages URL always points at the newest release. A slow
     # Chromium install for an older SHA must be cancelled once a newer
