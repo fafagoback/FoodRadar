@@ -1,8 +1,5 @@
 name: Stage HF ApiRaw V2 rebuilt prices (NO Turso writes)
 on:
-  push:
-    branches:
-      - fix/v2-native-price-only-20261030
   workflow_dispatch:
 permissions:
   contents: read
