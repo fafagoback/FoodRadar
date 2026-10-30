@@ -563,7 +563,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                          int(bool(price_valid)))
                 # Preserve the last valid price evidence through a closed-hours
                 # response; but invalidate a current open-hours unsupported promo.
-                keep_last = bool(not store_price_valid
+                keep_last = bool((not store_price_valid or observed_price <= 0)
                     and old and old.get("price_evidence_status") == "VERIFIED_MENU")
                 evidence_status = (
                     "VERIFIED_MENU" if price_valid or keep_last else "UNVERIFIED")
