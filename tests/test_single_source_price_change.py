@@ -11,11 +11,16 @@ class SingleSourcePriceChangeTests(unittest.TestCase):
             "src/serving_state.py",
             "src/alert_engine.py",
             "src/export_static_snapshots.py",
-            "scripts/repair_effective_prices.py",
-        ):
+         ):
             with self.subTest(path=path):
                 source = (ROOT / path).read_text(encoding="utf-8")
                 self.assertIn("PriceChange.", source)
+        v2=(ROOT / "src/verified_weekly.py").read_text(encoding="utf-8")
+        self.assertIn("Fraction", v2)
+        self.assertIn("product_price_observations", v2)
+        repair=(ROOT / "scripts/repair_effective_prices.py").read_text(encoding="utf-8")
+        self.assertIn("update_verified_weekly", repair)
+        self.assertNotIn("calculate_effective_price", repair)
 
     def test_sql_and_browser_do_not_recalculate_price_changes(self):
         exporter = (ROOT / "src/export_static_snapshots.py").read_text(encoding="utf-8")
