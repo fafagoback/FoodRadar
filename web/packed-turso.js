@@ -115,6 +115,7 @@ export async function metadata() {
   if (previousRevision && previousRevision !== nextRevision) {
     cacheEpoch++;
     bucketCache.clear(); bundleCache.clear(); pendingBundleLoads.clear();
+    webIndexState=null;pageResultsCache.clear();totalResultsCache.clear();
     locationStoresCache = { key: '', storeIds: new Set(), stores: [] };
   }
   releaseMeta = meta;
@@ -565,6 +566,140 @@ async function sampleProducts(stores, location, limit = 50000) {
     }
   }
   return dedupeProducts(out);
+}
+
+// Read-side, materialized SQL index: only requested cards leave Turso.
+let webIndexState = null;
+const pageResultsCache = new Map();
+const totalResultsCache = new Map();
+const MAX_CACHED_PAGES = 40;
+function escapeSqlText(value) { return String(value ?? '').replace(/'/g, "''"); }
+function keywordClauses(value, field = 'search_text') {
+  return String(value || '').trim().split(/\\s+/).filter(Boolean)
+    .map(word => `instr(${field},'${escapeSqlText(normalize(word))}') > 0`);
+}
+function locationSql(location, alias = '') {
+  if (!location?.enabled) return '1=1';
+  const lat=Number(location.latitude), lon=Number(location.longitude), r=Number(location.radiusKm);
+  if (![lat,lon,r].every(Number.isFinite) || r <= 0) return '0=1';
+  const name = n => alias ? `${alias}.${n}` : n;
+  const a=name('latitude'),b=name('longitude');
+  const {dy,dx}=locationBounds(lat,r);
+  const rad=Math.PI/180;
+  const term=`(pow(sin((${a}-${lat})*${rad}/2),2)+cos(${lat}*${rad})*cos(${a}*${rad})*pow(sin((${b}-${lon})*${rad}/2),2))`;
+  return `(${a} BETWEEN ${lat-dy} AND ${lat+dy} AND ${b} BETWEEN ${lon-dx} AND ${lon+dx} AND 12742.0176*asin(sqrt(min(1,${term})))<=${r})`;
+}
+async function cachedPage(key, query) {
+  const cacheKey=cacheEpoch+':'+key;
+  if (pageResultsCache.has(cacheKey)) return pageResultsCache.get(cacheKey);
+  const promise=query();
+  pageResultsCache.set(cacheKey,promise);
+  if (pageResultsCache.size>MAX_CACHED_PAGES) pageResultsCache.delete(pageResultsCache.keys().next().value);
+  try { return await promise; } catch(e) { pageResultsCache.delete(cacheKey); throw e; }
+}
+async function cachedCount(where, table) {
+  const key=`${cacheEpoch}:${table}:${where}`;
+  if (totalResultsCache.has(key)) return totalResultsCache.get(key);
+  const promise=sql(`SELECT count(*) AS total FROM ${table} WHERE ${where}`)
+    .then(rows=>Number(rows[0]?.total||0));
+  totalResultsCache.set(key,promise);
+  try { return await promise; } catch(e) {totalResultsCache.delete(key);throw e;}
+}
+export async function hasWebIndex() {
+  await metadata();
+  if (webIndexState !== null) return webIndexState;
+  const r=await sql("SELECT name FROM sqlite_master WHERE type='table' AND name='web_products'");
+  webIndexState=Boolean(r.length);
+  return webIndexState;
+}
+// The row is the exact native-price view produced by the Python packer, never
+// a browser-inferred price or promotional label.
+export async function searchProductsPage({
+  kind='global', page=1, pageSize=50, keyword='', city='', category='',
+  minDiscount=0, minSavings=0, promoType='全部', sort='', location=null
+}={}) {
+  if (!await hasWebIndex()) return null;
+  const conditions=[...keywordClauses(keyword),locationSql(location)];
+  if (city && city !== '全部') conditions.push(`instr(coalesce(city,''),'${escapeSqlText(city)}')>0`);
+  if (category && category !== '全部') conditions.push(`instr(coalesce(category,''),'${escapeSqlText(category)}')>0`);
+  if (kind==='discounts') {
+    conditions.push('price_drop=1',`discount_pct>=${Number(minDiscount)||0}`,`savings>=${Number(minSavings)||0}`);
+  } else if (kind==='newProducts') conditions.push('new_item=1');
+  else if (kind==='promos') {
+    conditions.push('promo=1');
+    if (promoType==='平台優惠') conditions.push('platform_promo=1');
+    else if (promoType==='實質降價30') conditions.push('price_drop=1','discount_pct>=30');
+    else if (promoType==='買一送一') conditions.push('platform_promo=1',"(instr(card,'買1送1')>0 OR instr(card,'買2送1')>0 OR instr(card,'買3送1')>0)");
+    else if (promoType==='折') conditions.push('platform_promo=1',"instr(card,'直接折價')>0");
+    else if (['半價','加1元','多入'].includes(promoType)) conditions.push('0=1');
+  }
+  const order = ({
+    discount_desc:'discount_pct DESC,savings DESC',
+    savings_desc:'savings DESC,discount_pct DESC',
+    price_asc:'unit_price ASC,rating DESC',
+    price_desc:'unit_price DESC,rating DESC',
+    rating_desc:'rating DESC,unit_price ASC',
+    name_asc:'product_uuid ASC',
+    promo_first:'promo DESC,rating DESC'
+  })[sort] || (kind==='discounts'?'discount_pct DESC,savings DESC':
+    kind==='promos'?'unit_price ASC':kind==='newProducts'?'new_item DESC,rating DESC':'rating DESC,unit_price ASC');
+  const where=conditions.join(' AND ');
+  const size=Math.max(1,Math.min(50,Math.floor(Number(pageSize)||50)));
+  const pageNo=Math.max(1,Math.floor(Number(page)||1));
+  const key=JSON.stringify(['products',where,order,pageNo,size]);
+  return cachedPage(key,async()=>{
+    const [rows,total]=await Promise.all([
+      sql(`SELECT card,latitude,longitude FROM web_products WHERE ${where} ORDER BY ${order},store_uuid,product_uuid LIMIT ${size} OFFSET ${(pageNo-1)*size}`),
+      cachedCount(where,'web_products')
+    ]);
+    const products=rows.map(row=>{
+      const product=JSON.parse(row.card);
+      if (location?.enabled) product.distance_km=distanceKm(Number(location.latitude),Number(location.longitude),Number(row.latitude),Number(row.longitude));
+      return product;
+    });
+    return {rows:products,total};
+  });
+}
+export async function searchStoresPage({page=1,pageSize=50,keyword='',city='',newOnly=true,sort='rating_desc',location=null}={}) {
+  const meta=await metadata();
+  const clauses=["status='active'","name!=''",locationSql(location),...keywordClauses(keyword,"(lower(name)||' '||lower(coalesce(locality,''))||' '||lower(coalesce(address,'')))")];
+  if (city && city!=='全部') clauses.push(`instr(coalesce(city,''),'${escapeSqlText(city)}')>0`);
+  if (newOnly) {
+    const cutoff=new Date(new Date(meta.latest_processed_at).getTime()-7*86400000).toISOString();
+    clauses.push(`datetime(first_seen)>=datetime('${escapeSqlText(cutoff)}')`);
+    clauses.push(`substr(first_seen,1,10)>substr('${escapeSqlText(meta.baseline_processed_at||'')}',1,10)`);
+  }
+  const where=clauses.join(' AND ');
+  const order=({rating_desc:'rating DESC,review_count DESC',reviews_desc:'review_count DESC,rating DESC',name_asc:'name ASC',items_desc:'rating DESC'})[sort]||'rating DESC,review_count DESC';
+  const size=Math.min(50,Math.max(1,Math.floor(Number(pageSize)||50)));
+  const pageNo=Math.max(1,Math.floor(Number(page)||1));
+  return cachedPage(JSON.stringify(['stores',where,order,pageNo,size]),async()=>{
+    const [rows,total]=await Promise.all([
+      sql(`SELECT * FROM store_directory WHERE ${where} ORDER BY ${order},store_uuid LIMIT ${size} OFFSET ${(pageNo-1)*size}`),
+      cachedCount(where,'store_directory')
+    ]);
+    return {total,rows:rows.map(r=>({
+      store_id:Number(r.store_id),store_uuid:r.store_uuid,store_name:r.name,name:r.name,
+      city:r.city,locality:r.locality,rating_value:r.rating===null?null:Number(r.rating),
+      rating:r.rating===null?null:Number(r.rating),review_count:Number(r.review_count||0),
+      total_menu_items:menuCount(r.store_id),latitude:Number(r.latitude),longitude:Number(r.longitude),
+      street_address:r.address,address:r.address,order_action_url:r.order_url,
+      first_seen:r.first_seen,last_seen:r.last_seen,
+      distance_km:location?.enabled?distanceKm(Number(location.latitude),Number(location.longitude),Number(r.latitude),Number(r.longitude)):null
+    }))};
+  });
+}
+export async function fastSummary() {
+  if (!await hasWebIndex()) return null;
+  const meta=await metadata();
+  const cutoff=new Date(new Date(meta.latest_processed_at).getTime()-7*86400000).toISOString();
+  const conditions=`status='active' AND name!='' AND datetime(first_seen)>=datetime('${escapeSqlText(cutoff)}') AND substr(first_seen,1,10)>substr('${escapeSqlText(meta.baseline_processed_at||'')}',1,10)`;
+  const [stores,newProducts,promotions,deals]=await Promise.all([
+    cachedCount(conditions,'store_directory'),cachedCount('new_item=1','web_products'),
+    cachedCount('promo=1','web_products'),
+    sql('SELECT COALESCE(MAX(savings),0) AS maximum FROM web_products WHERE price_drop=1')
+  ]);
+  return {stores,newProducts,promotions,maxSavings:Number(deals[0]?.maximum||0)};
 }
 
 export async function loadPackedDashboard(location) {
