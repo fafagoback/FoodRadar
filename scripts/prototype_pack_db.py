@@ -254,7 +254,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                     serialized = json.dumps(card,ensure_ascii=False,separators=(",",":"))
                     search_text = " ".join((normalize(store["name"]),normalize(product["product_name"]),
                                             normalize(product["category"]),normalize(store["locality"]),normalize(store["address"])))
-                    dst.execute("""INSERT INTO web_products VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(
+                    dst.execute("""INSERT INTO web_products VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(
                         sid,product["product_uuid"],serialized,hashlib.sha256(serialized.encode()).hexdigest(),
                         search_text,store["city"],product["category"],week_pct if drop else 0,
                         float(product["seven_day_discount_amount"] or 0) if drop else 0,effective,
