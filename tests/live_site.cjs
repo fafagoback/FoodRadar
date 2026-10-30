@@ -32,8 +32,8 @@ const fs = require('node:fs');
     assert.match(homeText, /^\d[\d,]*$/, 'dashboard must display a numeric count');
     const home = Number(homeText.replace(/,/g, ''));
     const coverage = (await page.locator('#discounts-coverage').innerText()).trim();
-    assert.match(coverage, /可搜尋最近取得的菜單商品 [\d,]+ 件，其中本批可確認外送價格 [\d,]+ 件；[\d,]+ 件有前次有效單價，[\d,]+ 件有七日有效價格基準/,
-      'dashboard must disclose the valid comparison denominator, not only a zero');
+    assert.match(coverage, /可搜尋最近取得的菜單商品 [\d,]+ 件，其中最近採集批次確認可外送 [\d,]+ 件；[\d,]+ 件具有七日價格比較基準；最近七天有 \d+ 個菜單價格採集日；[\d,]+ 件屬平台促銷/,
+      'dashboard must disclose the verified deliverable-price and seven-day-comparison denominators');
     console.log('DEAL_COMPARISON_COVERAGE ' + coverage);
 
     // The legacy HF archive quote section was intentionally removed.
@@ -128,13 +128,14 @@ const fs = require('node:fs');
         history:events.map(e => {
           const state=JSON.parse(e.new_state || e.old_state || '{}');
           return {time:e.event_time,price:state.price,promo:state.promo_type,
-            unit:window.UBER_DATA_CONTRACT.unitPrice(state.price,state.promo_type,state.quantity)};
+            verified:state.price_evidence_status==='VERIFIED_MENU',
+            unit:state.price_evidence_status==='VERIFIED_MENU' ? Number(state.effective_price || 0) : null};
         })};
     });
     console.log('LEMON_GOURD_EFFECTIVE_PRICE_REGRESSION ' + JSON.stringify(lemon));
     if (lemon.found) {
-      const old = lemon.history.find(h => h.price === 89 && /買.*送/.test(h.promo || ''));
-      const regular = lemon.history.find(h => h.price === 55 && (!h.promo || h.promo === '無'));
+      const old = lemon.history.find(h => h.price === 89 && h.verified && /買.*送/.test(h.promo || ''));
+      const regular = lemon.history.find(h => h.price === 55 && h.verified && (!h.promo || h.promo === '無'));
       if (old && regular) {
         assert.equal(old.unit,44.5, 'archived BOGO effective price must be $44.50');
         assert.equal(regular.unit,55, 'regular price must be $55 per unit');
