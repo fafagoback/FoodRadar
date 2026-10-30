@@ -119,7 +119,7 @@ def extract_stores_from_feed(obj, current_store_uuid=None):
     return res
 
 
-def scan_single_point(point: dict, max_pages: int = 10) -> tuple:
+def scan_single_point(point: dict, max_pages: int = 10, raw_dir=None) -> tuple:
     """針對單一經緯度點位進行動態翻頁掃描"""
     p_id = point["id"]
     lat = point["latitude"]
@@ -183,6 +183,16 @@ def scan_single_point(point: dict, max_pages: int = 10) -> tuple:
             try:
                 time.sleep(random.uniform(0.1, 0.25))
                 resp = session.post("https://www.ubereats.com/api/getFeedV1", json=payload, headers=headers, timeout=12)
+                if raw_dir is not None:
+                    # Persist the HTTP response body BEFORE decoding or filtering.
+                    from pathlib import Path
+                    capture_dir = Path(raw_dir)
+                    capture_dir.mkdir(parents=True, exist_ok=True)
+                    raw_file = capture_dir / (
+                        f"page-{page:04d}-attempt-{attempt:02d}-status-{resp.status_code}.body")
+                    if raw_file.exists():
+                        raise FileExistsError(f"Raw capture would be overwritten: {raw_file}")
+                    raw_file.write_bytes(resp.content)
                 
                 if resp.status_code == 429:
                     sleep_s = 3.0 * attempt + random.uniform(1.0, 2.0)
