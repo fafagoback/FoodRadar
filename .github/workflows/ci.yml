@@ -42,6 +42,7 @@ jobs:
           node --check web/app.js
           node --check web/packed-turso.js
           node --check web/data-contract.js
+          node --check tests/live_site.cjs
           node tests/web_contract.cjs
           node tests/price_history.cjs
           node tests/web_interactions.cjs
