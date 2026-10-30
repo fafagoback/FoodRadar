@@ -10,6 +10,8 @@ const LOCATION_STORAGE_KEY = 'foodradar-location-filter-v1';
 
 let APP_STATE = {
   isServerMode: false,
+  fastMode: false,
+  loadedTabs: new Set(),
   currentTab: 'tab-discounts',
   stats: {},
   
@@ -324,6 +326,32 @@ function showDatabaseUnavailable(error, gridId) {
 async function loadFromTurso() {
   try {
     const client = await getPackedTursoClient();
+    APP_STATE.loadedTabs = new Set(['tab-discounts']);
+    if (await client.hasWebIndex()) {
+      APP_STATE.fastMode = true;
+      const [meta,summary,loaded] = await Promise.all([client.metadata(),client.fastSummary(),fetchDiscounts(1)]);
+      if (loaded === false) return false;
+      updateStatsUI({
+        latest_batch:meta.latest_batch,
+        latest_batch_formatted:meta.latest_processed_at || formatBatchDate(meta.latest_batch),
+        active_products:Number(meta.active_products || 0),
+        current_verified_products:Number(meta.current_verified_products || 0),
+        active_comparable_products:Number(meta.active_comparable_products || 0),
+        seven_day_reference_products:Number(meta.seven_day_reference_products || 0),
+        seven_day_verified_dates:meta.seven_day_verified_dates || [],
+        seven_day_history_incomplete:Boolean(meta.seven_day_history_incomplete),
+        active_platform_promotions:Number(meta.active_platform_promotions || 0),
+        total_monitored_stores:Number(meta.source_counts?.stores || 0),
+        total_monitored_products:Number(meta.source_counts?.products || 0),
+        big_discounts_count:Number(APP_STATE.discountsTotal || 0),
+        new_stores_count:Number(summary.stores || 0),
+        new_products_count:Number(summary.newProducts || 0),
+        promotions_count:Number(summary.promotions || 0),
+        max_savings_twd:Number(summary.maxSavings || 0)
+      });
+      return true;
+    }
+    APP_STATE.fastMode = false;
     const packed = await client.loadPackedDashboard(APP_STATE.locationFilter);
     const counts = packed.meta.source_counts || {};
     APP_STATE.storeLocationMap = new Map();
@@ -510,6 +538,25 @@ async function fetchDiscounts(page = 1) {
   let items = [];
   let fetchedRemote = false;
 
+  if (APP_STATE.fastMode) {
+    try {
+      const client = await getPackedTursoClient();
+      const response = await client.searchProductsPage({
+        kind:'discounts',page,keyword:discountSearch.trim(),category:discountCategory,
+        minDiscount:discountMinPct,minSavings:discountMinSavings,sort:discountSort,
+        location:APP_STATE.locationFilter
+      });
+      if (requestId !== discountsSearchSequence) return;
+      APP_STATE.discounts = response.rows;
+      APP_STATE.discountsTotal = response.total;
+      renderDiscounts();
+      return true;
+    } catch(err) {
+      if (requestId !== discountsSearchSequence) return;
+      return showDatabaseUnavailable(err,'discounts-grid');
+    }
+  }
+
   // 若輸入關鍵字且啟用了 Turso，直接使用倒排索引向 Turso 全庫檢索（無筆數截斷）
   if (window.UBER_RADAR_CONFIG?.ENABLE_TURSO) {
     try {
@@ -568,7 +615,7 @@ function renderDiscounts() {
   const container = document.getElementById('discounts-grid');
   const emptyView = document.getElementById('discounts-empty');
   const items = APP_STATE.discounts || [];
-  const total = items.length;
+  const total = APP_STATE.fastMode ? (APP_STATE.discountsTotal || 0) : items.length;
   const page = APP_STATE.discountsPage || 1;
   const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
 
@@ -595,7 +642,7 @@ function renderDiscounts() {
 
   emptyView.classList.add('hidden');
   const offset = (page - 1) * PAGE_SIZE;
-  const pageItems = items.slice(offset, offset + PAGE_SIZE);
+  const pageItems = APP_STATE.fastMode ? items : items.slice(offset, offset + PAGE_SIZE);
 
   container.innerHTML = pageItems.map(item => {
     const orderUrl = item.order_action_url || '#';
@@ -692,6 +739,18 @@ async function fetchNewStores(page = 1) {
   APP_STATE.storesPage = page;
   const { storeSearch, storeCity, storeSort } = APP_STATE.filters;
   let items = applyLocationFilter(APP_STATE.newStores || []);
+  if (APP_STATE.fastMode) {
+    try {
+      const client=await getPackedTursoClient();
+      const result=await client.searchStoresPage({page,keyword:storeSearch,city:storeCity,
+        newOnly:APP_STATE.filters.storeScope !== 'all',sort:storeSort,location:APP_STATE.locationFilter});
+      if (sequence !== storeSearchSequence) return;
+      APP_STATE.filteredStores=result.rows;
+      APP_STATE.storesTotal=result.total;
+      renderNewStores();
+      return true;
+    } catch(err) {if(sequence===storeSearchSequence)return showDatabaseUnavailable(err,'new-stores-grid');return;}
+  }
 
   if (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_TURSO) {
     try {
@@ -749,7 +808,7 @@ function renderNewStores() {
   const container = document.getElementById('new-stores-grid');
   const emptyView = document.getElementById('new-stores-empty');
   const items = APP_STATE.filteredStores || [];
-  const total = items.length;
+  const total = APP_STATE.fastMode ? (APP_STATE.storesTotal || 0) : items.length;
   const page = APP_STATE.storesPage || 1;
   const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
 
@@ -782,7 +841,7 @@ function renderNewStores() {
 
   emptyView.classList.add('hidden');
   const offset = (page - 1) * PAGE_SIZE;
-  const pageItems = items.slice(offset, offset + PAGE_SIZE);
+  const pageItems = APP_STATE.fastMode ? items : items.slice(offset, offset + PAGE_SIZE);
 
   container.innerHTML = pageItems.map(store => {
     const ratingHtml = store.rating_value 
@@ -851,6 +910,17 @@ async function fetchNewProducts(page = 1) {
   const { productSearch } = APP_STATE.filters;
   let items = [];
   let fetchedRemote = false;
+  if (APP_STATE.fastMode) {
+    try {
+      const client=await getPackedTursoClient();
+      const result=await client.searchProductsPage({kind:'newProducts',page,keyword:productSearch.trim(),location:APP_STATE.locationFilter});
+      if (requestId !== newProductsSearchSequence) return;
+      APP_STATE.filteredProducts=result.rows;
+      APP_STATE.productsTotal=result.total;
+      renderNewProducts();
+      return true;
+    } catch(err) {if(requestId===newProductsSearchSequence)return showDatabaseUnavailable(err,'new-products-grid');return;}
+  }
 
   if (window.UBER_RADAR_CONFIG?.ENABLE_TURSO) {
     try {
@@ -891,7 +961,7 @@ function renderNewProducts() {
   const container = document.getElementById('new-products-grid');
   const emptyView = document.getElementById('new-products-empty');
   const items = APP_STATE.filteredProducts || [];
-  const total = items.length;
+  const total = APP_STATE.fastMode ? (APP_STATE.productsTotal || 0) : items.length;
   const page = APP_STATE.productsPage || 1;
   const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
 
@@ -916,7 +986,7 @@ function renderNewProducts() {
 
   emptyView.classList.add('hidden');
   const offset = (page - 1) * PAGE_SIZE;
-  const pageItems = items.slice(offset, offset + PAGE_SIZE);
+  const pageItems = APP_STATE.fastMode ? items : items.slice(offset, offset + PAGE_SIZE);
 
   container.innerHTML = pageItems.map(prod => {
     const promoInfo = productPromo(prod);
@@ -1050,6 +1120,18 @@ async function fetchPromotions(page = 1) {
   const { promoSearch, promoType, promoSort } = APP_STATE.filters;
   let items = [];
   let fetchedRemote = false;
+  if (APP_STATE.fastMode) {
+    try {
+      const client=await getPackedTursoClient();
+      const result=await client.searchProductsPage({kind:'promos',page,keyword:promoSearch.trim(),promoType,sort:promoSort,location:APP_STATE.locationFilter});
+      if (requestId !== promotionsRequestSequence) return;
+      APP_STATE.filteredPromotions=result.rows;
+      APP_STATE.promosTotal=result.total;
+      renderPromotions();
+      if(counter){counter.dataset.filterReady='true';counter.dataset.filterType=promoType||'全部';}
+      return true;
+    } catch(err) {if(requestId===promotionsRequestSequence)return showDatabaseUnavailable(err,'promos-grid');return;}
+  }
 
   if (window.UBER_RADAR_CONFIG?.ENABLE_TURSO) {
     try {
@@ -1129,7 +1211,7 @@ function renderPromotions() {
   const container = document.getElementById('promos-grid');
   const emptyView = document.getElementById('promos-empty');
   const items = APP_STATE.filteredPromotions || [];
-  const total = items.length;
+  const total = APP_STATE.fastMode ? (APP_STATE.promosTotal || 0) : items.length;
   const page = APP_STATE.promosPage || 1;
   const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
 
@@ -1154,7 +1236,7 @@ function renderPromotions() {
 
   emptyView.classList.add('hidden');
   const offset = (page - 1) * PAGE_SIZE;
-  const pageItems = items.slice(offset, offset + PAGE_SIZE);
+  const pageItems = APP_STATE.fastMode ? items : items.slice(offset, offset + PAGE_SIZE);
 
   container.innerHTML = pageItems.map(p => {
     const promoInfo = productPromo(p);
@@ -1476,6 +1558,22 @@ async function fetchGlobalProducts(page = 1) {
   const geo = buildLocationSql('s');
   const limit = PAGE_SIZE;
   const offset = (page - 1) * limit;
+  if (APP_STATE.fastMode) {
+    try {
+      const client=await getPackedTursoClient();
+      renderGlobalLoadingState(rawSearch || cityFilter);
+      const response=await client.searchProductsPage({kind:'global',page,
+        keyword:rawSearch,city:cityFilter,sort:sortMode,location:APP_STATE.locationFilter});
+      if (sequence!==globalSearchSequence)return;
+      APP_STATE.globalProducts=response.rows;
+      APP_STATE.globalTotalItems=response.total;
+      APP_STATE.globalTotalPages=Math.max(1,Math.ceil(response.total/PAGE_SIZE));
+      APP_STATE.globalHasNext=page*PAGE_SIZE<response.total;
+      APP_STATE.globalResultLimit=null;
+      renderGlobalProducts();
+      return true;
+    }catch(err){if(sequence===globalSearchSequence)return showDatabaseUnavailable(err,'global-products-grid');return;}
+  }
 
   // 無篩選的首屏不需要掃描 250 萬筆 Parquet。這類查詢會佔住唯一的
   // DuckDB connection，令緊接著輸入的關鍵字查詢只能排隊，看起來像搜尋失效。
@@ -2037,7 +2135,15 @@ function initEventListeners() {
       document.getElementById(target).classList.remove('hidden');
       APP_STATE.currentTab = target;
 
-      if (target === 'tab-global-search') {
+      if (APP_STATE.fastMode && !APP_STATE.loadedTabs.has(target)) {
+        APP_STATE.loadedTabs.add(target);
+        const loader = ({'tab-discounts':fetchDiscounts,'tab-stores':fetchNewStores,
+          'tab-products':fetchNewProducts,'tab-promos':fetchPromotions,
+          'tab-global-search':fetchGlobalProducts})[target];
+        if(loader) Promise.resolve(loader(1)).then(result=>{
+          if(result===false)APP_STATE.loadedTabs.delete(target);
+        }).catch(err=>{APP_STATE.loadedTabs.delete(target);console.error(err);});
+      } else if (!APP_STATE.fastMode && target === 'tab-global-search') {
         fetchGlobalProducts(APP_STATE.globalPage || 1);
       }
     });
