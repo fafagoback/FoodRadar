@@ -1,5 +1,11 @@
 name: FoodRadar 02｜爬蟲與資料庫
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/prototype_pack_db.py'
+      - 'scripts/publish_turso_delta.py'
+      - '.github/workflows/crawl.yml'
   schedule:
     # 台灣時間每日 06:30、18:30，GitHub cron 使用 UTC。
     - cron: '30 10,22 * * *'
@@ -81,7 +87,7 @@ jobs:
         run: python src/crawl.py --upload
 
       - name: 由最新 HF 原始資料建立 V2 發布資料
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl' }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl') }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
