@@ -18,7 +18,7 @@ from pathlib import Path
 
 import requests
 
-from menu_core import attach_delivery_location, normalize_store_uuid
+from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter
 
 TW = timezone(timedelta(hours=8))
 
@@ -52,6 +52,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 3) -> dict:
     try:
         for attempt in range(1, max_retries + 1):
             try:
+                global_limiter.wait()
                 response = session.post(
                     "https://www.ubereats.com/api/getStoreV1",
                     json={"storeUuid": uuid, "sfNuggetCount": 24},
