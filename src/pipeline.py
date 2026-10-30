@@ -113,6 +113,12 @@ def restore_history(config, rebuild_all=False):
                 'deals':audit['deals'],
                 'legacy_batches':0,
             },ensure_ascii=False),flush=True)
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+            ('raw_source', f'{folder}/Raw/'))
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+            ('raw_snapshot_count', str(len(replayed))))
         conn.commit()
         destination = ROOT/'data'/batch
         destination.mkdir(parents=True,exist_ok=True)
