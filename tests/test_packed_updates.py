@@ -75,6 +75,36 @@ def apply_snapshot(conn, docs, batch, *args, **kwargs):
 
 
 class PackedUpdateTests(unittest.TestCase):
+    def test_unverified_promo_keeps_menu_price_in_catalog(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            root=Path(tmp)
+            sid='ffffffff-ffff-4fff-8fff-ffffffffffff'
+            regular='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            ambiguous='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+            doc=document(sid,[regular,ambiguous])
+            item=doc['hasMenu']['hasMenuSection'][0]['hasMenuItem'][1]
+            item['offers']['price']=874.56
+            item['test_native_boga']=True
+            conn=sqlite3.connect(root/'state.db')
+            conn.row_factory=sqlite3.Row
+            apply_snapshot(conn,[doc],'20261102133219')
+            row=conn.execute('SELECT price_evidence_status,menu_quote_price FROM products WHERE product_uuid=?',(ambiguous,)).fetchone()
+            self.assertEqual(row['price_evidence_status'],'UNVERIFIED')
+            self.assertAlmostEqual(row['menu_quote_price'],874.56)
+            conn.close()
+            build_web_db(root/'state.db',root/'packed.db')
+            with sqlite3.connect(root/'packed.db') as db:
+                records=db.execute('SELECT product_uuid,card,unit_price,promo,price_drop,platform_promo FROM web_products').fetchall()
+                self.assertEqual(len(records),2)
+                indexed={pid:(json.loads(card),unit,promo,drop,platform) for pid,card,unit,promo,drop,platform in records}
+                card,unit,promo,drop,platform=indexed[ambiguous]
+                self.assertEqual(card['price_evidence_status'],'UNVERIFIED')
+                self.assertAlmostEqual(card['price'],874.56)
+                self.assertIsNone(card['effective_price'])
+                self.assertAlmostEqual(unit,874.56)
+                self.assertEqual((promo,drop,platform),(0,0,0))
+
     def test_same_day_recollection_is_baseline_not_new_store_or_product(self):
         import msgpack
         import zstandard
