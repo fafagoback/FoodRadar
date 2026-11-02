@@ -1729,8 +1729,6 @@ function renderGlobalProducts() {
               </span>
             ` : ''}
             ${distanceBadge(p)}
-            ${p.delivery_available === false ? '<span class="text-[11px] font-medium px-2 py-0.5 rounded bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300">菜單參考價・暫不可外送</span>' : ''}
-            ${p.delivery_available === null ? '<span class="text-[11px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">最近菜單價・非即時</span>' : ''}
             ${hasQtyPromo ? `
               <span class="text-[11px] text-slate-400 dark:text-slate-500 font-mono">
                 (標價 ${window.UBER_DATA_CONTRACT.money(p.price)} 共 ${promoInfo.totalQty} 件)
