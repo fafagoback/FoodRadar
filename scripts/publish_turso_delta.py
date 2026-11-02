@@ -303,7 +303,7 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None, reset
                     size += item_size
             flush()
             # Create optimized indexes after the bulk upsert, inside the same transaction.
-            for (ddl,) in conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL AND tbl_name='web_products'"):
+            for (ddl,) in conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL AND tbl_name IN ('web_products','store_directory')"):
                 # Incremental Turso publishes preserve indexes from prior runs.
                 # Recreating them without IF NOT EXISTS makes every subsequent
                 # publication fail with "index idx_web_deals already exists".
