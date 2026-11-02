@@ -158,17 +158,17 @@ const fs = require('node:fs');
       const grid = document.querySelector('#global-products-grid');
       const pagination = document.querySelector('#global-pagination')?.textContent || '';
       return grid?.querySelectorAll('.radar-card').length === 50 &&
-        /共\\s*63\\s*筆/.test(pagination) && /下一頁/.test(pagination);
+        /共\s*63\s*筆/.test(pagination) && /下一頁/.test(pagination);
     }, null, {timeout:90000});
-    console.log('COSTCO_LIVE_FIRST_PAGE_PASS ' + (await page.locator('#global-pagination').innerText()).replace(/\\s+/g,' '));
+    console.log('COSTCO_LIVE_FIRST_PAGE_PASS ' + (await page.locator('#global-pagination').innerText()).replace(/\s+/g,' '));
     await page.locator('#global-pagination button', {hasText:'下一頁'}).click();
     await page.waitForFunction(() => {
       const grid = document.querySelector('#global-products-grid');
       const pagination = document.querySelector('#global-pagination')?.textContent || '';
       return grid?.querySelectorAll('.radar-card').length === 13 &&
-        /共\\s*63\\s*筆/.test(pagination);
+        /共\s*63\s*筆/.test(pagination);
     }, null, {timeout:90000});
-    console.log('COSTCO_LIVE_SECOND_PAGE_PASS ' + (await page.locator('#global-pagination').innerText()).replace(/\\s+/g,' '));
+    console.log('COSTCO_LIVE_SECOND_PAGE_PASS ' + (await page.locator('#global-pagination').innerText()).replace(/\s+/g,' '));
     assert.deepEqual(errors, [], 'browser must have no uncaught errors');
     console.log('LIVE PAGE PASS: 30%-discounts homepage=' + home + ', promotions=' + promo);
   } catch (error) {
