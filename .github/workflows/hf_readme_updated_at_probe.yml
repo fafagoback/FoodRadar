@@ -1,0 +1,100 @@
+name: FoodRadar｜HF 外層 Updated 實測
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hf_readme_updated_at_probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: 修改 HF README 並核對兩種時間戳
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝 HF SDK
+        run: pip install 'huggingface_hub>=0.25,<2'
+      - name: 最小幅度更新 README 並比較 Settings Updated
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import io
+          import os
+          import time
+          from pathlib import Path
+          from huggingface_hub import HfApi, CommitOperationAdd, hf_hub_download
+
+          REPO = "hub-google/FoodRadar"
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+
+          def settings_updated():
+              for namespace in (None, "hub-google"):
+                  try:
+                      repos = api.list_user_repos(namespace=namespace, token=os.environ["HF_TOKEN"])
+                      for repo in repos:
+                          if repo.id == REPO and repo.type == "dataset":
+                              return repo.updated_at.isoformat()
+                  except Exception as exc:
+                      print("Settings API read unavailable:", type(exc).__name__, str(exc)[:150])
+              return "無法讀取（權限或 API 不提供）"
+
+          before_settings = settings_updated()
+          before_info = api.repo_info(repo_id=REPO, repo_type="dataset", token=os.environ["HF_TOKEN"])
+          before_modified = before_info.last_modified.isoformat()
+
+          path = hf_hub_download(repo_id=REPO, repo_type="dataset", filename="README.md", token=os.environ["HF_TOKEN"])
+          original = Path(path).read_text(encoding="utf-8")
+          sentence = (
+              "\n\n## 最新資料查閱方式\n"
+              "本資料集的原始 API 回應存放於 `Raw/`。"
+              "最新完成的原始資料批次以 `Raw/latest.json` 為準；"
+              "請勿僅依儲存庫清單上的相對日期判斷爬蟲是否更新。\n"
+          )
+          if "## 最新資料查閱方式" in original:
+              raise RuntimeError("README already contains the proposed explanation; refusing duplicate edit")
+          updated = original.rstrip() + sentence
+          commit = api.create_commit(
+              repo_id=REPO,
+              repo_type="dataset",
+              operations=[CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=io.BytesIO(updated.encode("utf-8")))],
+              commit_message="docs: clarify source of latest FoodRadar raw capture",
+              token=os.environ["HF_TOKEN"],
+          )
+          print("HF README commit:", getattr(commit, "commit_oid", "created"))
+          readback_path = hf_hub_download(repo_id=REPO, repo_type="dataset", filename="README.md", force_download=True, token=os.environ["HF_TOKEN"])
+          assert "## 最新資料查閱方式" in Path(readback_path).read_text(encoding="utf-8")
+
+          after_info = api.repo_info(repo_id=REPO, repo_type="dataset", token=os.environ["HF_TOKEN"])
+          after_modified = after_info.last_modified.isoformat()
+          after_settings = settings_updated()
+          for _ in range(3):
+              if after_settings != before_settings or "無法讀取" in after_settings:
+                  break
+              time.sleep(3)
+              after_settings = settings_updated()
+
+          lines = [
+              "### HF README 更新實測",
+              "",
+              "| 檢查 | 更新前 | 更新後 |",
+              "|---|---|---|",
+              f"| Dataset lastModified | {before_modified} | {after_modified} |",
+              f"| Settings updatedAt | {before_settings} | {after_settings} |",
+              "",
+              f"README commit: `{getattr(commit, 'commit_oid', 'created')}`",
+              "",
+              "本次只更改 HF README.md，不更動任何 Raw 檔案、爬蟲或 Turso。",
+          ]
+          summary.write_text("\n".join(lines)+"\n", encoding="utf-8")
+          print("\n".join(lines))
+          PY
