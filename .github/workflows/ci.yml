@@ -35,35 +35,6 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: 檢查正式 Turso Costco 商品總數及分頁
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
-          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
-        run: |
-          python - <<'PY'
-          import os,json,requests
-          url=os.environ['TURSO_DATABASE_URL'].replace('libsql://','https://').rstrip('/')+'/v2/pipeline'
-          def query(sql):
-              response=requests.post(url,headers={'Authorization':'Bearer '+os.environ['TURSO_READONLY_TOKEN']},
-                  json={'requests':[{'type':'execute','stmt':{'sql':sql}},{'type':'close'}]},timeout=30)
-              response.raise_for_status()
-              record=response.json()['results'][0]
-              if record['type']!='ok':raise ValueError(record)
-              data=record['response']['result']
-              return [dict(zip([c['name'] for c in data['cols']],[cell.get('value') for cell in row])) for row in data['rows']]
-          sid='a4e2201d-5fc7-5a10-a41a-dfe58975a7a7'
-          sqls={
-            'by_store':f"SELECT count(*) AS total FROM web_products WHERE store_uuid='{sid}'",
-            'by_keyword':"SELECT count(*) AS total FROM web_products WHERE instr(search_text,'costco')>0",
-            'page1':"SELECT product_uuid FROM web_products WHERE instr(search_text,'costco')>0 ORDER BY rating DESC,unit_price ASC,store_uuid,product_uuid LIMIT 51 OFFSET 0",
-            'page2':"SELECT product_uuid FROM web_products WHERE instr(search_text,'costco')>0 ORDER BY rating DESC,unit_price ASC,store_uuid,product_uuid LIMIT 51 OFFSET 50",
-            'sample':f"SELECT product_uuid FROM web_products WHERE store_uuid='{sid}' AND product_uuid IN ('44817e88-5966-5bc0-9c2b-90a77b1ffdcb','49284132-7477-5907-9575-0876a735b385')"
-          }
-          results={key:query(sql) for key,sql in sqls.items()}
-          print('COSTCO_LIVE_SQL='+json.dumps({'store_count':results['by_store'],'keyword_count':results['by_keyword'],
-              'first_page_length':len(results['page1']),'second_page_length':len(results['page2']),
-              'sample_products':results['sample']},ensure_ascii=False),flush=True)
-          PY
       - name: Python 全套回歸測試
         run: python -m unittest discover -s tests -v
       - name: 網站資料契約與 JavaScript 測試
