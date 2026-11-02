@@ -35,6 +35,43 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 一次性核對 HF Raw Costco 北投原始商品筆數
+        run: |
+          python - <<'PY'
+          import hashlib, json, tarfile
+          from pathlib import Path
+          from huggingface_hub import hf_hub_download
+          repo='hub-google/FoodRadar'
+          batches=['Raw/latest.json','Raw/20261102094141/manifest.json']
+          for source in batches:
+              manifest=json.loads(Path(hf_hub_download(repo_id=repo,filename=source,repo_type='dataset')).read_text())
+              stores=[s for s in manifest['stores'] if 'costco' in s['store_url'].lower() or '好市多' in s['store_url']]
+              if not stores:
+                  print('COSTCO_RAW_AUDIT='+json.dumps({'batch':manifest['batch_id'],'costco_present':False},ensure_ascii=False),flush=True)
+                  continue
+              archive_path=hf_hub_download(repo_id=repo,filename=manifest['archive_path'],repo_type='dataset')
+              with tarfile.open(archive_path,'r:gz') as archive:
+                  for store in stores:
+                      raw_path=store.get('response_path')
+                      envelope=json.load(archive.extractfile(raw_path))
+                      data=envelope.get('data') if isinstance(envelope,dict) else None
+                      groups=data.get('catalogSectionsMap') if isinstance(data,dict) else None
+                      products=[]
+                      sections=0
+                      for entries in (groups or {}).values():
+                          for section in entries if isinstance(entries,list) else []:
+                              payload=(section.get('payload') or {}).get('standardItemsPayload') or {}
+                              items=payload.get('catalogItems') or []
+                              sections+=1
+                              products.extend(item for item in items if isinstance(item,dict) and str(item.get('title') or '').strip())
+                      ids=[str(p.get('uuid') or p.get('itemUuid') or p.get('id') or p.get('title')) for p in products]
+                      positive=sum(1 for p in products if float(p.get('price') or 0)>0)
+                      print('COSTCO_RAW_AUDIT='+json.dumps({'batch':manifest['batch_id'],'store_uuid':store['store_uuid'],
+                          'success':store.get('success'),'response_path':raw_path,'sections':sections,
+                          'raw_menu_items':len(products),'unique_menu_items':len(set(ids)),
+                          'items_with_positive_price':positive,'is_open':data.get('isOpen') if data else None,
+                          'menu_present':isinstance(groups,dict)},ensure_ascii=False),flush=True)
+          PY
       - name: Python 全套回歸測試
         run: python -m unittest discover -s tests -v
       - name: 網站資料契約與 JavaScript 測試
