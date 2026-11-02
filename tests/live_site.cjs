@@ -148,6 +148,27 @@ const fs = require('node:fs');
       }
     }
 
+    // Real-site regression for the 2026-11-02 Costco Raw -> Turso discrepancy.
+    // Source capture has 63 distinct SKUs. Both pages must be discoverable;
+    // an unknown asynchronous count must never be represented as zero.
+    await page.locator('.nav-tab[data-target="tab-global-search"]').click();
+    const keywordInput = page.locator('#global-search-input');
+    await keywordInput.fill('costco');
+    await page.waitForFunction(() => {
+      const grid = document.querySelector('#global-products-grid');
+      const pagination = document.querySelector('#global-pagination')?.textContent || '';
+      return grid?.querySelectorAll('.radar-card').length === 50 &&
+        /共\\s*63\\s*筆/.test(pagination) && /下一頁/.test(pagination);
+    }, null, {timeout:90000});
+    console.log('COSTCO_LIVE_FIRST_PAGE_PASS ' + (await page.locator('#global-pagination').innerText()).replace(/\\s+/g,' '));
+    await page.locator('#global-pagination button', {hasText:'下一頁'}).click();
+    await page.waitForFunction(() => {
+      const grid = document.querySelector('#global-products-grid');
+      const pagination = document.querySelector('#global-pagination')?.textContent || '';
+      return grid?.querySelectorAll('.radar-card').length === 13 &&
+        /共\\s*63\\s*筆/.test(pagination);
+    }, null, {timeout:90000});
+    console.log('COSTCO_LIVE_SECOND_PAGE_PASS ' + (await page.locator('#global-pagination').innerText()).replace(/\\s+/g,' '));
     assert.deepEqual(errors, [], 'browser must have no uncaught errors');
     console.log('LIVE PAGE PASS: 30%-discounts homepage=' + home + ', promotions=' + promo);
   } catch (error) {
