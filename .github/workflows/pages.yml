@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - 'web/**'
+      - 'tests/live_site.cjs'
       - 'scripts/configure_web.py'
       - 'scripts/prepare_pages.py'
       - '.github/workflows/pages.yml'
