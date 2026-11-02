@@ -647,75 +647,72 @@ function renderDiscounts() {
   container.innerHTML = pageItems.map(item => {
     const orderUrl = item.order_action_url || '#';
     const hasPromo = item.promo_type && item.promo_type !== '無';
-    const ratingBadge = item.rating_value 
-      ? `<span class="inline-flex items-center gap-1 text-xs text-amber-500 font-medium"><i data-lucide="star" class="w-3.5 h-3.5 fill-amber-400"></i>${item.rating_value} (${item.review_count || 0})</span>` 
-      : '';
+    const ratingBadge = item.rating_value
+      ? `<span class="shrink-0 inline-flex items-center gap-1.5 rounded-full bg-amber-50 dark:bg-amber-950/50 px-2.5 py-1.5 text-xs font-bold text-amber-700 dark:text-amber-300 whitespace-nowrap" title="店家評分">
+          <i data-lucide="star" class="w-3.5 h-3.5 fill-amber-400 text-amber-400"></i>
+          ${escapeHtml(String(item.rating_value))} (${escapeHtml(String(item.review_count || 0))})
+        </span>` : '';
 
     return `
-      <div class="radar-card bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between relative overflow-hidden group">
+      <article class="radar-card group flex h-full flex-col justify-between rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5 sm:p-6 shadow-sm overflow-hidden">
         <div>
-          <div class="flex items-start justify-between gap-2 mb-2">
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-1.5 flex-wrap">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 flex-1 items-start gap-3">
+              <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300">
+                <i data-lucide="store" class="h-5 w-5"></i>
+              </span>
+              <div class="min-w-0 flex-1">
                 ${distanceBadge(item)}
+                <h3 class="text-lg sm:text-xl font-extrabold leading-snug tracking-tight text-slate-900 dark:text-white break-words [overflow-wrap:anywhere]" title="${escapeHtml(item.store_name)}">
+                  ${escapeHtml(item.store_name)}
+                </h3>
               </div>
-              <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 truncate mt-1 flex items-center gap-1.5" title="${escapeHtml(item.store_name)}">
-                <i data-lucide="store" class="w-3.5 h-3.5 text-slate-400 shrink-0"></i>
-                ${escapeHtml(item.store_name)}
-              </h3>
             </div>
             ${ratingBadge}
           </div>
 
-          <h4 class="text-base font-bold text-slate-900 dark:text-white line-clamp-2 mt-1 mb-2 group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors" title="${escapeHtml(item.product_name)}">
+          <h4 class="mt-4 text-xl font-bold leading-snug text-slate-900 dark:text-slate-50 line-clamp-2 group-hover:text-emerald-700 dark:group-hover:text-emerald-300 transition-colors" title="${escapeHtml(item.product_name)}">
             ${escapeHtml(item.product_name)}
           </h4>
-
-          ${item.description ? `<p class="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-3">${escapeHtml(item.description)}</p>` : ''}
+          ${item.description ? `<p class="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400 line-clamp-2">${escapeHtml(item.description)}</p>` : ''}
         </div>
 
-        <div class="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
-          <div class="flex items-baseline justify-between">
-            <div>
-              <div class="text-xs text-slate-400 line-through">近 7 天最高菜單單價 ${window.UBER_DATA_CONTRACT.unitMoney(item.original_price)}</div>
-              <div class="text-2xl font-black text-red-600 dark:text-red-400 font-mono flex items-baseline gap-1">
-                ${window.UBER_DATA_CONTRACT.unitMoney(item.current_price)}
-                <span class="text-xs font-normal text-slate-500 dark:text-slate-400">/ 實質單件</span>
-              </div>
-            </div>
-
-            <div class="text-right">
-              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold text-white badge-discount shadow-sm shadow-red-500/30">
-                <i data-lucide="trending-down" class="w-3.5 h-3.5"></i>
-                -${item.discount_pct}%（7日）
-              </span>
-              <div class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
-                每件省 ${window.UBER_DATA_CONTRACT.unitMoney(item.savings_amount)}
-              </div>
+        <div class="mt-5 space-y-3 border-t border-slate-100 dark:border-slate-800 pt-4">
+          <div class="rounded-2xl bg-rose-50 dark:bg-rose-950/30 px-4 py-4" title="以近 7 天最高實質單價比較">
+            <div class="mb-2 text-sm font-bold text-slate-700 dark:text-slate-200">實質單價</div>
+            <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-2">
+              <span class="text-base font-semibold text-slate-400 dark:text-slate-500 line-through whitespace-nowrap">${window.UBER_DATA_CONTRACT.unitMoney(item.original_price)}</span>
+              <span class="text-base font-semibold text-slate-400 dark:text-slate-500">→</span>
+              <strong class="text-3xl sm:text-4xl font-black tracking-tight text-red-600 dark:text-red-400 whitespace-nowrap">${window.UBER_DATA_CONTRACT.unitMoney(item.current_price)}</strong>
+              <span class="inline-flex shrink-0 items-center rounded-full bg-red-600 px-3 py-1.5 text-sm font-black text-white whitespace-nowrap">↓${Number(item.discount_pct).toLocaleString('zh-TW', {maximumFractionDigits: 1})}%</span>
             </div>
           </div>
 
-          ${item.delivery_available !== true ? '<p class="text-xs font-medium text-amber-700 dark:text-amber-400">菜單報價降幅・目前未確認可外送，價格及優惠以 Uber Eats 為準</p>' : '<p class="text-xs text-emerald-700 dark:text-emerald-400">最近採集時確認可外送的菜單報價（非即時）</p>'}
-          ${hasPromo ? `
-            <div class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
-              <i data-lucide="gift" class="w-3 h-3"></i>
-              ${escapeHtml(item.promo_type)}
-            </div>
-          ` : ''}
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 dark:bg-emerald-950/50 px-3 py-1.5 text-sm font-bold text-emerald-700 dark:text-emerald-300">
+              <i data-lucide="tag" class="h-3.5 w-3.5"></i>
+              每件省 ${window.UBER_DATA_CONTRACT.unitMoney(item.savings_amount)}
+            </span>
+            ${hasPromo ? `
+              <span class="inline-flex items-center gap-1.5 rounded-full border border-purple-100 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/50 px-3 py-1.5 text-sm font-bold text-purple-700 dark:text-purple-300">
+                <i data-lucide="gift" class="h-3.5 w-3.5"></i>
+                ${escapeHtml(item.promo_type)}
+              </span>
+            ` : ''}
+          </div>
 
-          <div class="grid grid-cols-2 gap-2 pt-1">
-            <button data-action="history" data-args="${escapeHtml(JSON.stringify([item.store_uuid || item.store_id || '', item.product_uuid || item.product_id, item.product_name, item.store_name, orderUrl]))}" class="px-3 py-2 text-xs font-medium rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center justify-center gap-1.5">
-              <i data-lucide="line-chart" class="w-3.5 h-3.5"></i>
+          <div class="grid grid-cols-2 gap-2.5 pt-2">
+            <button type="button" data-action="history" data-args="${escapeHtml(JSON.stringify([item.store_uuid || item.store_id || '', item.product_uuid || item.product_id, item.product_name, item.store_name, orderUrl]))}" class="flex min-w-0 items-center justify-center gap-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 px-3 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+              <i data-lucide="line-chart" class="h-4 w-4 shrink-0"></i>
               價格走勢
             </button>
-
-            <a href="${escapeHtml(safeOrderUrl(orderUrl))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([orderUrl, item.product_name, item.store_name]))}" class="px-3 py-2 text-xs font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-1.5 active:scale-95">
-              <span>${item.delivery_available === true ? '前往下單' : '查看菜單'}</span>
-              <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+            <a href="${escapeHtml(safeOrderUrl(orderUrl))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([orderUrl, item.product_name, item.store_name]))}" class="flex min-w-0 items-center justify-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-3 py-3 text-sm font-bold text-white shadow-md shadow-emerald-600/15 transition-all active:scale-95">
+              前往下單
+              <i data-lucide="external-link" class="h-4 w-4 shrink-0"></i>
             </a>
           </div>
         </div>
-      </div>
+      </article>
     `;
   }).join('');
 
@@ -1907,7 +1904,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
       const currentPromo = String(weekly.promo_type || '無');
       const promoDetail = currentPromo !== '無'
         ? `；目前 ${currentPromo}，原始標價 ${unitFmt(weekly.price)}` : '';
-      priceChangeEl.textContent = `近七日最高實質單價 ${unitFmt(weekly.seven_day_reference_price)} → 最新實質單價 ${unitFmt(weekly.current_price)}（${difference > 0 ? '實質單價下降 '+Number(weekly.discount_pct).toFixed(1)+'%' : '沒有下降'}${promoDetail}；${weekly.delivery_available === true ? '最近採集時確認可外送（非即時）' : '最近採集時未確認可外送'}）`;
+      priceChangeEl.textContent = `近七日最高實質單價 ${unitFmt(weekly.seven_day_reference_price)} → 最新實質單價 ${unitFmt(weekly.current_price)}（${difference > 0 ? '實質單價下降 '+Number(weekly.discount_pct).toFixed(1)+'%' : '沒有下降'}${promoDetail}）`;
     } else if (compared) {
       const delta = Number(compared.price_change_amount);
       const percent = Math.abs(Number(compared.price_change_percent)).toFixed(1);
