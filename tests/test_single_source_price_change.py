@@ -37,7 +37,12 @@ class SingleSourcePriceChangeTests(unittest.TestCase):
         self.assertNotIn("is_price_drop: direction === 'down'", reader)
         self.assertIn("product.price_change_percent", reader)
         page = (ROOT / "web/app.js").read_text(encoding="utf-8")
-        self.assertIn("compared.price_change_amount", page)
+        # The verbose comparison sentence was removed from the modal; only
+        # the backend's stored observations are plotted, without re-calculating
+        # price-change metrics in the browser.
+        self.assertIn("const prices = history.map(h => Number(h.eff_price))", page)
+        self.assertNotIn("modal-price-change", page)
+        self.assertIn("stepped: false", page)
 
     def test_normalized_table_preserves_authoritative_fields(self):
         normalized = (ROOT / "src/serving_state.py").read_text(encoding="utf-8")
