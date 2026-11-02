@@ -203,16 +203,19 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                     terms.add(f"f:discount:{int(float(product['seven_day_discount_pct']) // 5)}")
             # Indexed, denormalized browsing cards. The archived bundles remain lossless;
             # browser searches no longer have to download/decompress entire stores.
-            if searchable and int(store["is_open"] or 0) == 1 and int(product["is_open"] or 0) == 1 and native_verified:
-                effective = float(product["menu_quote_effective_price"] or 0)
+            # Menu-priced items stay in the catalog even if promotional evidence
+            # cannot safely be certified; discounts still require native proof.
+            if searchable and int(store["is_open"] or 0) == 1 and int(product["is_open"] or 0) == 1:
+                raw_price = float(product["menu_quote_price"] or product["price"] or 0)
+                verified_effective = float(product["menu_quote_effective_price"] or 0) if native_verified else 0.0
+                effective = verified_effective if verified_effective > 0 else raw_price
                 if effective > 0:
-                    raw_price = float(product["menu_quote_price"] or 0)
                     normal_price = float(product["price"] or 0)
                     week_reference = float(product["seven_day_reference_price"] or 0)
                     week_pct = float(product["seven_day_discount_pct"] or 0) if current_menu else 0
                     drop = (current_menu and week_pct > 0 and week_reference > effective)
                     ptype = product["menu_quote_promo_type"] or product["promo_type"] if raw_price > 0 else product["promo_type"]
-                    platform = (float(product["verified_discount_pct"] or 0) > 0
+                    platform = (native_verified and float(product["verified_discount_pct"] or 0) > 0
                                 and (re.fullmatch(r"買[0-9]+送[0-9]+",str(ptype or "")) is not None or ptype == "直接折價"))
                     new_item = (str(product["listing_started_at"] or "")[:10] > str(baseline_time)[:10]
                                 and str(product["listing_started_at"] or "")[:10] > str(store["first_seen"] or "")[:10]
@@ -225,9 +228,11 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         "description": product["description"],
                         "price": raw_price if raw_price > 0 else normal_price,
                         "quantity": int(product["menu_quote_quantity"] or 1) if raw_price > 0 else int(product["quantity"] or 1),
-                        "promo_type": ptype, "eff_price": effective, "effective_price": effective,
-                        "verified_discount_pct": float(product["verified_discount_pct"] or 0),
-                        "price_evidence_status": "VERIFIED_MENU",
+                        "promo_type": ptype,
+                        "eff_price": verified_effective if verified_effective > 0 else None,
+                        "effective_price": verified_effective if verified_effective > 0 else None,
+                        "verified_discount_pct": float(product["verified_discount_pct"] or 0) if native_verified else 0,
+                        "price_evidence_status": product["price_evidence_status"],
                         "order_action_url": product["order_url"] or store["order_url"],
                         "rating_value": store["rating"], "review_count": int(store["review_count"] or 0),
                         "locality": store["locality"], "street_address": store["address"],
