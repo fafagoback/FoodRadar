@@ -35,6 +35,59 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 核對 Costco 北投 Raw 與 Turso 缺漏原因
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json, tarfile, os, sys, collections
+          from pathlib import Path
+          from huggingface_hub import hf_hub_download
+          import requests
+          sys.path.insert(0,'src')
+          from menu_core import convert_api_data_to_schema
+          from verified_prices import reconcile_duplicate_skus,quote_from_converted_item
+          repo='hub-google/FoodRadar'
+          manifest=json.loads(Path(hf_hub_download(repo_id=repo,filename='Raw/latest.json',repo_type='dataset')).read_text())
+          candidates=[s for s in manifest['stores'] if 'costco' in s['store_url'].lower()]
+          with tarfile.open(hf_hub_download(repo_id=repo,filename=manifest['archive_path'],repo_type='dataset'),'r:gz') as archive:
+              for candidate in candidates:
+                  body=json.load(archive.extractfile(candidate['response_path']))
+                  doc=convert_api_data_to_schema(body['data'],candidate['store_url'])
+                  reconcile_duplicate_skus(doc)
+                  products={}
+                  for section in doc['hasMenu']['hasMenuSection']:
+                      for item in section.get('hasMenuItem') or []:
+                          key=str(item.get('identifier') or item.get('name'))
+                          if key not in products: products[key]=item
+                  statuses=collections.Counter()
+                  missing=[]
+                  for key,item in products.items():
+                      valid=quote_from_converted_item(item)
+                      v=item.get('verified_price') or {}
+                      label='VERIFIED' if valid else str(v.get('reason') or v.get('status'))
+                      statuses[label]+=1
+                      if not valid: missing.append({'id':key,'name':item['name'],'price':item.get('offers',{}).get('price'),'reason':label,
+                          'kind':v.get('kind')})
+                  print('COSTCO_RAW_DETAIL='+json.dumps({'batch':manifest['batch_id'],'unique':len(products),'statuses':statuses,'unverified':missing},ensure_ascii=False),flush=True)
+                  url=os.environ.get('TURSO_DATABASE_URL','').replace('libsql://','https://').rstrip('/')+'/v2/pipeline'
+                  token=os.environ.get('TURSO_READONLY_TOKEN','')
+                  if not token: raise ValueError('Missing Turso readonly token in CI')
+                  stmt="SELECT product_uuid,card FROM web_products WHERE store_uuid='"+candidate['store_uuid']+"'"
+                  response=requests.post(url,headers={'Authorization':'Bearer '+token},json={'requests':[{'type':'execute','stmt':{'sql':stmt}},{'type':'close'}]},timeout=45)
+                  response.raise_for_status()
+                  result=response.json()['results'][0]
+                  if result.get('type')!='ok':raise ValueError(str(result.get('error')))
+                  records=result['response']['result']
+                  rows=[dict(zip([c['name'] for c in records['cols']],[v.get('value') for v in row])) for row in records['rows']]
+                  indexed={x['product_uuid']:json.loads(x['card']) for x in rows}
+                  missed=[{'id':key,'name':item['name'],'reason':(item.get('verified_price') or {}).get('reason'),
+                           'verified':bool(quote_from_converted_item(item)),
+                           'raw_price':item.get('offers',{}).get('price')} for key,item in products.items() if key not in indexed]
+                  print('COSTCO_TURSO_DIFF='+json.dumps({'batch':manifest['batch_id'],'raw_unique':len(products),
+                      'web_products':len(indexed),'missing':missed,'orphaned_in_db':list(set(indexed)-set(products))},ensure_ascii=False),flush=True)
+          PY
       - name: Python 全套回歸測試
         run: python -m unittest discover -s tests -v
       - name: 網站資料契約與 JavaScript 測試
