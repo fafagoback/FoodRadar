@@ -16,6 +16,7 @@ const blob = {
   events: [['p', 1, 'NEW', '2026-10-22T12:00:00+08:00', null, value]]
 };
 let bundleSelects = 0, locationSelects = 0, lastStoreSearch = '', lastLocationSearch = '';
+let productPageSelects=0,productCountSelects=0;
 let dataRevision = 'first-release';
 function result(rows) {
   const cols = Object.keys(rows[0] || {}).map(name => ({name}));
@@ -27,6 +28,19 @@ function result(rows) {
 }
 globalThis.fetch = async (_url, opts) => {
   const sql = JSON.parse(opts.body).requests[0].stmt.sql;
+  if(sql.includes("sqlite_master") && sql.includes("web_products")) {
+    return {ok:true,json:async()=>result([{name:'web_products'}])};
+  }
+  if(sql.includes('SELECT card,latitude,longitude FROM web_products')) {
+    productPageSelects++;
+    const rows=Array.from({length:51},(_,i)=>({card:JSON.stringify({product_name:'測試商品'+i,store_name:'COSTCO',price:88}),latitude:25.03,longitude:121.52}));
+    return {ok:true,json:async()=>result(rows)};
+  }
+  if(sql.includes('SELECT count(*) AS total FROM web_products')) {
+    productCountSelects++;
+    await new Promise(resolve=>setTimeout(resolve,25));
+    return {ok:true,json:async()=>result([{total:135}])};
+  }
   if (sql.includes('from metadata')) {
     return {ok:true,json:async()=>result([
       {key:'latest_processed_at',value:JSON.stringify('2026-10-27T14:46:28+08:00')},
@@ -81,5 +95,19 @@ globalThis.fetch = async (_url, opts) => {
     'two whitespace-delimited keywords must each constrain the store search');
   await reader.searchStores({keyword:'100%_特價'});
   assert.ok(lastStoreSearch.includes('100%_特價'), 'search symbols must remain literal');
-  console.log('PASS: concurrent bundle reads and precise location-cache invalidation');
+  let laterCount=null;
+  const instant=await reader.searchProductsPage({kind:'global',keyword:'costco',
+    onCount:total=>{laterCount=total},shouldCount:()=>true});
+  assert.equal(instant.rows.length,50,'first page must not load more than 50 cards');
+  assert.equal(instant.rows[0].store_name,'COSTCO');
+  assert.equal(instant.hasNext,true,'51st row indicates more pages');
+  assert.equal(instant.total,null,'first page must not wait for full count');
+  assert.equal(productPageSelects,1);
+  assert.equal(productCountSelects,0,'expensive COUNT must not block first paint');
+  await new Promise(resolve=>setTimeout(resolve,350));
+  assert.equal(laterCount,135,'exact total is filled asynchronously');
+  assert.equal(productCountSelects,1);
+  const counted=await reader.searchProductsPage({kind:'global',keyword:'costco'});
+  assert.equal(counted.total,135,'normal non-progressive callers retain exact totals');
+  console.log('PASS: immediate search page and deferred exact count');
 })().catch(err => {console.error(err); process.exitCode=1;});
