@@ -1577,7 +1577,7 @@ async function fetchGlobalProducts(page = 1) {
       if (sequence!==globalSearchSequence)return;
       APP_STATE.globalProducts=response.rows;
       APP_STATE.globalTotalItems=response.total;
-      APP_STATE.globalTotalPages=response.total===null ? 1 : Math.max(1,Math.ceil(response.total/PAGE_SIZE));
+      APP_STATE.globalTotalPages=response.total===null ? page+(response.hasNext ? 1 : 0) : Math.max(1,Math.ceil(response.total/PAGE_SIZE));
       APP_STATE.globalHasNext=response.hasNext ?? (page*PAGE_SIZE<response.total);
       APP_STATE.globalResultLimit=null;
       renderGlobalProducts();
@@ -1645,7 +1645,7 @@ function renderGlobalProducts() {
   const items = APP_STATE.globalProducts;
   const page = APP_STATE.globalPage || 1;
   const totalPages = APP_STATE.globalTotalPages || 1;
-  const totalItems = APP_STATE.globalTotalItems || 0;
+  const totalItems = APP_STATE.globalTotalItems ?? null;
   const hasNextPage = APP_STATE.globalHasNext || false;
 
   if (container) {
