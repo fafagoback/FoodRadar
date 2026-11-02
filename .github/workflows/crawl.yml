@@ -10,6 +10,7 @@ on:
       - 'src/feed_core.py'
       - 'src/raw_capture.py'
       - 'src/pipeline.py'
+      - 'src/verified_prices.py'
       - 'scripts/publish_turso_delta.py'
       - '.github/workflows/crawl.yml'
   schedule:
