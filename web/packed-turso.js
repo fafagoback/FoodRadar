@@ -661,6 +661,7 @@ export async function searchProductsPage({
   const size=Math.max(1,Math.min(50,Math.floor(Number(pageSize)||50)));
   const pageNo=Math.max(1,Math.floor(Number(page)||1));
   const key=JSON.stringify(['products',where,order,pageNo,size]);
+  // Search result pages should remain responsive even when the exact total is expensive.
   // Request the visible page first. A full COUNT(*) with substring/geographic
   // filters can be significantly slower than the first 50 cards. Counting in
   // parallel previously delayed first paint and made search appear frozen.
