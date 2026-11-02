@@ -1,0 +1,45 @@
+name: FoodRadar 臨時檢查店家營業時間
+on:
+  push:
+    paths:
+      - '.github/workflows/inspect-foodradar-schedule.yml'
+  workflow_dispatch:
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 讀取 HF 原始 getStoreV1 回應
+        shell: bash
+        run: |
+          python - <<'PY'
+          import io,json,re,tarfile,urllib.request
+          store_id='e48247a0-f9c7-5261-922f-fec6dc59385a'
+          for batch in ['20261031094414','20261102094141']:
+              url=f'https://huggingface.co/datasets/hub-google/FoodRadar/resolve/main/Raw/{batch}/capture.tar.gz'
+              with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'FoodRadar-Audit/1.0'}), timeout=120) as r:
+                  raw=r.read()
+              with tarfile.open(fileobj=io.BytesIO(raw),mode='r:gz') as tf:
+                  names=[x for x in tf.getnames() if store_id in x and x.endswith('.body')]
+                  print('BATCH',batch,'MATCHED_FILES',names,flush=True)
+                  for name in names:
+                      data=tf.extractfile(name).read()
+                      try: v=json.loads(data)
+                      except Exception as e: print('JSON ERROR',str(e), data[:100]);continue
+                      print('ROOT_KEYS',list(v) if isinstance(v,dict) else type(v).__name__,flush=True)
+                      count=[0]
+                      def walk(o,path='$',depth=0):
+                          if depth>15 or count[0]>=100:return
+                          if isinstance(o,dict):
+                              for k,a in o.items():
+                                  if re.search(r'hour|schedule|sunday|open|close|operat|availability|availablity',k,re.I):
+                                      if count[0]<100:
+                                          preview=json.dumps(a,ensure_ascii=False,separators=(',',':'))[:1500]
+                                          print('FIELD',path+'.'+k,preview,flush=True)
+                                          count[0]+=1
+                                  if isinstance(a,(dict,list)):walk(a,path+'.'+k,depth+1)
+                          elif isinstance(o,list):
+                              for i,a in enumerate(o[:75]):
+                                  walk(a,f'{path}[{i}]',depth+1)
+                      walk(v)
+          PY
