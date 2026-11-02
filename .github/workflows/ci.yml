@@ -54,6 +54,18 @@ jobs:
           with tarfile.open(hf_hub_download(repo_id=repo,filename=manifest['archive_path'],repo_type='dataset'),'r:gz') as archive:
               for candidate in candidates:
                   body=json.load(archive.extractfile(candidate['response_path']))
+                  raw_catalog=body['data'].get('catalogSectionsMap') or {}
+                  invalid_native=[]
+                  from verified_prices import quote_from_native_item
+                  for group in raw_catalog.values():
+                      for section in group if isinstance(group,list) else []:
+                          for native in ((section.get('payload') or {}).get('standardItemsPayload') or {}).get('catalogItems') or []:
+                              if not isinstance(native,dict):continue
+                              quote=quote_from_native_item(native)
+                              if quote and quote.get('reason')=='INVALID_MENU_PRICE':
+                                  price=native.get('price')
+                                  invalid_native.append({'name':native.get('title'),'type':type(price).__name__,'value':price})
+                  print('COSTCO_NATIVE_PRICE_TYPES='+json.dumps({'count':len(invalid_native),'rows':invalid_native},ensure_ascii=False),flush=True)
                   doc=convert_api_data_to_schema(body['data'],candidate['store_url'])
                   reconcile_duplicate_skus(doc)
                   products={}
