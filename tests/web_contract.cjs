@@ -70,4 +70,10 @@ const money = context.UBER_DATA_CONTRACT.money;
 for (const [n, expected] of [[10.3,'$10'],[75.99,'$76'],[88.87,'$89'],[114.63,'$115'],[1000.5,'$1,001']]) {
   assert.equal(money(n),expected);
 }
+// Price history draws point-to-point slopes; the table already contains the details.
+assert.ok(source.includes('stepped: false'), 'chart must not show a flat plateau with a last-second vertical fall');
+assert.ok(source.includes('fill: false'), 'do not drown the chart in a filled area');
+assert.ok(!source.includes('modal-price-change'), 'remove verbose price summary renderer');
+const pageHtml = fs.readFileSync('web/index.html', 'utf8');
+assert.ok(!pageHtml.includes('modal-price-change'), 'remove verbose price summary markup');
 console.log('V2 numeric verified pricing / promotions web contract: PASS');

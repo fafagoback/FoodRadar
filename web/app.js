@@ -1778,7 +1778,6 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   modal.classList.add('flex');
 
   document.getElementById('modal-history-tbody').innerHTML = '<tr><td colspan="4" class="px-3 py-4 text-center">載入價格歷史中...</td></tr>';
-  document.getElementById('modal-price-change').textContent = '正在比對實質單價...';
   if (APP_STATE.chartInstance) {
     APP_STATE.chartInstance.destroy();
     APP_STATE.chartInstance = null;
@@ -1889,44 +1888,6 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   history = [...uniqueHistory.values()]
     .sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
 
-  const latestUnit = history.length ? Number(history[history.length - 1].eff_price) : null;
-  const priceChangeEl = document.getElementById('modal-price-change');
-  if (priceChangeEl) {
-    const unitFmt = window.UBER_DATA_CONTRACT.unitMoney;
-    // Read-only presentation of fields computed by Python PriceChange.
-    // Change events are sparse: never recompute from the last two chart points.
-    const weekly = currentProductLoaded && Number(currentComparison.seven_day_reference_price) > 0
-      ? currentComparison : null;
-    const compared = currentProductLoaded && Number(currentComparison.reference_price) > 0
-      && currentComparison.price_direction !== 'unknown' ? currentComparison : null;
-    if (weekly) {
-      const difference = Number(weekly.seven_day_reference_price) - Number(weekly.current_price);
-      const currentPromo = String(weekly.promo_type || '無');
-      const promoDetail = currentPromo !== '無'
-        ? `；目前 ${currentPromo}，原始標價 ${unitFmt(weekly.price)}` : '';
-      priceChangeEl.textContent = `近七日最高實質單價 ${unitFmt(weekly.seven_day_reference_price)} → 最新實質單價 ${unitFmt(weekly.current_price)}（${difference > 0 ? '實質單價下降 '+Number(weekly.discount_pct).toFixed(1)+'%' : '沒有下降'}${promoDetail}）`;
-    } else if (compared) {
-      const delta = Number(compared.price_change_amount);
-      const percent = Math.abs(Number(compared.price_change_percent)).toFixed(1);
-      const direction = {up: '漲價', down: '降價', flat: '價格持平'}[compared.price_direction];
-      priceChangeEl.textContent = compared.price_direction === 'flat'
-        ? `前次 ${unitFmt(compared.reference_price)} → 本次 ${unitFmt(compared.current_price)}（價格持平）`
-        : `前次 ${unitFmt(compared.reference_price)} → 本次 ${unitFmt(compared.current_price)}（${direction} ${unitFmt(Math.abs(delta))}，${delta > 0 ? '+' : '-'}${percent}%）`;
-    } else {
-      const shownPrice = currentProductLoaded ? Number(currentComparison.current_price) : latestUnit;
-      priceChangeEl.textContent = shownPrice > 0
-        ? `目前實質單價 ${unitFmt(shownPrice)}（尚無前次可比較紀錄）`
-        : '目前沒有可比較的實質單價紀錄';
-    }
-    if (currentProductLoaded && currentComparison.crawled_time) {
-      priceChangeEl.textContent += `｜最近菜單採集 ${formatBatchDate(currentComparison.crawled_time)}`;
-    }
-  }
-
-  if (priceChangeEl && history.some(h => h.unit_only)) {
-    priceChangeEl.textContent += '｜歷史紀錄僅保存每件單價；未保存的標價與促銷狀態以「—／歷史未保存」顯示';
-  }
-
   const tbody = document.getElementById('modal-history-tbody');
   if (history.length > 0) {
     const rowsHtml = [...history].reverse().map(h => `
@@ -1997,9 +1958,11 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         data: prices,
         borderColor: '#10b981',
         backgroundColor: 'rgba(16, 185, 129, 0.12)',
-        fill: true,
-        stepped: 'before',
+        // Show a true point-to-point trend; no misleading plateau-then-vertical-drop.
+        fill: false,
+        stepped: false,
         tension: 0,
+        borderWidth: 3,
         pointBackgroundColor: '#10b981',
         pointBorderColor: '#ffffff',
         pointBorderWidth: 2,
