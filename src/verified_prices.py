@@ -65,8 +65,15 @@ def quote_from_native_item(item):
         json.dumps(item, sort_keys=True, ensure_ascii=False,
                    separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    price = item.get("price")
-    if type(price) is not int or price <= 0 or price > 1_000_000_000:
+    raw_price = item.get("price")
+    if type(raw_price) not in (int, float) or not 0 < raw_price <= 1_000_000_000:
+        return _invalid("UNKNOWN", item, "INVALID_MENU_PRICE", source_hash)
+    # Uber getStoreV1 sometimes returns fractional cents (e.g. 87455.70394).
+    # Preserve those original bytes in HF Raw and the evidence hash; quantize
+    # only the price used for TWD display/discount arithmetic to whole cents.
+    # Do not silently truncate fractional cents or invent a promotion.
+    price = int(Decimal(str(raw_price)).to_integral_value(rounding=ROUND_HALF_UP))
+    if price <= 0:
         return _invalid("UNKNOWN", item, "INVALID_MENU_PRICE", source_hash)
 
     analytics = item.get("catalogItemAnalyticsData") or {}
