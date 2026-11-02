@@ -26,6 +26,27 @@ def label(text, strike=False):
 
 
 class VerifiedPrices(unittest.TestCase):
+    def test_real_costco_fractional_cent_native_prices(self):
+        # Real 2026-11-02 Costco Beitou HF Raw values previously rejected as
+        # INVALID_MENU_PRICE, hiding 15 validly priced products from the catalog.
+        for raw_cents, expected in [
+            (87455.70393999999, 87456),
+            (26403.98209, 26404),
+            (151897.212, 151897),
+            (69423.5281, 69424),
+            (26002.5, 26003),
+        ]:
+            with self.subTest(raw_cents=raw_cents):
+                q = quote_from_native_item(item(raw_cents))
+                self.assertEqual(q["status"], "VERIFIED_MENU")
+                self.assertEqual(q["menu_price_cents"], expected)
+                self.assertEqual(q["payable_total_cents"], expected)
+                self.assertIsNotNone(quote_from_converted_item({"verified_price": q}))
+        for invalid in [float("nan"), float("inf"), -0.5, 0, True, "87456"]:
+            with self.subTest(invalid=invalid):
+                q = quote_from_native_item(item(invalid))
+                self.assertEqual(q["status"], "UNVERIFIED")
+
     def test_actual_bogo_coffee_60_2_for_1(self):
         q = quote_from_native_item(item(6000, "BOGO", {
             "type": "buyXGetYItemPromotion",
