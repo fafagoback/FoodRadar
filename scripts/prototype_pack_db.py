@@ -54,6 +54,10 @@ CREATE INDEX idx_web_promos ON web_products(promo,unit_price);
 CREATE INDEX idx_web_new ON web_products(new_item,rating DESC);
 CREATE INDEX idx_web_rating ON web_products(rating DESC);
 CREATE INDEX idx_web_city ON web_products(city);
+-- Bounding boxes for arbitrary delivery coordinates must use a B-tree before
+-- the exact distance calculation, not scan every product's trigonometry.
+CREATE INDEX idx_web_geo ON web_products(latitude,longitude);
+CREATE INDEX idx_store_geo ON store_directory(latitude,longitude);
 """
 
 
