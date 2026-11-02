@@ -35,6 +35,40 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 實際 Costco Raw 全商品驗證（本次專用）
+        run: |
+          python - <<'PY'
+          import json, tarfile,sys,collections
+          from pathlib import Path
+          from huggingface_hub import hf_hub_download
+          sys.path.insert(0,'src')
+          from menu_core import convert_api_data_to_schema
+          from verified_prices import reconcile_duplicate_skus, quote_from_converted_item
+          repo='hub-google/FoodRadar'
+          manifest=json.loads(Path(hf_hub_download(repo_id=repo,filename='Raw/latest.json',repo_type='dataset')).read_text())
+          store=next(s for s in manifest['stores'] if 'costco' in s['store_url'].lower())
+          archive=hf_hub_download(repo_id=repo,filename=manifest['archive_path'],repo_type='dataset')
+          with tarfile.open(archive,'r:gz') as opened:
+              envelope=json.load(opened.extractfile(store['response_path']))
+          doc=convert_api_data_to_schema(envelope['data'],store['store_url'])
+          reconcile_duplicate_skus(doc)
+          found={}
+          for section in doc['hasMenu']['hasMenuSection']:
+              for item in section.get('hasMenuItem') or []:
+                  found.setdefault(str(item.get('identifier')),item)
+          counters=collections.Counter()
+          omitted=[]
+          for key,item in found.items():
+              q=quote_from_converted_item(item)
+              if q:counters['VERIFIED']+=1
+              else:
+                  reason=(item.get('verified_price') or {}).get('reason') or 'UNKNOWN'
+                  counters[reason]+=1
+                  omitted.append([item.get('name'),reason])
+          print('COSTCO_AFTER_FIX='+json.dumps({'batch':manifest['batch_id'],'raw_unique':len(found),
+              'counters':counters,'still_unverified':omitted},ensure_ascii=False),flush=True)
+          assert len(found)==63 and counters['VERIFIED']==63, 'Costco raw products still dropped by price validation'
+          PY
       - name: Python 全套回歸測試
         run: python -m unittest discover -s tests -v
       - name: 網站資料契約與 JavaScript 測試
