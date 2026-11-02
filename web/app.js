@@ -1559,13 +1559,26 @@ async function fetchGlobalProducts(page = 1) {
     try {
       const client=await getPackedTursoClient();
       renderGlobalLoadingState(rawSearch || cityFilter);
+      const updateExactCount=total=>{
+        if(sequence!==globalSearchSequence || APP_STATE.globalPage!==page)return;
+        APP_STATE.globalTotalItems=total;
+        APP_STATE.globalTotalPages=Math.max(1,Math.ceil(total/PAGE_SIZE));
+        APP_STATE.globalHasNext=page*PAGE_SIZE<total;
+        renderPaginationComponent({
+          containerId:'global-pagination',currentPage:page,
+          totalPages:APP_STATE.globalTotalPages,totalItems:total,
+          pageSize:PAGE_SIZE,hasNextPage:APP_STATE.globalHasNext,
+          onPageChange:'changeGlobalPage'
+        });
+      };
       const response=await client.searchProductsPage({kind:'global',page,
-        keyword:rawSearch,city:cityFilter,sort:sortMode,location:APP_STATE.locationFilter});
+        keyword:rawSearch,city:cityFilter,sort:sortMode,location:APP_STATE.locationFilter,
+        onCount:updateExactCount,shouldCount:()=>sequence===globalSearchSequence});
       if (sequence!==globalSearchSequence)return;
       APP_STATE.globalProducts=response.rows;
       APP_STATE.globalTotalItems=response.total;
-      APP_STATE.globalTotalPages=Math.max(1,Math.ceil(response.total/PAGE_SIZE));
-      APP_STATE.globalHasNext=page*PAGE_SIZE<response.total;
+      APP_STATE.globalTotalPages=response.total===null ? 1 : Math.max(1,Math.ceil(response.total/PAGE_SIZE));
+      APP_STATE.globalHasNext=response.hasNext ?? (page*PAGE_SIZE<response.total);
       APP_STATE.globalResultLimit=null;
       renderGlobalProducts();
       return true;
