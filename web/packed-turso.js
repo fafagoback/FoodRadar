@@ -628,7 +628,8 @@ export async function hasWebIndex() {
 // a browser-inferred price or promotional label.
 export async function searchProductsPage({
   kind='global', page=1, pageSize=50, keyword='', city='', category='',
-  minDiscount=0, minSavings=0, promoType='全部', sort='', location=null
+  minDiscount=0, minSavings=0, promoType='全部', sort='', location=null,
+  onCount=null, shouldCount=null
 }={}) {
   if (!await hasWebIndex()) return null;
   const conditions=[...keywordClauses(keyword),locationSql(location)];
@@ -660,18 +661,30 @@ export async function searchProductsPage({
   const size=Math.max(1,Math.min(50,Math.floor(Number(pageSize)||50)));
   const pageNo=Math.max(1,Math.floor(Number(page)||1));
   const key=JSON.stringify(['products',where,order,pageNo,size]);
-  return cachedPage(key,async()=>{
-    const [rows,total]=await Promise.all([
-      sql(`SELECT card,latitude,longitude FROM web_products WHERE ${where} ORDER BY ${order},store_uuid,product_uuid LIMIT ${size} OFFSET ${(pageNo-1)*size}`),
-      cachedCount(where,'web_products')
-    ]);
-    const products=rows.map(row=>{
+  // Request the visible page first. A full COUNT(*) with substring/geographic
+  // filters can be significantly slower than the first 50 cards. Counting in
+  // parallel previously delayed first paint and made search appear frozen.
+  const result=await cachedPage(key,async()=>{
+    const rows=await sql(`SELECT card,latitude,longitude FROM web_products WHERE ${where} ORDER BY ${order},store_uuid,product_uuid LIMIT ${size+1} OFFSET ${(pageNo-1)*size}`);
+    const products=rows.slice(0,size).map(row=>{
       const product=JSON.parse(row.card);
       if (location?.enabled) product.distance_km=distanceKm(Number(location.latitude),Number(location.longitude),Number(row.latitude),Number(row.longitude));
       return product;
     });
-    return {rows:products,total};
+    return {rows:products,hasNext:rows.length>size};
   });
+  if(typeof onCount!=='function') {
+    return {...result,total:await cachedCount(where,'web_products')};
+  }
+  // Defer exact totals until after the page is painted; obsolete searches
+  // skip the expensive count entirely. Totals remain exact once available.
+  setTimeout(()=>{
+    if(typeof shouldCount==='function' && !shouldCount())return;
+    cachedCount(where,'web_products').then(total=>{
+      if(typeof shouldCount!=='function' || shouldCount())onCount(total);
+    }).catch(error=>console.warn('FoodRadar total count failed:',error));
+  },250);
+  return {...result,total:null};
 }
 export async function searchStoresPage({page=1,pageSize=50,keyword='',city='',newOnly=true,sort='rating_desc',location=null}={}) {
   const meta=await metadata();
