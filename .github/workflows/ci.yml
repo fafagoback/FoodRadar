@@ -35,6 +35,32 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 一次性查核 11月3日 Costco 實際營業標記
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: |
+          python - <<'PY'
+          import requests, json, os
+          url=os.environ['TURSO_DATABASE_URL'].replace('libsql://','https://').rstrip('/')+'/v2/pipeline'
+          auth={'Authorization':'Bearer '+os.environ['TURSO_READONLY_TOKEN']}
+          sid='a4e2201d-5fc7-5a10-a41a-dfe58975a7a7'
+          queries={
+            'latest_batch':"SELECT value FROM metadata WHERE key='latest_batch'",
+            'source_store':"SELECT store_uuid,name,status,is_open,last_seen,missing_streak FROM stores WHERE store_uuid='"+sid+"'",
+            'search_store':"SELECT store_uuid,name,status,is_open,last_seen FROM store_directory WHERE store_uuid='"+sid+"'",
+            'visible_products':"SELECT COUNT(*) AS total FROM web_products WHERE store_uuid='"+sid+"'",
+          }
+          output={}
+          for name,sql in queries.items():
+            resp=requests.post(url,json={'requests':[{'type':'execute','stmt':{'sql':sql}},{'type':'close'}]},headers=auth,timeout=30)
+            resp.raise_for_status()
+            item=resp.json()['results'][0]
+            if item.get('type')!='ok':raise Exception(str(item))
+            value=item['response']['result']
+            output[name]=[dict(zip((c['name'] for c in value['cols']),(v.get('value') for v in row))) for row in value['rows']]
+          print('COSTCO_20261103_OPEN_AUDIT='+json.dumps(output,ensure_ascii=False),flush=True)
+          PY
       - name: Python 全套回歸測試
         run: python -m unittest discover -s tests -v
       - name: 網站資料契約與 JavaScript 測試
