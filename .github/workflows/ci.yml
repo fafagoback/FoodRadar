@@ -47,7 +47,6 @@ jobs:
           sid='a4e2201d-5fc7-5a10-a41a-dfe58975a7a7'
           queries={
             'latest_batch':"SELECT value FROM metadata WHERE key='latest_batch'",
-            'source_store':"SELECT store_uuid,name,status,is_open,last_seen,missing_streak FROM stores WHERE store_uuid='"+sid+"'",
             'search_store':"SELECT store_uuid,name,status,is_open,last_seen FROM store_directory WHERE store_uuid='"+sid+"'",
             'visible_products':"SELECT COUNT(*) AS total FROM web_products WHERE store_uuid='"+sid+"'",
           }
