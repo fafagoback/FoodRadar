@@ -87,6 +87,25 @@ class CatalogCompleteness(unittest.TestCase):
                 capture_catalog(BadSession(),"uuid",{"aisles":{"uuid":[{"catalogSectionUUID":"s"}]}},
                                 Path(tmp),{},lambda root,path,resp:None)
 
+    def test_outer_store_retries_preserve_separate_immutable_page_files(self):
+        sid = "d2e50ee1-69da-5eff-95f0-eb0dbaeb9e42"
+        initial = {"title":"北投店", "catalogSectionsMap":{}, "aisles": {
+            sid:[{"catalogSectionUUID":"brand-category"}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def save(directory, name, response):
+                target = directory / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    raise FileExistsError(name)
+                target.write_bytes(response.content)
+            first = capture_catalog(Session(), sid, initial, root, {}, save, store_attempt=1)
+            second = capture_catalog(Session(), sid, initial, root, {}, save, store_attempt=2)
+            first_paths = {x["path"] for x in first["catalog_responses"]}
+            second_paths = {x["path"] for x in second["catalog_responses"]}
+            self.assertTrue(first_paths.isdisjoint(second_paths))
+            self.assertEqual(len(list(root.rglob("*.body"))), 4)
+
     def test_no_sections_does_not_erase_real_store_menu(self):
         data={"title":"Small cafe","catalogSectionsMap":{"a":[{"payload":{
             "standardItemsPayload":{"title":{"text":"drinks"},"catalogItems":[
