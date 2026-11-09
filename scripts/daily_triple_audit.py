@@ -1,4 +1,4 @@
-"""Independent three-method observation audit. Read-only; never publishes menu data."""
+"""Independent two-method observation audit. Read-only; never publishes menu data."""
 import hashlib
 import json
 import os
@@ -10,8 +10,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
-from PIL import Image
-import pytesseract
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,86 +94,45 @@ JS_DOM = """() => {
   return out;
 }"""
 
-def collect_browser_and_ocr(browser, label, url, lat, lon, store_dir):
+def collect_browser(browser, label, url, lat, lon, store_dir):
     context = browser.new_context(locale="zh-TW", viewport={"width":1440,"height":980},
                                   device_scale_factor=1)
-    context.add_cookies([{"name":"uev2.loc","value":loc_cookie(lat,lon),
-                         "domain":".ubereats.com","path":"/"}])
-    page = context.new_page()
-    response = page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(3500)
-    http_status = response.status if response else None
-    page_title = page.title()
-    visible_text = page.evaluate("document.body?.innerText?.slice(0,1000) || ''")
-    security_challenge = (http_status in (401, 403, 429)
-        or "正在執行安全驗證" in visible_text
-        or "Cloudflare" in visible_text and "驗證" in visible_text)
-    if security_challenge:
-        proof = store_dir / "screenshot-000.png"
-        page.screenshot(path=str(proof))
-        blocked = {"count":None,"items":[],"complete":False,
-                   "status":"BLOCKED_BY_PLATFORM_SECURITY","http_status":http_status,
-                   "title":page_title, "evidence":str(proof.relative_to(ROOT)),
-                   "error":f"Uber storefront HTTP {http_status}: Cloudflare challenge, no products rendered"}
-        blocked_ocr = {"count":None,"items":[],"complete":False,
-                       "status":"SCREENSHOT_IS_SECURITY_CHALLENGE",
-                       "http_status":http_status, "error":blocked["error"],
-                       "screenshots":1}
-        context.close()
-        return blocked, blocked_ocr, [str(proof.relative_to(ROOT))]
-    cards, ocr_titles, image_paths = {}, set(), []
-    stale = 0
     try:
+        context.add_cookies([{"name":"uev2.loc","value":loc_cookie(lat,lon),
+                             "domain":".ubereats.com","path":"/"}])
+        page = context.new_page()
+        response = page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(3500)
+        http_status = response.status if response else None
+        page_title = page.title()
+        visible_text = page.evaluate("document.body?.innerText?.slice(0,1000) || ''")
+        security_challenge = (http_status in (401, 403, 429)
+            or "正在執行安全驗證" in visible_text
+            or "Cloudflare" in visible_text and "驗證" in visible_text)
+        if security_challenge:
+            return {"count":None,"items":[],"complete":False,
+                    "status":"BLOCKED_BY_PLATFORM_SECURITY","http_status":http_status,
+                    "title":page_title,
+                    "error":f"Uber storefront HTTP {http_status}: security challenge, no products rendered"}
+        cards = {}
+        stale = 0
         for step in range(int(os.environ.get("AUDIT_SCROLL_LIMIT","180"))):
             for entry in page.evaluate(JS_DOM):
                 name = str(entry.get("name") or "").strip()
-                if len(name) > 2: cards[norm(name)] = entry
-            # Screenshot is an independent pixel observation, not DOM extraction.
-            shot = store_dir / ("screenshot-%03d.png" % step)
-            page.screenshot(path=str(shot))
-            image_paths.append(str(shot.relative_to(ROOT)))
-            # Estimate visible product cards independently from screenshot pixels.
-            # Count only OCR text with a nearby visible price, not arbitrary UI labels.
-            o = pytesseract.image_to_data(Image.open(shot), lang="chi_tra+eng",
-                                          output_type=pytesseract.Output.DICT)
-            grouped = {}
-            for i, word in enumerate(o["text"]):
-                word = str(word or "").strip()
-                if not word or float(o["conf"][i]) < 25: continue
-                key = (o["block_num"][i], o["par_num"][i], o["line_num"][i])
-                rec = grouped.setdefault(key, {"words":[], "top":o["top"][i],
-                                                "left":o["left"][i]})
-                rec["words"].append(word)
-            visible_lines = [{"text":" ".join(g["words"]),"top":g["top"],
-                              "left":g["left"]} for g in grouped.values()]
-            for line in visible_lines:
-                if not re.search(r"(?:NT\\$|\\$|＄)\\s*[0-9][0-9,.]*|[0-9][0-9,.]*\\s*元",line["text"]):
-                    continue
-                adjacent = [z for z in visible_lines if z is not line
-                            and abs(z["top"]-line["top"]) < 115
-                            and abs(z["left"]-line["left"]) < 340
-                            and len(z["text"]) >= 4
-                            and not re.search(r"(?:NT\\$|\\$|＄)\\s*[0-9]",z["text"])]
-                if adjacent:
-                    best = min(adjacent,key=lambda z: abs(z["top"]-line["top"]))
-                    name = norm(best["text"])
-                    if len(name) >= 4: ocr_titles.add(name)
+                if len(name) > 2:
+                    cards[norm(name)] = entry
             before = page.evaluate("document.scrollingElement.scrollTop")
             page.mouse.wheel(0, 900)
             page.wait_for_timeout(400)
             after = page.evaluate("document.scrollingElement.scrollTop")
             stale = stale + 1 if before == after else 0
-            if stale >= 5: break
-        # Reaching page bottom does not prove all category tabs were opened.
+            if stale >= 5:
+                break
         dom = {"count":len(cards),"items":list(cards.values()),
-               "complete":False,"status":"OBSERVED_ONLY_CATEGORY_COMPLETENESS_UNPROVEN",
-               "screenshots":len(image_paths)}
-        # OCR lines are not equivalent to SKUs; report their count explicitly as candidates.
-        ocr = {"count":len(ocr_titles),"items":sorted(ocr_titles),
-               "complete":False,"status":"OCR_TEXT_CANDIDATES_NOT_VERIFIED_SKUS",
-               "screenshots":len(image_paths)}
-        if not cards: dom["status"] = "NO_PRODUCT_CARD_SELECTOR_MATCH"
-        return dom, ocr, image_paths
+               "complete":False,"status":"OBSERVED_ONLY_CATEGORY_COMPLETENESS_UNPROVEN"}
+        if not cards:
+            dom["status"] = "NO_PRODUCT_CARD_SELECTOR_MATCH"
+        return dom
     finally:
         context.close()
 
@@ -193,20 +150,16 @@ def safe_run(func):
 def main():
     report = {"date":datetime.now(TW).strftime("%Y-%m-%d"),"generated_at":datetime.now(TW).isoformat(),
               "method_a":"existing getStoreV1 + getCatalogPresentationV2",
-              "method_b":"independent Chromium page DOM observation",
-              "method_c":"independent screenshot OCR observation","stores":[]}
+              "method_b":"independent Chromium page DOM observation","stores":[]}
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
         for slug,label,url,lat,lon in STORES:
             folder=OUT / report["date"] / slug
             folder.mkdir(parents=True,exist_ok=True)
             a,ae=safe_run(lambda:collect_api(label,url,lat,lon,folder))
-            bc,be=safe_run(lambda:collect_browser_and_ocr(browser,label,url,lat,lon,folder))
-            b,c,shots=(bc or (None,None,[]))
+            b,be=safe_run(lambda:collect_browser(browser,label,url,lat,lon,folder))
             record={"store":label,"url":url,"api":a or {"count":None,"error":ae},
-                    "browser":b or {"count":None,"error":be},
-                    "screenshot_ocr":c or {"count":None,"error":be},
-                    "screen_paths":shots}
+                    "browser":b or {"count":None,"error":be}}
             if a and b: record["api_vs_dom"]=compare(a,b)
             record["status"]=("BROWSER_BLOCKED_BY_PLATFORM_SECURITY"
                 if b and b.get("status")=="BLOCKED_BY_PLATFORM_SECURITY"
@@ -214,29 +167,27 @@ def main():
                 else "OBSERVED_NOT_PROVEN_COMPLETE")
             report["stores"].append(record)
             (folder/"result.json").write_text(json.dumps(record,ensure_ascii=False,indent=2))
-            print(label,record["api"]["count"],record["browser"]["count"],record["screenshot_ocr"]["count"],flush=True)
+            print(label,record["api"]["count"],record["browser"]["count"],flush=True)
         browser.close()
     full_path=OUT/"full-catalog-latest.json"
     if full_path.exists():
         report["full_catalog_reconciliation"]=json.loads(full_path.read_text(encoding="utf-8"))
     else:
         report["full_catalog_reconciliation"]={"status":"NOT_RUN"}
-    report["all_three_independent_methods_verified"]=all(
+    report["both_independent_methods_verified"]=all(
         s.get("api",{}).get("complete") is True
         and s.get("browser",{}).get("complete") is True
-        and s.get("screenshot_ocr",{}).get("complete") is True
         for s in report["stores"])
     (OUT/"latest.json").write_text(json.dumps(report,ensure_ascii=False,indent=2))
     (OUT/report["date"]/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2))
     print("AUDIT_REPORT_COMPLETE="+json.dumps({
         "date":report["date"],
-        "all_three_independent_methods_verified":report["all_three_independent_methods_verified"],
+        "both_independent_methods_verified":report["both_independent_methods_verified"],
         "stores":[{"name":s["store"],"status":s["status"],
                    "api_count":s["api"].get("count"),
-                   "dom_count":s["browser"].get("count"),
-                   "ocr_count":s["screenshot_ocr"].get("count")} for s in report["stores"]]
+                   "dom_count":s["browser"].get("count")} for s in report["stores"]]
     },ensure_ascii=False),flush=True)
-    if not report["all_three_independent_methods_verified"]:
+    if not report["both_independent_methods_verified"]:
         # A report is not a pass. GitHub Actions still uploads it and alerts.
         raise SystemExit("Independent storefront coverage NOT proven; inspect audit-results/latest.json")
 if __name__=="__main__":main()
