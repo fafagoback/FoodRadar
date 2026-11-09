@@ -101,7 +101,7 @@ jobs:
         run: |
           python -m pip install playwright
           python -m playwright install --with-deps webkit
-          DOM_CATEGORY_TEST_LIMIT=2 DOM_SCROLL_TEST_LIMIT=4 python scripts/live_webkit_dom.py
+          DOM_CATEGORY_TEST_LIMIT=2 DOM_SCROLL_TEST_LIMIT=4 python scripts/live_ui_api_comparison.py
       - name: 網站資料契約與 JavaScript 測試
         run: |
           node --check web/app.js
