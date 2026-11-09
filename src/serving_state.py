@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS products(
   menu_quote_promo_type TEXT,
   menu_quote_quantity INTEGER,
   delivery_available INTEGER NOT NULL DEFAULT 1,
+  catalog_web TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY(store_uuid, product_uuid),
   FOREIGN KEY(store_uuid) REFERENCES stores(store_uuid)
 );
@@ -269,6 +270,7 @@ def ensure_schema_and_migrations(conn: sqlite3.Connection) -> None:
         ("verified_discount_pct", "REAL NOT NULL DEFAULT 0"),
         ("price_evidence_status", "TEXT NOT NULL DEFAULT 'UNVERIFIED'"),
         ("price_evidence_source_hash", "TEXT"),
+        ("catalog_web", "TEXT NOT NULL DEFAULT '{}'"),
     ):
         if name not in product_columns:
             conn.execute(f"ALTER TABLE products ADD COLUMN {name} {definition}")
@@ -384,6 +386,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
     quote_history_batch: list[tuple[str, str, str]] = []
     v2_observation_batch: list[tuple] = []
     v2_product_status_batch: list[tuple] = []
+    catalog_web_batch: list[tuple] = []
 
     def flush_snapshot_batches() -> None:
         if insert_stores_batch:
@@ -419,6 +422,10 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 price_evidence_status=?,price_evidence_source_hash=?
                 WHERE store_uuid=? AND product_uuid=?""", v2_product_status_batch)
             v2_product_status_batch.clear()
+        if catalog_web_batch:
+            conn.executemany("""UPDATE products SET catalog_web=?
+                                WHERE store_uuid=? AND product_uuid=?""", catalog_web_batch)
+            catalog_web_batch.clear()
         if changed_product_rows:
             conn.executemany("INSERT OR IGNORE INTO pending_product_changes VALUES(?,?)", changed_product_rows)
             changed_product_rows.clear()
@@ -501,6 +508,27 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
         store_price_valid = price_observation_valid(doc, batch_id)
         quote_price_valid = menu_price_observation_valid(doc, batch_id)
         sections = (doc.get("hasMenu") or {}).get("hasMenuSection") or []
+        # A product may occur in many native categories. Keep one product row,
+        # retain *all* category UUIDs and select only nonredundant web facts.
+        catalog_by_pid: dict[str, dict] = {}
+        for section in sections:
+            for entry in section.get("hasMenuItem") or []:
+                native_fields = entry.get("catalog_web") or {}
+                if not isinstance(native_fields, dict) or not native_fields:
+                    continue
+                item_id, _ = product_identity(entry, sid)
+                merged = catalog_by_pid.setdefault(
+                    item_id, {"section_uuids": [], "subsection_uuids": []})
+                for key_name in ("section_uuid", "subsection_uuid"):
+                    val = native_fields.get(key_name)
+                    bucket = "section_uuids" if key_name == "section_uuid" else "subsection_uuids"
+                    if isinstance(val, str) and val and val not in merged[bucket]:
+                        merged[bucket].append(val)
+                for field, val in native_fields.items():
+                    if field not in ("section_uuid", "subsection_uuid") and val is not None:
+                        # In case of repeated SKUs, prefer first nonempty fact.
+                        if merged.get(field) is None:
+                            merged[field] = val
         # No promotion text/category heuristics. Converted native V2 evidence
         # has already been validated against the original getStoreV1 item.
         store_product_keys: set[str] = set()
@@ -516,6 +544,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 if pid in store_product_keys:
                     continue
                 store_product_keys.add(pid)
+                details = catalog_by_pid.get(pid)
+                if details:
+                    catalog_web_batch.append((json_dumps(details), sid, pid))
                 seen_product_rows.append(key)
                 counts["products"] += 1
 
