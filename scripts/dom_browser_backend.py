@@ -35,6 +35,19 @@ def open_dom_browser(playwright):
     return browser, "github_hosted"
 
 
+def acquire_dom_context(browser, source, **kwargs):
+    """Use an existing authenticated remote browser profile when available.
+
+    Returns (context, owned). The caller must close an owned context; shared
+    remote contexts are left alive, with only the created page closed.
+    """
+    reuse = os.environ.get("FOODRADAR_DOM_REUSE_CONTEXT", "1") != "0"
+    contexts = getattr(browser, "contexts", []) or []
+    if source == "remote_cdp" and reuse and contexts:
+        return contexts[0], False
+    return browser.new_context(**kwargs), True
+
+
 def classify_storefront(status, visible_text):
     """The blocked page is a failed observation, NOT zero products."""
     text = str(visible_text or "").casefold()
