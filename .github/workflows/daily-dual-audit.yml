@@ -29,7 +29,7 @@ jobs:
       - name: Install two independent observation engines
         run: |
           python -m pip install requests playwright huggingface_hub zstandard msgpack curl_cffi beautifulsoup4
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps webkit
       - name: Remove prior audit evidence before checking new batch
         run: rm -f audit-results/full-catalog-latest.json
       - name: Independently reconcile all captured stores and products through HF Raw and Turso
@@ -40,11 +40,12 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/audit_full_catalog.py
-      - name: Run API + independent Safari storefront HTML preview audit
+      - name: Compare API products with actual WebKit-rendered storefront cards
         id: audit
         continue-on-error: true
         env:
-          AUDIT_SCROLL_LIMIT: '180'
+          DOM_CATEGORY_LIMIT: '0'
+          DOM_SCROLL_STEPS: '8'
           # An authorized remote Chrome session can supply a non-datacenter
           # network and existing browser session to the independent DOM audit.
           # Keep the full CDP URL (including provider token) in GitHub Secrets.
