@@ -71,6 +71,7 @@ def restore_history(config, rebuild_all=False):
     conn = sqlite3.connect(temporary_db)
     conn.row_factory = sqlite3.Row
     replayed = []
+    skipped_incomplete = []
     batch = ''
     try:
         print('FOODRADAR_RAW_ONLY_REPLAY_START='+json.dumps({
@@ -84,8 +85,19 @@ def restore_history(config, rebuild_all=False):
                 config['hf_repo_id'], manifest_path, repo_type='dataset'
             )).read_text(encoding='utf-8'))
             current_batch = str(meta.get('batch_id') or '')
-            if not meta.get('complete') or not (len(current_batch) == 14 and current_batch.isdigit()):
-                raise ValueError(f'Incomplete or invalid immutable Raw batch: {manifest_path}')
+            if not (len(current_batch) == 14 and current_batch.isdigit()):
+                raise ValueError(f'Invalid immutable Raw batch ID: {manifest_path}')
+            # Failed crawls are intentionally archived as original HTTP bytes
+            # with complete=false; they MUST NOT poison all future replays.
+            if meta.get('complete') is False:
+                skipped_incomplete.append(manifest_path)
+                print('HF_RAW_INCOMPLETE_SKIPPED=' + json.dumps({
+                    'batch': current_batch, 'manifest': manifest_path,
+                    'reason': 'partial crawl is not a publishable observation'
+                }, ensure_ascii=False), flush=True)
+                continue
+            if meta.get('complete') is not True:
+                raise ValueError(f'Invalid immutable Raw completeness marker: {manifest_path}')
             if batch and current_batch <= batch:
                 raise ValueError(f'Nonmonotonic immutable Raw batch: {manifest_path}')
             if (meta.get('format') != 'foodradar-immutable-http-body-v1'
@@ -113,6 +125,8 @@ def restore_history(config, rebuild_all=False):
                 'deals':audit['deals'],
                 'legacy_batches':0,
             },ensure_ascii=False),flush=True)
+        if not replayed:
+            raise RuntimeError("No complete immutable HF Raw batches to build serving DB")
         conn.execute(
             "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
             ('raw_source', f'{folder}/'))
@@ -132,6 +146,7 @@ def restore_history(config, rebuild_all=False):
             'batch_id':batch,
             'raw_manifest_count':len(replayed),
             'verified_manifest_count':len(replayed),
+            'skipped_incomplete_raw_count':len(skipped_incomplete),
             'manifest_digest':hashlib.sha256(
                 '\n'.join(replayed).encode('utf-8')).hexdigest(),
             'source_prefix':f'{folder}/',
