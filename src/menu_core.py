@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from snapshot_validation import validate_document
 from verified_prices import quote_from_native_item, reconcile_duplicate_skus
+from catalog_web_fields import web_catalog_fields
 
 TW_TZ = timezone(timedelta(hours=8))
 
@@ -294,6 +295,11 @@ def convert_api_data_to_schema(api_data: dict, store_url: str, fallback_name: st
                     # V2: preserve numeric native price evidence, not a guessed
                     # promotion label inferred from categories or product names.
                     converted_item["verified_price"] = quote_from_native_item(it)
+                    converted_item["catalog_web"] = web_catalog_fields(it)
+                    # Product belongs to every native section where its UUID appears.
+                    section_uuid = sec.get("catalogSectionUUID") or it.get("sectionUuid")
+                    if isinstance(section_uuid, str) and section_uuid:
+                        converted_item["catalog_web"]["section_uuid"] = section_uuid
                     menu_items.append(converted_item)
                     
                 if menu_items or sec_title:
