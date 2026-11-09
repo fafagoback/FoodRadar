@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import requests
 from playwright.sync_api import sync_playwright
 from dom_browser_backend import open_dom_browser, acquire_dom_context, diagnostic
-from storefront_html_reader import collect_public_html
+from live_webkit_dom import scan_live_webpage
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -197,36 +197,66 @@ def safe_run(func):
 def main():
     report = {"date":datetime.now(TW).strftime("%Y-%m-%d"),"generated_at":datetime.now(TW).isoformat(),
               "method_a":"existing getStoreV1 + getCatalogPresentationV2",
-              "method_b":"public store HTML hydration preview, Safari transport, partial only","stores":[]}
-    # Method B reads the separate public HTML page, NOT the API JSON
-    # and NOT the primary HF/Turso snapshot. Even if HTML returns initial
-    # SKU names+prices, its bootstrap contains only a partial preview.
-    for slug,label,url,lat,lon in STORES:
-        folder=OUT / report["date"] / slug
-        folder.mkdir(parents=True,exist_ok=True)
-        a,ae=safe_run(lambda:collect_api(label,url,lat,lon,folder))
-        b,be=safe_run(lambda:collect_public_html(url))
-        record={"store":label,"url":url,"api":a or {"count":None,"error":ae},
-                "browser":b or {"count":None,"complete":False,
-                                  "status":"HTML_FETCH_ERROR","error":be}}
-        if a and b and b.get("items"):record["api_vs_dom"]=compare(a,b)
-        if b and b.get("status")=="HTML_PREVIEW_PARTIAL":
-            record["status"]="HTML_PREVIEW_RETRIEVED_NOT_ALL_SKUS"
-        elif b and b.get("status") in ("WEB_HTML_BLOCKED","HTML_BOOTSTRAP_MISSING"):
-            record["status"]="WEB_HTML_NOT_ACCESSIBLE"
-        else:
-            record["status"]="UNVERIFIED"
-        report["stores"].append(record)
-        (folder/"result.json").write_text(json.dumps(record,ensure_ascii=False,indent=2))
-        print("DAILY_HTML_STORE="+json.dumps({
-            "store":label,"api":record["api"].get("count"),
-            "html_preview":record["browser"].get("count"),
-            "html_status":record["browser"].get("status"),
-            "comparison":record.get("api_vs_dom")
-        },ensure_ascii=False),flush=True)
-    report["html_preview_retrieved_all_sample_stores"]=all(
-        s.get("browser",{}).get("status")=="HTML_PREVIEW_PARTIAL" and
-        s.get("browser",{}).get("count",0)>0 for s in report["stores"])
+              "method_b":"independent WebKit browser actual UI cards, category clicks and scrolling","stores":[]}
+    # Method B uses the ACTUAL visible UI rendered by WebKit. We deliberately
+    # never inspect React state, intercepted API responses or method A output
+    # while collecting visible product cards.
+    with sync_playwright() as pw:
+        browser=pw.webkit.launch(headless=True)
+        try:
+            for slug,label,url,lat,lon in STORES:
+                folder=OUT / report["date"] / slug
+                folder.mkdir(parents=True,exist_ok=True)
+                a,ae=safe_run(lambda:collect_api(label,url,lat,lon,folder))
+                def visible_page():
+                    ctx=browser.new_context(locale="zh-TW",
+                                            viewport={"width":1440,"height":980})
+                    try:
+                        page=ctx.new_page()
+                        response=page.goto(url,wait_until="domcontentloaded",timeout=45000)
+                        page.wait_for_timeout(1600)
+                        status=response.status if response else None
+                        text=page.evaluate("() => (document.body?.innerText||'').slice(0,700)")
+                        if status in (401,403,429) or "正在執行安全驗證" in text:
+                            return {"count":None,"items":[],"complete":False,
+                                    "status":"WEBPAGE_SECURITY_CHALLENGE","http_status":status}
+                        observed=scan_live_webpage(
+                            page,
+                            limit_categories=int(os.environ.get("DOM_CATEGORY_LIMIT","0")),
+                            scroll_steps=int(os.environ.get("DOM_SCROLL_STEPS","8")))
+                        observed["http_status"]=status
+                        return observed
+                    finally:
+                        ctx.close()
+                b,be=safe_run(visible_page)
+                record={"store":label,"url":url,
+                        "api":a or {"count":None,"error":ae},
+                        "browser":b or {"count":None,"complete":False,
+                                        "status":"WEBPAGE_READ_FAILED","error":be}}
+                if a and b and b.get("items"):
+                    record["api_vs_dom"]=compare(a,b)
+                if b and b.get("status")=="REAL_RENDERED_UI_OBSERVED_NOT_PROVEN_COMPLETE":
+                    record["status"]="RENDERED_UI_OBSERVED_COVERAGE_NOT_PROVEN"
+                elif b and b.get("status")=="WEBPAGE_SECURITY_CHALLENGE":
+                    record["status"]="WEBPAGE_SECURITY_CHALLENGE"
+                else:
+                    record["status"]="UNVERIFIED"
+                report["stores"].append(record)
+                (folder/"result.json").write_text(
+                    json.dumps(record,ensure_ascii=False,indent=2),encoding="utf-8")
+                print("DAILY_REAL_RENDERED_UI="+json.dumps({
+                    "store":label,"api":record["api"].get("count"),
+                    "ui":record["browser"].get("count"),
+                    "status":record["browser"].get("status"),
+                    "visited":record["browser"].get("categories_visited"),
+                    "total_categories":record["browser"].get("categories_listed"),
+                    "compared":record.get("api_vs_dom")
+                },ensure_ascii=False),flush=True)
+        finally:
+            browser.close()
+    report["all_sample_stores_rendered"]=all(
+        s.get("browser",{}).get("status")=="REAL_RENDERED_UI_OBSERVED_NOT_PROVEN_COMPLETE"
+        and s.get("browser",{}).get("count",0)>0 for s in report["stores"])
     full_path=OUT/"full-catalog-latest.json"
     if full_path.exists():
         report["full_catalog_reconciliation"]=json.loads(full_path.read_text(encoding="utf-8"))
