@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import requests
 from playwright.sync_api import sync_playwright
-from dom_browser_backend import open_dom_browser, diagnostic
+from dom_browser_backend import open_dom_browser, acquire_dom_context, diagnostic
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -96,8 +96,10 @@ JS_DOM = """() => {
 }"""
 
 def collect_browser(browser, label, url, lat, lon, store_dir, browser_source="github_hosted"):
-    context = browser.new_context(locale="zh-TW", viewport={"width":1440,"height":980},
-                                  device_scale_factor=1)
+    context, owned = acquire_dom_context(
+        browser, browser_source, locale="zh-TW",
+        viewport={"width":1440,"height":980}, device_scale_factor=1)
+    page = None
     try:
         context.add_cookies([{"name":"uev2.loc","value":loc_cookie(lat,lon),
                              "domain":".ubereats.com","path":"/"}])
@@ -132,7 +134,11 @@ def collect_browser(browser, label, url, lat, lon, store_dir, browser_source="gi
             dom["status"] = "NO_PRODUCT_CARD_SELECTOR_MATCH"
         return dom
     finally:
-        context.close()
+        if owned:
+            context.close()
+        elif page is not None:
+            # Preserve user's authorized Chrome profile for next storefront.
+            page.close()
 
 def compare(a,b):
     aa = {norm(x["name"]) for x in a.get("items",[]) if isinstance(x,dict) and x.get("name")}
