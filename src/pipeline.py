@@ -41,6 +41,21 @@ def assert_useful_price_batch(documents, batch):
     return valid
 
 
+def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> bool:
+    """Incomplete raw is archived for audit but must not enter price history."""
+    batch = str(meta.get("batch_id") or "")
+    if not (len(batch) == 14 and batch.isdigit()):
+        raise ValueError(f"Invalid immutable Raw batch ID: {manifest_path}")
+    if meta.get("complete") is False:
+        return False
+    if meta.get("complete") is not True:
+        raise ValueError(f"Invalid immutable Raw completeness marker: {manifest_path}")
+    if (meta.get("format") != "foodradar-immutable-http-body-v1"
+            or not str(meta.get("archive_path") or "").startswith(f"{folder}/{batch}/")):
+        raise ValueError(f"Invalid immutable Raw source path: {manifest_path}")
+    return True
+
+
 def restore_history(config, rebuild_all=False):
     """Build serving.db from immutable FoodRadar/Raw alone.
 
@@ -85,25 +100,15 @@ def restore_history(config, rebuild_all=False):
                 config['hf_repo_id'], manifest_path, repo_type='dataset'
             )).read_text(encoding='utf-8'))
             current_batch = str(meta.get('batch_id') or '')
-            if not (len(current_batch) == 14 and current_batch.isdigit()):
-                raise ValueError(f'Invalid immutable Raw batch ID: {manifest_path}')
-            # Failed crawls are intentionally archived as original HTTP bytes
-            # with complete=false; they MUST NOT poison all future replays.
-            if meta.get('complete') is False:
+            if not raw_manifest_should_replay(meta, manifest_path, folder):
                 skipped_incomplete.append(manifest_path)
                 print('HF_RAW_INCOMPLETE_SKIPPED=' + json.dumps({
                     'batch': current_batch, 'manifest': manifest_path,
                     'reason': 'partial crawl is not a publishable observation'
                 }, ensure_ascii=False), flush=True)
                 continue
-            if meta.get('complete') is not True:
-                raise ValueError(f'Invalid immutable Raw completeness marker: {manifest_path}')
             if batch and current_batch <= batch:
                 raise ValueError(f'Nonmonotonic immutable Raw batch: {manifest_path}')
-            if (meta.get('format') != 'foodradar-immutable-http-body-v1'
-                    or not str(meta.get('archive_path') or '').startswith(
-                        f'{folder}/{current_batch}/')):
-                raise ValueError(f'Invalid immutable Raw source path: {manifest_path}')
             downloaded = Path(hf_hub_download(
                 config['hf_repo_id'], meta['archive_path'], repo_type='dataset'
             ))
