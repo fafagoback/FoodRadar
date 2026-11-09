@@ -93,7 +93,9 @@ jobs:
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(hf):') }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/audit_failed_http_raw.py
+        run: |
+          python scripts/audit_failed_http_raw.py
+          python scripts/retest_catalog_failures.py
       - name: 網站資料契約與 JavaScript 測試
         run: |
           node --check web/app.js
