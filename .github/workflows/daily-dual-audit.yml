@@ -28,7 +28,7 @@ jobs:
           python-version: '3.11'
       - name: Install two independent observation engines
         run: |
-          python -m pip install requests playwright huggingface_hub zstandard msgpack
+          python -m pip install requests playwright huggingface_hub zstandard msgpack curl_cffi beautifulsoup4
           python -m playwright install --with-deps chromium
       - name: Remove prior audit evidence before checking new batch
         run: rm -f audit-results/full-catalog-latest.json
@@ -40,7 +40,7 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/audit_full_catalog.py
-      - name: Run API + live-browser DOM audit
+      - name: Run API + independent Safari storefront HTML preview audit
         id: audit
         continue-on-error: true
         env:
