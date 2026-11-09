@@ -77,7 +77,7 @@ def collect_api(label, url, lat, lon, store_dir):
     return {"count":len(rows),"items":list(rows.values()),"pages":len(bodies),
             "categories":pages.get("catalog_section_count",0),"complete":bool(pages.get("catalog_complete"))}
 
-JS_DOM = """() => {
+JS_DOM = r"""() => {
   // This scanner reads rendered HTML only. No Uber/FoodRadar API requests.
   // Prefer product-specific DOM containers; fall back to semantic cards.
   const selectors = [
