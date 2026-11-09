@@ -3,7 +3,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'scripts/prototype_pack_db.py'
       - 'src/crawl.py'
       - 'config.json'
       - 'scripts/bootstrap_hf_dataset.py'
