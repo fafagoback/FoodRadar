@@ -66,6 +66,25 @@ jobs:
               with tarfile.open(archive,'r:gz') as t:
                   raw=json.load(t.extractfile(target['response_path']))
               data=raw.get('data') or {}
+              rawtext=json.dumps(data,ensure_ascii=False)
+              locations=[]
+              all_catalog_arrays=[]
+              interesting_keys={}
+              def visit(obj,path='data'):
+                  if isinstance(obj,dict):
+                      for k,v in obj.items():
+                          if any(t in k.lower() for t in ('catalog','page','more','cursor','offset','menu','section')):
+                              interesting_keys[k]=interesting_keys.get(k,0)+1
+                          visit(v,path+'.'+str(k))
+                  elif isinstance(obj,list):
+                      if path.endswith('.catalogItems'):
+                          all_catalog_arrays.append({'path':path,'length':len(obj)})
+                      for i,v in enumerate(obj):
+                          visit(v,path+'['+str(i)+']')
+                  elif isinstance(obj,str) and match(obj):
+                      if len(locations)<30:locations.append({'path':path,'value':obj[:140]})
+              visit(data)
+              display('AUDIT_RAW_PAYLOAD_FULL',{'contains_brand_string':match(rawtext),'brand_string_locations':locations,'catalog_arrays':all_catalog_arrays[:20],'catalog_items_total_all_paths':sum(a['length'] for a in all_catalog_arrays),'top_level_keys':list(data),'pagination_related_keys':interesting_keys})
               items=[]
               for sections in (data.get('catalogSectionsMap') or {}).values():
                   for sec in sections or []:
