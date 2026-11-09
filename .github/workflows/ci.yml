@@ -102,6 +102,7 @@ jobs:
           python -m pip install playwright
           python -m playwright install --with-deps chromium firefox webkit
           python scripts/probe_rendered_dom_engines.py
+          python scripts/probe_webkit_dom_structure.py
       - name: 網站資料契約與 JavaScript 測試
         run: |
           node --check web/app.js
