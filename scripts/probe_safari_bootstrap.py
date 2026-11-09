@@ -3,6 +3,7 @@
 Read only; report paths and sample product fields, never whole raw data.
 """
 import json
+import re
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 from probe_safari_html_shape import STORES
@@ -31,7 +32,10 @@ for name,url in STORES:
         raw=(node.string if node else None) or (node.get_text() if node else "")
         # Uber escapes quote delimiters as literal \\u0022 in its script
         # (not valid standalone JSON until this HTML-script escaping is decoded).
-        decoded=raw.replace(r"\u0022", '"')
+        # In Uber's script, structural quotes are unicode-escaped; quote
+        # characters inside percent-encoded string content can also occur.
+        # Keep the latter escaped, rather than prematurely ending a JSON string.
+        decoded=re.sub(r"(?<!%5C)\\u0022", '"', raw, flags=re.I)
         try:
             data=json.loads(decoded)
         except json.JSONDecodeError as err:
