@@ -1,13 +1,41 @@
 # FoodRadar 產品需求文件（PRD）
-**版本：** 2026-10-28｜**狀態：** 已實作行為對照、七日最高有效價定版  
-**專案：** `fafagoback/FoodRadar`｜**資料集：** `hub-google/UberEat/FoodRadar/`
+**版本：** 2026-11-09｜**狀態：** 完整分類 API 與精簡網站欄位整合；正式發布需逐批驗收  
+**專案：** `fafagoback/FoodRadar`｜**唯一當前 Raw Dataset：** `hub-google/FoodRadar/Raw/`
+
+## 2026-11-09 最新契約（優先於下方歷史條款）
+
+1. **業務邏輯不改**：維持平台促銷、同品買 X 送 Y 實質單價、七日內最高有效實質單價比較、實質降幅 ≥30%、新品與新店的既有定義；平台刪除線價絕不當成七日歷史最高價。
+2. **僅保留三支 GitHub Actions 已實測 API**：`getFeedV1` 發現指定配送座標店家；`getStoreV1` 取得店家狀態及 `aisles.catalogSectionUUID`；`getCatalogPresentationV2` 一次查詢多分類並沿 `pagingInfo.offset` 迭代至 `hasMore=false`，不得只抓第一頁。跨分類同 SKU 按 `store_uuid+product_uuid` 去重。
+3. **HF 僅原始回應**：每份 HTTP body 以原始位元組加到無損壓縮檔，不修改、不正規化、不覆寫；保存失敗回應及所有重試，外層重試與內層分頁的路徑必須唯一。只有完整所有店家及分頁、上傳並重新下載 SHA-256 驗證均通過的批次才能更新 `Raw/latest.json` 並進入 DB。
+4. **Turso 只存網頁需要的衍生欄位**：`products.catalog_web`（精簡 JSON）與 `web_products.card` 包含商品圖片網址、平台刪除線價、原生活動 ID/類型、另有滿額活動文字、商品售罄/可售狀態、所有分類 UUID。**不得儲存另一份完整 API JSON 到 Turso**；原始證據只在 HF Raw。
+5. **三套價格嚴格分離**：`price` 是平台現在標價；`display_original_price` 是平台刪除線參考價；`seven_day_reference_price` 是 FoodRadar 真正觀測到的過去七日最高有效實質單價。買送與單品折價由 `verified_prices.py` 根據原生數值計算。滿額折抵只有文案與活動 ID，**不攤提到單品價格**。
+6. **可售狀態獨立**：`is_sold_out=true` 或 `is_available=false` 的商品仍保留商品索引，但不能被宣稱為當前可購買優惠。打烊/無配送不代表下架；不完整爬蟲不得增加 missing streak。
+7. **分類與去重**：多分類 UUID 存於單 SKU 的 `section_uuids`，不是多份商品；`titleBadge`、`quickAddConfig`、`displayType`、`spanCount` 等純前台排版欄位僅留 HF Raw。
+8. **完整驗收**：GitHub Actions Python+JS 測試、HF Raw SHA-256 驗證、DB 重播、Turso 索引核對及瀏覽器查詢必須分別通過；不能把「程式已提交」或「單店模擬成功」報成正式資料更新完成。
+
+### 新增必要欄位對照
+
+| 原生證據 | DB 投影／用途 |
+| --- | --- |
+| `uuid`, `title`, `price` | 商品主鍵、名稱、目前菜單價（沿用既有欄位） |
+| `imageUrl` | `catalog_web.image_url`／網站商品縮圖 |
+| `itemThumbnailElements` 有唯一現價及刪除線舊價 | `catalog_web.display_original_price_cents`，僅作平台標示原價 |
+| `catalogItemAnalyticsData.promoType` | `catalog_web.native_promo_type`，與實質折扣分開 |
+| `promoInfo.promotionUUID` | `catalog_web.promotion_uuid` |
+| `itemLevelPromotion.multiSKUFlatPromotion` | `catalog_web.cart_campaign_uuid`、`cart_promo_label`，不折算單品 |
+| `isAvailable`, `isSoldOut` | `catalog_web.is_available`、`is_sold_out` |
+| `sectionUuid`, `subsectionUuid`, `catalogSectionUUID` | 同 SKU 去重後多分類 UUID |
+| `pagingInfo.offset`, `hasMore` | HF manifest 完整性、取得後續分頁，不放商品主檔 |
+| `purchaseInfo`、`quickAddConfig`、`productInfo` 等 | 保留 HF Raw；除網頁確實需要外不進 DB |
+
+--- 
 
 ## 1. 產品目標與範圍
 監測 Uber Eats 在固定配送點 `25.123246847935267, 121.52951826298867` 可見店家、商品、實質單價、平台促銷、首次發現及價格歷史。這不是全台即時所有店家；以完整成功爬取的一個單座標批次為當前有效資料。
 
 ## 2. 採集、保存與驗證
 - 排程每日台北時間 06:30、18:30（GitHub Actions 可能延遲）；人工可重跑。每批完整且驗證後才更新最新指標。
-- HF `FoodRadar/snapshots/<batch>` 的 `Json/` 是 **getStoreV1 轉換後的 Schema.org 菜單**，不是 API 原始回應。新批次另以同一壓縮包 `ApiRaw/` 完整封存 `getStoreV1` JSON 回應，兩者獨立，原有歷史資料重播只讀 `Json/`；舊批次未保存的原生欄位無法事後還原。`FoodRadar/state/<batch>/serving-state.db.gz` 保存正規化持久狀態；HF Parquet 為分析衍生檔。
+- **目前唯一 HF 保存格式**：`hub-google/FoodRadar/Raw/<batch>/capture.tar.gz` 內無損保存 `getFeedV1`、`getStoreV1`、`getCatalogPresentationV2` 的每份原始 HTTP `response.content`（含失敗重試）；`manifest.json` 和 `Raw/latest.json` 只存批次索引、原始 body SHA-256、檔名與完整性狀態。**HF 不上傳轉換後菜單、商品表、價格表、Parquet 或 Turso DB。** 舊版 `hub-google/UberEat` 的 `Json/`、`ApiRaw/`、state 描述只代表已停用歷史，不能當作現行資料來源。
 - **菜單存在與配送可用分離。** `menu_catalog_valid()` 接受有標價菜單（即使打烊或不能外送），保留商品供搜尋；`menu_price_observation_valid()` 另外依實際營業時段決定報價能否成為七日比較樣本，不因單純 `Delivery unavailable` 排除；`price_observation_valid()` 更嚴格，只判斷採集時是否確認可外送。三種狀態不可混用。
 - 同批同 SKU 跨菜單分類先合併優惠證據，避免把重複分類當不同商品或錯失買一送一。
 - ID：店家 UUID；商品鍵 `store_uuid + product_uuid`。資料庫保留最後已知的菜單報價（即使目前打烊／暫不可外送），並獨立保存經驗證可外送的價格事件；不以舊菜單報價推測可支付價格。
