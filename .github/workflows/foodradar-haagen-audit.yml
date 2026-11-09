@@ -85,6 +85,13 @@ jobs:
                       if len(locations)<30:locations.append({'path':path,'value':obj[:140]})
               visit(data)
               display('AUDIT_RAW_PAYLOAD_FULL',{'contains_brand_string':match(rawtext),'brand_string_locations':locations,'catalog_arrays':all_catalog_arrays[:20],'catalog_items_total_all_paths':sum(a['length'] for a in all_catalog_arrays),'top_level_keys':list(data),'pagination_related_keys':interesting_keys})
+              aisle_matches=[]
+              for a in (data.get('aisles') or {}).values():
+                  if isinstance(a,list):
+                      for entry in a:
+                          if match(json.dumps(entry,ensure_ascii=False)):
+                              aisle_matches.append({'title':str((((entry.get('payload') or {}).get('categoryItemPayload') or {}).get('title') or '')),'keys':list(entry.keys()),'category':str(entry.get('categoryUuid') or '')})
+              display('AUDIT_API_PAGING',{'catalogSectionPagingInfo':data.get('catalogSectionPagingInfo'),'sectionEntitiesMap_keys':len(data.get('sectionEntitiesMap') or {}),'sections_count':len(data.get('sections') or []),'aisles_total':sum(len(v) for v in (data.get('aisles') or {}).values() if isinstance(v,list)),'brand_aisle_matches':aisle_matches[:10]})
               items=[]
               for sections in (data.get('catalogSectionsMap') or {}).values():
                   for sec in sections or []:
