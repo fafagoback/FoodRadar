@@ -2,6 +2,15 @@
 
 > 本文件為 FoodRadar 現行實作的定義與架構說明（2026-10-28 核對，亦見根目錄 `PRD.md`）。本專案不使用根目錄 README.md。以下「新」代表 FoodRadar 的觀測定義，不代表現實世界的開幕或實際新品上市日期。
 
+## 2026-11-09 完整商品與網站投影規格（高於下方歷史條款）
+
+- **原始資料與結構化資料分離**：HF `hub-google/FoodRadar/Raw/<batch>/capture.tar.gz` 僅封存 `getFeedV1`、`getStoreV1`、`getCatalogPresentationV2` 的未修改 `response.content` 和獨立 manifest 校驗資訊；禁止儲存已轉換 Schema.org、標價統計或 DB。
+- **商品唯一價格來源**：`getCatalogPresentationV2` 完整分類＋`pagingInfo.hasMore=false`，商店入口仍從 `getStoreV1` 取得。同商品跨分類以店家 UUID＋商品 UUID 去重，分類 UUID 另存關聯清單。
+- **Turso 欄位只保留網站確實使用部分**：`products.catalog_web` 精簡 JSON，包含圖檔、平台刪除線原價、原生優惠識別、滿額標籤、可售／售罄狀態、分類 UUID；發布 `web_products.card`。純 Uber 畫面版型／快捷結帳設定不進 DB。
+- **優惠計算不變**：平台折價、買 X 送 Y 與七日實質價差維持獨立；滿額折抵僅標記，不推估分攤單價。平台刪除線原價絕不可覆寫 `seven_day_reference_price`。
+- **資料完整性**：重試原始回應使用唯一檔名，任一分類缺頁或 API 回傳格式不符，封存為 `complete=false`，不推進 Raw/latest、不更新正式 DB，也不誤認大量 SKU 下架。
+- **驗收證據**：`tests/test_catalog_complete.py`、`tests/test_catalog_web_db.py`、GitHub Actions、`scripts/audit_live_turso.py` 分別負責分頁、無重複商品、精簡網頁欄位與正式 Turso 索引證明。PRD 最新定義請以 `PRD.md` 為準。
+
 ## 2026-10-30 原始資料永久規格（優先於下方舊版流程說明）
 
 **唯一的新採集原始資料來源（獨立 Dataset Repository）：** `hub-google/FoodRadar`，其內 `Raw/<YYYYMMDDHHMMSS>/capture.tar.gz`。舊 `hub-google/UberEat` 之任何檔案均不再作為 DB 來源。
