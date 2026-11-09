@@ -65,6 +65,30 @@ jobs:
       - name: 指定執行的真實北投店 HTTP Raw → SQLite → 網頁索引驗收
         if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(live):')) }}
         run: python scripts/acceptance_live_catalog.py
+      - name: 指定稽核 HF Raw 不完整批次的真實失敗店家
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(hf):') }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          from collections import Counter
+          import json, os
+          batch='20261109105106'
+          path=hf_hub_download('hub-google/FoodRadar',f'Raw/{batch}/manifest.json',
+            repo_type='dataset',token=os.environ['HF_TOKEN'])
+          m=json.load(open(path,encoding='utf-8'))
+          failures=[s for s in m.get('stores',[]) if not s.get('success')]
+          reason_counts=Counter(str(s.get('error') or '?')[:240] for s in failures)
+          print('HF_FAILED_STORES=' + json.dumps({
+            'batch':batch,'complete':m.get('complete'),
+            'stores_total':len(m.get('stores',[])),
+            'failed_count':len(failures),
+            'reasons':dict(reason_counts),
+            'sample':[{'uuid':s.get('store_uuid'),'error':s.get('error'),
+                        'url':s.get('store_url')} for s in failures[:20]]
+          },ensure_ascii=False),flush=True)
+          PY
       - name: 網站資料契約與 JavaScript 測試
         run: |
           node --check web/app.js
