@@ -190,6 +190,8 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
         if not store.get("success"):
             raise ValueError("Cannot publish an incomplete store capture")
         raw = store["response_path"]
+        if store.get("catalog_responses") and store.get("catalog_complete") is not True:
+            raise ValueError("Refusing to replay incomplete catalog capture")
         if store.get("inactive"):
             doc = create_inactive_store_schema(
                 {"name": "", "city": ""}, store["store_url"],
