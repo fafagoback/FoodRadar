@@ -65,7 +65,9 @@ jobs:
     timeout-minutes: 90
     concurrency:
       group: foodradar-database-publisher
-      cancel-in-progress: false
+      # Only an explicitly requested fresh full crawl replaces stale
+      # long-running historical replays; scheduled runs never preempt a writer.
+      cancel-in-progress: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture') }}
     environment:
       name: github-pages
     steps:
