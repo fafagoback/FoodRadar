@@ -1,0 +1,29 @@
+name: FoodRadar independent HTML feasibility experiment
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/probe_public_html_options.py'
+      - '.github/workflows/probe-public-html.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install requests "curl_cffi>=0.11,<1"
+      - name: Read six independent public webpage paths across three merchants
+        run: python scripts/probe_public_html_options.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: independent-public-html-probe
+          path: public-html-probe.json
+          if-no-files-found: ignore
+          retention-days: 2
