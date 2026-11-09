@@ -31,7 +31,15 @@ for name,url in STORES:
         raw=(node.string if node else None) or (node.get_text() if node else "")
         # Uber escapes quote delimiters as literal \\u0022 in its script
         # (not valid standalone JSON until this HTML-script escaping is decoded).
-        data=json.loads(raw.replace(r"\u0022", '"'))
+        decoded=raw.replace(r"\u0022", '"')
+        try:
+            data=json.loads(decoded)
+        except json.JSONDecodeError as err:
+            print("SAFARI_BOOTSTRAP_PARSE_CONTEXT="+json.dumps({
+                "store":name,"position":err.pos,"context":decoded[max(0,err.pos-170):err.pos+180],
+                "raw_context":raw[max(0,err.pos-170):err.pos+180]
+            },ensure_ascii=False),flush=True)
+            raise
         queries=data.get("queries") or []
         summarized=[{"key":q.get("queryKey"),"state_data_type":type((q.get("state") or {}).get("data")).__name__,
                      "keys":list((q.get("state") or {}).get("data") or {})[:12]
