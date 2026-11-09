@@ -230,10 +230,14 @@ export function isCurrentPriceObservation(product, store, latestProcessedAt = re
     Number(store?.is_open) === 1 && Number(product?.is_open) === 1 &&
     Number(product?.price) > 0 &&
     product?.price_evidence_status === 'VERIFIED_MENU' &&
-    Number(product?.delivery_available ?? 1) === 1);
+    Number(product?.delivery_available ?? 1) === 1 &&
+    !(() => { let m={}; try { m=JSON.parse(product?.catalog_web || '{}'); } catch {} return m.is_sold_out === true || m.is_available === false; })());
 }
 
 function productView(product, store) {
+  let catalogWeb = {};
+  try { catalogWeb = JSON.parse(product.catalog_web || '{}'); } catch {}
+  if (!catalogWeb || typeof catalogWeb !== 'object' || Array.isArray(catalogWeb)) catalogWeb = {};
   const menuCurrent = isCurrentMenuObservation(product, store);
   const quoted = Number(product.menu_quote_price || 0);
   const price = quoted > 0 ? quoted : Number(product.price || 0);
@@ -267,6 +271,17 @@ function productView(product, store) {
     product_name: product.product_name,
     category_name: product.category,
     description: product.description,
+    image_url: catalogWeb.image_url || null,
+    display_original_price: Number.isInteger(catalogWeb.display_original_price_cents)
+      ? catalogWeb.display_original_price_cents / 100 : null,
+    native_promo_type: catalogWeb.native_promo_type || null,
+    promotion_uuid: catalogWeb.promotion_uuid || null,
+    cart_campaign_uuid: catalogWeb.cart_campaign_uuid || null,
+    cart_promo_label: catalogWeb.cart_promo_label || null,
+    is_available: catalogWeb.is_available ?? null,
+    is_sold_out: catalogWeb.is_sold_out ?? null,
+    availability_state: catalogWeb.availability_state || null,
+    category_uuids: catalogWeb.section_uuids || [],
     price,
     quantity,
     promo_type: promo,
