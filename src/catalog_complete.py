@@ -38,7 +38,7 @@ def _item_count(entries):
                    .get("catalogItems") or []) for entry in entries if isinstance(entry, dict))
 
 
-def capture_catalog(session, store_uuid, base_data, root, headers, capture_response):
+def capture_catalog(session, store_uuid, base_data, root, headers, capture_response, store_attempt=1):
     """Return immutable page paths; if any page is missing, raise and reject this batch.
 
     Uses category IDs provided by the same getStoreV1 response. Uber's first
@@ -68,7 +68,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         for attempt in range(1, 4):
             try:
                 resp = session.post(CATALOG_API, json=payload, headers=headers, timeout=30)
-                relative = (f"catalog/{store_uuid}/page-{page:04d}-offset-{offset:06d}-"
+                relative = (f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-page-{page:04d}-offset-{offset:06d}-"
                             f"attempt-{attempt:02d}-status-{resp.status_code}.body")
                 capture_response(root, relative, resp)
                 if resp.status_code != 200:
@@ -89,7 +89,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                     filters["sectionTypes"] = ["COLLECTION"]
                     try:
                         alt = session.post(CATALOG_API, json=payload, headers=headers, timeout=30)
-                        alt_relative = (f"catalog/{store_uuid}/page-0000-offset-000000-"
+                        alt_relative = (f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-page-0000-offset-000000-"
                                         f"collection-status-{alt.status_code}.body")
                         capture_response(root, alt_relative, alt)
                         if alt.status_code == 200:
