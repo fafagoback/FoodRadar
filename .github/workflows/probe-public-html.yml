@@ -6,6 +6,7 @@ on:
       - 'scripts/probe_public_html_options.py'
       - 'scripts/probe_safari_html_shape.py'
       - 'scripts/probe_safari_bootstrap.py'
+      - 'scripts/acceptance_safari_html.py'
       - '.github/workflows/probe-public-html.yml'
   workflow_dispatch:
 permissions:
@@ -26,6 +27,8 @@ jobs:
         run: python scripts/probe_safari_html_shape.py
       - name: Inspect server-embedded product records from independent storefront HTML
         run: python scripts/probe_safari_bootstrap.py
+      - name: Prove method B can independently read SKU names and prices in GitHub Actions
+        run: python scripts/acceptance_safari_html.py
       - if: always()
         uses: actions/upload-artifact@v4
         with:
