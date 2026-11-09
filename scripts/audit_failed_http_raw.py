@@ -38,6 +38,9 @@ def main():
                         "status": code,
                         "outer_status": response.get("status"),
                         "data_keys": list(data)[:12],
+                        "catalog_type": type(data.get("catalog")).__name__,
+                        "catalog_length": len(data.get("catalog")) if isinstance(data.get("catalog"), (list, dict)) else None,
+                        "catalog_first_entry_type": type((data.get("catalog") or [None])[0]).__name__ if isinstance(data.get("catalog"), list) else None,
                         "error_code": str(data.get("code") or "")[:60],
                         "error_message": str(data.get("message") or response.get("message") or "")[:160],
                         "paging_info": data.get("pagingInfo")
