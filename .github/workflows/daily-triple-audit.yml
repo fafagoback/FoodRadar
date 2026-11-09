@@ -89,8 +89,13 @@ jobs:
             else
               rm -f audit-results/full-catalog-latest.json
             fi
-            git add -A audit-results/latest.json audit-results/full-catalog-latest.json \
-              "audit-results/$DAY/report.json" "audit-results/$DAY/full-catalog-report.json"
+            git add audit-results/latest.json "audit-results/$DAY/report.json"
+            if [ -s "$BACKUP/full.json" ]; then
+              git add audit-results/full-catalog-latest.json "audit-results/$DAY/full-catalog-report.json"
+            else
+              git ls-files --error-unmatch audit-results/full-catalog-latest.json >/dev/null 2>&1 &&
+                git rm -f audit-results/full-catalog-latest.json || true
+            fi
             if git diff --cached --quiet; then
               SAVED=1
               break
