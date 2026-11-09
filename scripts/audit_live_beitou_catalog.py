@@ -84,6 +84,14 @@ for test_sections in [sections[:2],sections]:
   pg=(response.json().get("data") or {}).get("pagingInfo")
   log("LIVE_MULTISECTION",{"sections_requested":len(test_sections),"http":response.status_code,"catalog_sections":len((response.json().get("data") or {}).get("catalog") or []),"total_items":len(result),"unique_sku":len({i.get("uuid") or i.get("itemUuid") or i.get("title") for i in result}),"pagingInfo":pg,
        "haagen":sum("Häagen" in str(i.get("title")) for i in result)})
+  if len(test_sections)==len(sections):
+    base_uuids={x.get("uuid") for x in result}
+    for off in [60,120,180]:
+      p["pagingInfo"]["offset"]=off
+      resp2=sess.post("https://www.ubereats.com/api/getCatalogPresentationV2",json=p,headers=headers,timeout=40)
+      more=native_items(resp2.json())
+      ids={x.get("uuid") for x in more}
+      log("LIVE_MULTI_PAGE",{"offset":off,"status":resp2.status_code,"items":len(more),"unique_sku":len(ids),"new_sku_vs_first":len(ids-base_uuids),"page_meta":(resp2.json().get("data") or {}).get("pagingInfo"),"first5":[x.get("title") for x in more[:5]]})
   matches=[i for i in result if "Häagen" in str(i.get("title"))][:4]
   for i in matches:
     log("LIVE_SKU_FIELDS",{"name":i.get("title"),"keys":list(i.keys()),"price":i.get("price"),"analytics":i.get("catalogItemAnalyticsData"),"thumbnail":i.get("itemThumbnailElements"),"itemPromotion":i.get("itemPromotion"),"itemLevelPromotion":i.get("itemLevelPromotion"),"promoInfo":i.get("promoInfo"),"titleBadge":i.get("titleBadge")})
