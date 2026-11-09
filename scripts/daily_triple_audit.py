@@ -165,11 +165,30 @@ def collect_browser(browser, label, url, lat, lon, store_dir, browser_source="gi
             page.close()
 
 def compare(a,b):
-    aa = {norm(x["name"]) for x in a.get("items",[]) if isinstance(x,dict) and x.get("name")}
-    bb = {norm(x["name"]) for x in b.get("items",[]) if isinstance(x,dict) and x.get("name")}
-    return {"a_only_count":len(aa-bb),"b_only_count":len(bb-aa),
-            "a_only_examples":sorted(aa-bb)[:25],"b_only_examples":sorted(bb-aa)[:25],
-            "warning":"Names may collide; SKU-level equality requires browser item identity."}
+    # Both paths yield native SKU UUIDs. Compare those (not name heuristics).
+    # HTML only exposes initial preview, so API-only SKUs are NOT missing
+    # from Method A; absence from HTML does not indicate any crawler defect.
+    aa={x["sku"]:x for x in a.get("items",[])
+        if isinstance(x,dict) and x.get("sku")}
+    bb={x["sku"]:x for x in b.get("items",[])
+        if isinstance(x,dict) and x.get("sku")}
+    overlap=set(aa)&set(bb)
+    mismatched=sorted(
+        sku for sku in overlap
+        if type(aa[sku].get("price_cents")) in (int,float)
+        and type(bb[sku].get("price_cents")) in (int,float)
+        and aa[sku]["price_cents"]!=bb[sku]["price_cents"])
+    return {
+        "api_skus":len(aa),"html_preview_skus":len(bb),
+        "matched_sku_count":len(overlap),
+        "html_preview_missing_from_api":len(set(bb)-set(aa)),
+        "html_preview_missing_samples":sorted(set(bb)-set(aa))[:25],
+        "price_mismatch_count":len(mismatched),
+        "price_mismatch_samples":mismatched[:25],
+        "api_only_skus_not_exposed_in_html_preview":len(set(aa)-set(bb)),
+        "complete_inventory_comparison":False,
+        "warning":"HTML is the first-page hydrated getStoreV1 preview, not a complete independent inventory."
+    }
 
 def safe_run(func):
     try: return func(), None
