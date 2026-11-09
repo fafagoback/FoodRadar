@@ -45,6 +45,10 @@ jobs:
         continue-on-error: true
         env:
           AUDIT_SCROLL_LIMIT: '180'
+          # An authorized remote Chrome session can supply a non-datacenter
+          # network and existing browser session to the independent DOM audit.
+          # Keep the full CDP URL (including provider token) in GitHub Secrets.
+          FOODRADAR_DOM_CDP_URL: ${{ secrets.FOODRADAR_DOM_CDP_URL }}
         run: python scripts/daily_triple_audit.py
       - name: Preserve report in GitHub for QueueMonster LINE notifier
         if: always()
