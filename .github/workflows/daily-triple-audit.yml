@@ -1,0 +1,78 @@
+name: FoodRadar 04 | Daily Triple Audit (read-only)
+on:
+  schedule:
+    # 04:00 Asia/Taipei = previous day 20:00 UTC, before 06:30 main crawl
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: foodradar-daily-triple-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 135
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install three independent observation engines
+        run: |
+          python -m pip install requests playwright pillow pytesseract
+          python -m playwright install --with-deps chromium
+          sudo apt-get update -qq
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-chi-tra
+      - name: Run API + live-browser DOM + screenshot OCR audit
+        id: audit
+        continue-on-error: true
+        env:
+          AUDIT_SCROLL_LIMIT: '180'
+        run: python scripts/daily_triple_audit.py
+      - name: Preserve report in GitHub for QueueMonster LINE notifier
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s audit-results/latest.json ]; then
+            mkdir -p audit-results
+            python - <<'PY'
+          import json
+          from datetime import datetime,timezone,timedelta
+          from pathlib import Path
+          now=datetime.now(timezone(timedelta(hours=8)))
+          Path('audit-results/latest.json').write_text(json.dumps({
+            "date":now.strftime('%Y-%m-%d'),"generated_at":now.isoformat(),
+            "fatal_error":"The triple audit failed before writing a report",
+            "stores":[]},ensure_ascii=False,indent=2))
+          PY
+          fi
+          mkdir -p "audit-results/$(TZ=Asia/Taipei date +%F)"
+          cp audit-results/latest.json "audit-results/$(TZ=Asia/Taipei date +%F)/report.json"
+          git config user.name "foodradar-audit-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add audit-results/latest.json "audit-results/$(TZ=Asia/Taipei date +%F)/report.json"
+          if ! git diff --cached --quiet; then
+            git commit -m "audit: daily three-method observation results [skip ci]"
+            git push
+          fi
+      - name: Upload detailed screenshots and audit proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-triple-audit
+          path: |
+            audit-results/latest.json
+            audit-results/*/report.json
+            audit-results/*/*/result.json
+            audit-results/*/*/*.body
+            audit-results/*/*/catalog/**/*.body
+            audit-results/*/*/screenshot-*.png
+          retention-days: 5
+          if-no-files-found: ignore
+      - name: Mark audit failure without suppressing report
+        if: steps.audit.outcome != 'success'
+        run: exit 1
