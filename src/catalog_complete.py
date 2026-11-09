@@ -29,9 +29,20 @@ def _section_ids(data):
 
 def _catalog_entries(body):
     data = body.get("data") if isinstance(body, dict) else None
-    if not isinstance(data, dict) or not isinstance(data.get("catalog"), list):
-        raise ValueError("getCatalogPresentationV2 returned no native catalog")
-    return data, data["catalog"]
+    if not isinstance(data, dict) or "catalog" not in data:
+        raise ValueError("getCatalogPresentationV2 is missing its catalog field")
+    paging = data.get("pagingInfo")
+    if not isinstance(paging, dict) or type(paging.get("hasMore")) is not bool:
+        raise ValueError("getCatalogPresentationV2 has invalid paging metadata")
+    catalog = data["catalog"]
+    # Uber legitimately returns catalog=null on empty *intermediate* and
+    # terminal pages. The response is HTTP 200 with a valid pagingInfo object;
+    # use hasMore/offset, not catalog existence, to determine completion.
+    if catalog is None:
+        catalog = []
+    if not isinstance(catalog, list):
+        raise ValueError("getCatalogPresentationV2 catalog has unsupported type")
+    return data, catalog
 
 
 def _item_count(entries):
