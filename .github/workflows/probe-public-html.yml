@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/probe_public_html_options.py'
       - 'scripts/probe_safari_html_shape.py'
+      - 'scripts/probe_safari_bootstrap.py'
       - '.github/workflows/probe-public-html.yml'
   workflow_dispatch:
 permissions:
@@ -23,6 +24,8 @@ jobs:
         run: python scripts/probe_public_html_options.py
       - name: Inspect real Safari-transport HTML product names and prices
         run: python scripts/probe_safari_html_shape.py
+      - name: Inspect server-embedded product records from independent storefront HTML
+        run: python scripts/probe_safari_bootstrap.py
       - if: always()
         uses: actions/upload-artifact@v4
         with:
