@@ -102,6 +102,20 @@ def quote_from_native_item(item):
         if original <= price:
             return _invalid("DIRECT_DISCOUNT", item, "INVALID_STRIKETHROUGH_PRICE", source_hash)
         kind, buy, free, received, payable = "DIRECT_DISCOUNT", 1, 0, 1, price
+    elif category == "MULTI_SKU_FLAT":
+        # This is a cart-wide threshold offer, e.g. spend NT$399 save NT$60.
+        # It must NEVER be deducted from a single SKU. However the *same*
+        # native item may independently display a certified strike-through
+        # markdown (e.g. NT$309 -> NT$259). Verify ONLY that marked price.
+        if native or (level and set(level) != {"multiSKUFlatPromotion"}):
+            return _invalid("UNKNOWN", item, "UNSUPPORTED_MIXED_PROMOTION", source_hash)
+        old, current = _thumbnail_prices(item)
+        if len(old) != 1 or len(current) != 1 or current != {price}:
+            return _invalid("UNKNOWN", item, "CART_PROMO_WITHOUT_VERIFIED_SKU_MARKDOWN", source_hash)
+        original = next(iter(old))
+        if original <= price:
+            return _invalid("UNKNOWN", item, "INVALID_STRIKETHROUGH_PRICE", source_hash)
+        kind, buy, free, received, payable = "DIRECT_DISCOUNT", 1, 0, 1, price
     elif category in (None, "", "MISSING", "NONE"):
         # An unknown active campaign may hide a cart discount: do not label as NONE.
         if native or level or item.get("promoInfo"):
