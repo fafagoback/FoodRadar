@@ -187,7 +187,7 @@ def compare(a,b):
         "price_mismatch_samples":mismatched[:25],
         "api_only_skus_not_exposed_in_html_preview":len(set(aa)-set(bb)),
         "complete_inventory_comparison":False,
-        "warning":"HTML is the first-page hydrated getStoreV1 preview, not a complete independent inventory."
+        "warning":"Independent rendered UI has real category clicks and scroll observations; incomplete or unvisited categories prevent whole-inventory claims."
     }
 
 def safe_run(func):
