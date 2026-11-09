@@ -147,5 +147,6 @@ with tempfile.TemporaryDirectory() as work:
       "brand_proof_verified":sum(x["proof_status"]=="VERIFIED_MENU" for x in brand),
       "brand_items":brand[:25]})
   assert len(brand)>=10, "Crawler still missing Haagen"
+  assert sum(x["proof_status"]=="VERIFIED_MENU" for x in brand)>=10, "Native item markdown is still not verified"
 
 print("LIVE_AUDIT_COMPLETE",flush=True)
