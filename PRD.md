@@ -6,12 +6,13 @@
 
 - **不得以單一品牌作為驗收範圍**：哈根達斯只是漏抓案例。每天對同一固定配送點下，最新成功 HF Raw 批次包含的**每一間店、每一款原生 UUID 商品、每一個分頁及原生價格**進行對帳；不得宣稱知道 Uber Eats 沒有向 API 公開的隱藏商品。
 - **採集主流程（A）**：既有 GitHub Actions `getFeedV1 → getStoreV1 → getCatalogPresentationV2`，按 `hasMore/offset` 遍歷完整回應、SHA-256 無損封存 HF Raw。每店商品按原生 UUID 去重，不可拿含重複分類的出現次數冒充不同商品數。
-- **獨立來源查核（B）**：在 GitHub Chromium 開啟 Uber Eats 原生商店網頁，透過實際 DOM 商品清單對照 Costco、全聯、優市北投等代表店。**2026-11-09 實測三店均回 HTTP 403 安全驗證頁，沒有讀取商品內容**，B 必須記 `BLOCKED_BY_PLATFORM_SECURITY`、`count=null`，不可當成 0 件、不可用 API 資料偽充第二來源、不可宣稱 100% 完整。截圖 OCR 第三種驗證已移除。直到取得可正常使用的網頁存取方式並在 GitHub 實測，雙來源查核不能算驗收成功。
+- **第二種網頁查核（B，2026-11-09 已實跑成功）**：GitHub Actions 以 `curl_cffi` Safari 網頁請求模式讀取 Uber Eats **`/tw/store/` 的 HTML 頁面**，解析 HTML 內 `script#__REACT_QUERY_STATE__` 首次載入商品快取，取得每款商品 UUID、名稱、數值價格。真實 GitHub 測試：好市多內湖 **66 款**、全聯北投明德 **56 款**、優市北投 **60 款**，三店合計 **182 款**，網頁回應 HTTP 200。不得用第一套 API 觀測／HF／Turso 當作 B 的輸入，亦不得將 HTTP 200 誤判完整。因伺服器首次載入頁面只內含 **`getStoreV1` 部分商品快取**，B 雖是獨立 HTML HTTP 路徑，但**不是獨立商品資料來源，不能證明全店 100% 品項涵蓋**；必須按商品 UUID 與單價比對兩條路徑交集，B 尚未出現的商品標記 `HTML_PREVIEW_PARTIAL`，不能稱為 A 漏抓或 B 已完整。舊版 GitHub Chromium 開頁遭 HTTP 403 的實測紀錄另保留於 GitHub Actions，不再作為 B 的主要採集方式。
 - **全資料層稽核（額外、不可冒充第二來源）**：`scripts/audit_full_catalog.py` 從 HF `Raw/latest.json` 下載原始封存，檢驗封存 SHA-256、所有 HTTP body、店家與頁數、每一個 SKU 有無從原始回應遺失於 ETL、價格換算一致性，再核對正式 Turso `latest_batch`。這是資料**傳遞完整性**，不是獨立驗證 Uber 當天的全部品項。
 - **排程**：台灣時間每日 04:00 先執行 `.github/workflows/daily-dual-audit.yml` 產出 API 與網頁 DOM 兩軌差異，以及全批次資料層報告；06:15 使用既有「排隊怪獸」LINE OA `hub-google/LINE/.github/workflows/foodradar-daily-line-report.yml` 推送，再於 06:30 進入正式爬蟲（GitHub Actions 可能延遲，通知須明示報告日期）。LINE 僅能推送給明確設定的 `REPORT_LINE_USER_ID` **或**透過「排隊怪獸」平台 OA 傳送「訂閱FoodRadar」明確同意訂閱的用戶（以簽章驗證的 LINE webhook 存在 RLS 私有資料表，HMAC 認證取回訂閱收件人）；使用者傳送「取消FoodRadar訂閱」停止。當沒有收件人時必須失敗並提示，**不得廣播所有 OA 顧客**。
 - **LINE OA 安全與驗收**：訂閱資料僅包含 LINE User ID、訂閱開關和時間，`public.foodradar_line_subscriptions` 已啟用 RLS 並撤銷 anon/authenticated 的資料表權限。每日工作流程只使用 GitHub Secrets 內既有 OA Token，對 LINE Bridge 的訂閱名單讀取必須經過當日 HMAC 驗證；未訂閱前訊息不可冒充已送達，收件人 ID 不得寫入 GitHub 公開報告或日誌。2026-11-09 發送實測：簽章訂閱名單讀取成功，但尚無已訂閱者，因此訊息沒有送出；等待使用者傳送一次「訂閱FoodRadar」完成收件註冊。
 - **日報內容**：每間樣本店 A/B/C 實際商品數、HTTP 錯誤與差異；全批次店家數、原生唯一 SKU 數、ETL 成功 SKU 數、漏轉筆數、價格不符數、是否與 Turso 同一批次。上次成功正式批次與本次失敗稽核須區分，不能用前一版報告宣稱當日成功。
 - **驗收範圍與限制**：2026-11-09 `20261109133009` 正式 Raw 共有 577 間店、817 份原始 body；全店最新批次不同原生 SKU 33,278，轉換後相同 33,278，漏轉 0、價格不符 0，Turso 同批。這代表已取得資料的完整傳遞，非全平台或截圖方式 100% 獨立核實。
+- **第二種方法的 GitHub 程式**：`scripts/storefront_html_reader.py` 使用 Safari HTTP 請求與 HTML 初始載入資料解析；`scripts/daily_triple_audit.py` 執行 B 並以 SKU、價格核對 A 的已揭露交集；`scripts/acceptance_safari_html.py` 為三家店實際 HTTP 驗收。這些均不能使用 B 當正式商品入庫來源，也不能推定 HTML 首屏包含所有分類分頁。
 - **報告保存**：完整結果每日寫入 `audit-results/YYYY-MM-DD/report.json`、`audit-results/latest.json`、`audit-results/full-catalog-latest.json`；原始 API 回應及 DOM 比對輸出留 Actions artifacts，不再產生截圖或 OCR 結果。報告提交須支援同時間其他程式更新造成的 non-fast-forward 重試；即使第二種被擋也必須保留異常報告並讓查核工作為失敗狀態。
 
 ## 2026-11-09 最新契約（優先於下方歷史條款）
