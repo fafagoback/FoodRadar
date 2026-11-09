@@ -102,8 +102,27 @@ def collect_browser_and_ocr(browser, label, url, lat, lon, store_dir):
     context.add_cookies([{"name":"uev2.loc","value":loc_cookie(lat,lon),
                          "domain":".ubereats.com","path":"/"}])
     page = context.new_page()
-    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    response = page.goto(url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(3500)
+    http_status = response.status if response else None
+    page_title = page.title()
+    visible_text = page.evaluate("document.body?.innerText?.slice(0,1000) || ''")
+    security_challenge = (http_status in (401, 403, 429)
+        or "正在執行安全驗證" in visible_text
+        or "Cloudflare" in visible_text and "驗證" in visible_text)
+    if security_challenge:
+        proof = store_dir / "screenshot-000.png"
+        page.screenshot(path=str(proof))
+        blocked = {"count":None,"items":[],"complete":False,
+                   "status":"BLOCKED_BY_PLATFORM_SECURITY","http_status":http_status,
+                   "title":page_title, "evidence":str(proof.relative_to(ROOT)),
+                   "error":f"Uber storefront HTTP {http_status}: Cloudflare challenge, no products rendered"}
+        blocked_ocr = {"count":None,"items":[],"complete":False,
+                       "status":"SCREENSHOT_IS_SECURITY_CHALLENGE",
+                       "http_status":http_status, "error":blocked["error"],
+                       "screenshots":1}
+        context.close()
+        return blocked, blocked_ocr, [str(proof.relative_to(ROOT))]
     cards, ocr_titles, image_paths = {}, set(), []
     stale = 0
     try:
@@ -189,12 +208,35 @@ def main():
                     "screenshot_ocr":c or {"count":None,"error":be},
                     "screen_paths":shots}
             if a and b: record["api_vs_dom"]=compare(a,b)
-            record["status"]="UNVERIFIED" if ae or be or not b or not b["count"] else "OBSERVED_NOT_PROVEN_COMPLETE"
+            record["status"]=("BROWSER_BLOCKED_BY_PLATFORM_SECURITY"
+                if b and b.get("status")=="BLOCKED_BY_PLATFORM_SECURITY"
+                else "UNVERIFIED" if ae or be or not b or not b.get("count")
+                else "OBSERVED_NOT_PROVEN_COMPLETE")
             report["stores"].append(record)
             (folder/"result.json").write_text(json.dumps(record,ensure_ascii=False,indent=2))
             print(label,record["api"]["count"],record["browser"]["count"],record["screenshot_ocr"]["count"],flush=True)
         browser.close()
+    full_path=OUT/"full-catalog-latest.json"
+    if full_path.exists():
+        report["full_catalog_reconciliation"]=json.loads(full_path.read_text(encoding="utf-8"))
+    else:
+        report["full_catalog_reconciliation"]={"status":"NOT_RUN"}
+    report["all_three_independent_methods_verified"]=all(
+        s.get("api",{}).get("complete") is True
+        and s.get("browser",{}).get("complete") is True
+        and s.get("screenshot_ocr",{}).get("complete") is True
+        for s in report["stores"])
     (OUT/"latest.json").write_text(json.dumps(report,ensure_ascii=False,indent=2))
     (OUT/report["date"]/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2))
-    print("AUDIT_REPORT_COMPLETE")
+    print("AUDIT_REPORT_COMPLETE="+json.dumps({
+        "date":report["date"],
+        "all_three_independent_methods_verified":report["all_three_independent_methods_verified"],
+        "stores":[{"name":s["store"],"status":s["status"],
+                   "api_count":s["api"].get("count"),
+                   "dom_count":s["browser"].get("count"),
+                   "ocr_count":s["screenshot_ocr"].get("count")} for s in report["stores"]]
+    },ensure_ascii=False),flush=True)
+    if not report["all_three_independent_methods_verified"]:
+        # A report is not a pass. GitHub Actions still uploads it and alerts.
+        raise SystemExit("Independent storefront coverage NOT proven; inspect audit-results/latest.json")
 if __name__=="__main__":main()
