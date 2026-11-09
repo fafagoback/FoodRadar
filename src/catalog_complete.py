@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 import requests
+from menu_core import global_limiter
 
 CATALOG_API = "https://www.ubereats.com/api/getCatalogPresentationV2"
 MAX_CATALOG_PAGES = 250
@@ -67,15 +68,18 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         body = None
         for attempt in range(1, 4):
             try:
+                global_limiter.wait()
                 resp = session.post(CATALOG_API, json=payload, headers=headers, timeout=30)
                 relative = (f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-page-{page:04d}-offset-{offset:06d}-"
                             f"attempt-{attempt:02d}-status-{resp.status_code}.body")
                 capture_response(root, relative, resp)
                 if resp.status_code != 200:
+                    if resp.status_code == 429:
+                        global_limiter.trigger_backoff(attempt * 8, "Catalog HTTP 429")
                     if attempt < 3:
                         time.sleep(attempt * 2)
                         continue
-                    raise RuntimeError(f"Catalog HTTP {resp.status_code}")
+                    raise ValueError(f"Catalog HTTP {resp.status_code}")
                 body = resp.json()
                 data, entries = _catalog_entries(body)
                 paging_info = data.get("pagingInfo")
@@ -88,6 +92,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                     use_collection_type = True
                     filters["sectionTypes"] = ["COLLECTION"]
                     try:
+                        global_limiter.wait()
                         alt = session.post(CATALOG_API, json=payload, headers=headers, timeout=30)
                         alt_relative = (f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-page-0000-offset-000000-"
                                         f"collection-status-{alt.status_code}.body")
