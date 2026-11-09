@@ -96,4 +96,42 @@ for test_sections in [sections[:2],sections]:
   for i in matches:
     log("LIVE_SKU_FIELDS",{"name":i.get("title"),"keys":list(i.keys()),"price":i.get("price"),"analytics":i.get("catalogItemAnalyticsData"),"thumbnail":i.get("itemThumbnailElements"),"itemPromotion":i.get("itemPromotion"),"itemLevelPromotion":i.get("itemLevelPromotion"),"promoInfo":i.get("promoInfo"),"titleBadge":i.get("titleBadge")})
 
+
+# Exercise the *production* capture/ETL path on this live store; no HF writes.
+import tempfile,tarfile,hashlib
+from raw_capture import fetch_store_raw, documents_from_hf_raw
+with tempfile.TemporaryDirectory() as work:
+  root=Path(work)/"raw"
+  root.mkdir()
+  result=fetch_store_raw(STORE,root)
+  log("LIVE_PRODUCTION_CAPTURE",{"success":result.get("success"),"error":result.get("error"),
+      "sections":result.get("catalog_section_count"),"pages":len(result.get("catalog_responses") or []),
+      "item_occurrences":result.get("catalog_item_occurrences")})
+  if not result.get("success"):raise RuntimeError("Fixed crawler did not capture the whole store")
+  batch="20261109093000"
+  tarpath=Path(work)/"raw.tar.gz"
+  responses={}
+  with tarfile.open(tarpath,"w:gz") as archive:
+    for p in sorted(root.rglob("*.body")):
+      name=p.relative_to(root).as_posix()
+      responses[name]=hashlib.sha256(p.read_bytes()).hexdigest()
+      archive.add(p,arcname=name)
+  manifest={"format":"foodradar-immutable-http-body-v1","batch_id":batch,
+     "complete":True,"stores":[result],"responses":responses}
+  with tarfile.open(tarpath) as archive:
+    doc=documents_from_hf_raw(archive,manifest)[0]
+  items=[i for section in (doc.get("hasMenu") or {}).get("hasMenuSection") or []
+           for i in section.get("hasMenuItem") or []]
+  brand=[{"name":i.get("name"),"price":(i.get("offers") or {}).get("price"),
+          "proof_status":(i.get("verified_price") or {}).get("status"),
+          "proof_type":(i.get("verified_price") or {}).get("kind")}
+        for i in items if "Häagen" in i.get("name","") or "哈根達斯" in i.get("name","")]
+  log("LIVE_ETL_VERIFICATION",{"total_item_occurrences":len(items),
+      "brand_item_occurrences":len(brand),"unique_brand_skus":len({
+      i.get("identifier") for section in (doc.get("hasMenu") or {}).get("hasMenuSection") or []
+      for i in section.get("hasMenuItem") or [] if "Häagen" in i.get("name","")}),
+      "brand_proof_verified":sum(x["proof_status"]=="VERIFIED_MENU" for x in brand),
+      "brand_items":brand[:25]})
+  assert len(brand)>=10, "Crawler still missing Haagen"
+
 print("LIVE_AUDIT_COMPLETE",flush=True)
