@@ -29,7 +29,9 @@ for name,url in STORES:
         s=BeautifulSoup(r.text,"html.parser")
         node=s.find("script",id="__REACT_QUERY_STATE__")
         raw=(node.string if node else None) or (node.get_text() if node else "")
-        data=json.loads(raw)
+        # Uber escapes quote delimiters as literal \\u0022 in its script
+        # (not valid standalone JSON until this HTML-script escaping is decoded).
+        data=json.loads(raw.replace(r"\u0022", '"'))
         queries=data.get("queries") or []
         summarized=[{"key":q.get("queryKey"),"state_data_type":type((q.get("state") or {}).get("data")).__name__,
                      "keys":list((q.get("state") or {}).get("data") or {})[:12]
