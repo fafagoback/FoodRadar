@@ -167,10 +167,17 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                             and product["last_seen"] == latest_time
                             and int(store["is_open"] or 0) == 1
                             and int(product["is_open"] or 0) == 1)
+            catalog_web = json.loads(product["catalog_web"] or "{}") if "catalog_web" in product.keys() else {}
+            if not isinstance(catalog_web, dict):
+                catalog_web = {}
+            stock_known_unavailable = (catalog_web.get("is_sold_out") is True
+                                       or catalog_web.get("is_available") is False)
             native_verified = product["price_evidence_status"] == "VERIFIED_MENU"
             platform_promo = native_verified and float(product["verified_discount_pct"] or 0) > 0
             current_menu = current_menu and native_verified
-            current_verified = current_menu and int(product["delivery_available"] or 0) == 1
+            current_verified = (current_menu
+                                and int(product["delivery_available"] or 0) == 1
+                                and not stock_known_unavailable)
             terms = (store_terms | tokens(product["product_name"]) | tokens(product["category"]) | tokens(product["menu_quote_promo_type"] or product["promo_type"])) if searchable else set()
             price = float(product["menu_quote_effective_price"] or product["effective_price"] or product["price"] or 0)
             if searchable:
@@ -226,6 +233,17 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         "store_id": sid, "store_uuid": sid, "store_name": store["name"],
                         "product_name": product["product_name"], "category_name": product["category"],
                         "description": product["description"],
+                        "image_url": catalog_web.get("image_url"),
+                        "display_original_price": (catalog_web["display_original_price_cents"] / 100.0
+                            if isinstance(catalog_web.get("display_original_price_cents"), int) else None),
+                        "native_promo_type": catalog_web.get("native_promo_type"),
+                        "promotion_uuid": catalog_web.get("promotion_uuid"),
+                        "cart_campaign_uuid": catalog_web.get("cart_campaign_uuid"),
+                        "cart_promo_label": catalog_web.get("cart_promo_label"),
+                        "is_available": catalog_web.get("is_available"),
+                        "is_sold_out": catalog_web.get("is_sold_out"),
+                        "availability_state": catalog_web.get("availability_state"),
+                        "category_uuids": catalog_web.get("section_uuids") or [],
                         "price": raw_price if raw_price > 0 else normal_price,
                         "quantity": int(product["menu_quote_quantity"] or 1) if raw_price > 0 else int(product["quantity"] or 1),
                         "promo_type": ptype,
