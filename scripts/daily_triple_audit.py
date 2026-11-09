@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import requests
 from playwright.sync_api import sync_playwright
+from dom_browser_backend import open_dom_browser, diagnostic
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -94,7 +95,7 @@ JS_DOM = """() => {
   return out;
 }"""
 
-def collect_browser(browser, label, url, lat, lon, store_dir):
+def collect_browser(browser, label, url, lat, lon, store_dir, browser_source="github_hosted"):
     context = browser.new_context(locale="zh-TW", viewport={"width":1440,"height":980},
                                   device_scale_factor=1)
     try:
@@ -106,14 +107,10 @@ def collect_browser(browser, label, url, lat, lon, store_dir):
         http_status = response.status if response else None
         page_title = page.title()
         visible_text = page.evaluate("document.body?.innerText?.slice(0,1000) || ''")
-        security_challenge = (http_status in (401, 403, 429)
-            or "正在執行安全驗證" in visible_text
-            or "Cloudflare" in visible_text and "驗證" in visible_text)
-        if security_challenge:
-            return {"count":None,"items":[],"complete":False,
-                    "status":"BLOCKED_BY_PLATFORM_SECURITY","http_status":http_status,
-                    "title":page_title,
-                    "error":f"Uber storefront HTTP {http_status}: security challenge, no products rendered"}
+        blocked = diagnostic(http_status, visible_text, browser_source)
+        if blocked:
+            blocked["title"] = page_title
+            return blocked
         cards = {}
         stale = 0
         for step in range(int(os.environ.get("AUDIT_SCROLL_LIMIT","180"))):
@@ -129,7 +126,8 @@ def collect_browser(browser, label, url, lat, lon, store_dir):
             if stale >= 5:
                 break
         dom = {"count":len(cards),"items":list(cards.values()),
-               "complete":False,"status":"OBSERVED_ONLY_CATEGORY_COMPLETENESS_UNPROVEN"}
+               "complete":False,"status":"OBSERVED_ONLY_CATEGORY_COMPLETENESS_UNPROVEN",
+               "browser_source":browser_source}
         if not cards:
             dom["status"] = "NO_PRODUCT_CARD_SELECTOR_MATCH"
         return dom
@@ -152,12 +150,12 @@ def main():
               "method_a":"existing getStoreV1 + getCatalogPresentationV2",
               "method_b":"independent Chromium page DOM observation","stores":[]}
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser, browser_source = open_dom_browser(pw)
         for slug,label,url,lat,lon in STORES:
             folder=OUT / report["date"] / slug
             folder.mkdir(parents=True,exist_ok=True)
             a,ae=safe_run(lambda:collect_api(label,url,lat,lon,folder))
-            b,be=safe_run(lambda:collect_browser(browser,label,url,lat,lon,folder))
+            b,be=safe_run(lambda:collect_browser(browser,label,url,lat,lon,folder,browser_source))
             record={"store":label,"url":url,"api":a or {"count":None,"error":ae},
                     "browser":b or {"count":None,"error":be}}
             if a and b: record["api_vs_dom"]=compare(a,b)
