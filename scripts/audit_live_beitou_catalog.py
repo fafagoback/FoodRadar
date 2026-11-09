@@ -126,6 +126,20 @@ with tempfile.TemporaryDirectory() as work:
           "proof_status":(i.get("verified_price") or {}).get("status"),
           "proof_type":(i.get("verified_price") or {}).get("kind")}
         for i in items if "Häagen" in i.get("name","") or "哈根達斯" in i.get("name","")]
+  from collections import Counter
+  reason_counts=Counter(((i.get("verified_price") or {}).get("reason") or (i.get("verified_price") or {}).get("status")) for i in items if "Häagen" in i.get("name",""))
+  log("LIVE_PRICE_REJECTION_REASONS",dict(reason_counts))
+  from verified_prices import quote_from_native_item
+  raw_reasons=Counter()
+  raw_examples=[]
+  for response in result.get("catalog_responses") or []:
+    original=json.loads((root/response["path"]).read_text())
+    for it in native_items(original):
+      if "Häagen" not in str(it.get("title")):continue
+      proof=quote_from_native_item(it) or {}
+      raw_reasons[(proof.get("status"),proof.get("reason"),proof.get("kind"))]+=1
+      if len(raw_examples)<8:raw_examples.append({"title":it.get("title"),"price":it.get("price"),"proof":proof})
+  log("LIVE_RAW_PRICE_PROOFS",{"types":[{"signature":k,"count":v} for k,v in raw_reasons.items()],"examples":raw_examples})
   log("LIVE_ETL_VERIFICATION",{"total_item_occurrences":len(items),
       "brand_item_occurrences":len(brand),"unique_brand_skus":len({
       i.get("identifier") for section in (doc.get("hasMenu") or {}).get("hasMenuSection") or []
