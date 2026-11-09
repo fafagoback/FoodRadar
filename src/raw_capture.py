@@ -82,7 +82,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 3) -> dict:
                         # getStoreV1 is only a preview for large grocery stores.
                         # Save every native catalog page before accepting a complete capture.
                         all_catalog = capture_catalog(
-                            session, uuid, data, root, headers, capture_response)
+                            session, uuid, data, root, headers, capture_response, store_attempt=attempt)
                         result.update(success=True, response_path=relative,
                                       captured_at=datetime.now(TW).isoformat(), **all_catalog)
                         print("CATALOG_CAPTURE=" + json.dumps({
