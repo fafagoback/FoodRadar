@@ -111,7 +111,7 @@ jobs:
           go run github.com/rhysd/actionlint/cmd/actionlint@latest -color=false .github/workflows/*.yml
           python - <<'PY'
           from pathlib import Path
-          expected={'ci.yml','crawl.yml','pages.yml','daily-triple-audit.yml'}
+          expected={'ci.yml','crawl.yml','pages.yml','daily-dual-audit.yml'}
           actual={p.name for p in Path('.github/workflows').glob('*.yml')}
           assert actual==expected, f'Workflow 清單不符：{actual}'
           PY
