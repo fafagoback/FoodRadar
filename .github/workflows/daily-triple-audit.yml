@@ -32,6 +32,8 @@ jobs:
           python -m playwright install --with-deps chromium
           sudo apt-get update -qq
           sudo apt-get install -y tesseract-ocr tesseract-ocr-chi-tra
+      - name: Remove prior audit evidence before checking new batch
+        run: rm -f audit-results/full-catalog-latest.json
       - name: Independently reconcile all captured stores and products through HF Raw and Turso
         id: full
         continue-on-error: true
@@ -64,14 +66,46 @@ jobs:
             "stores":[]},ensure_ascii=False,indent=2))
           PY
           fi
-          mkdir -p "audit-results/$(TZ=Asia/Taipei date +%F)"
-          cp audit-results/latest.json "audit-results/$(TZ=Asia/Taipei date +%F)/report.json"
+          # Keep evidence in a temporary backup before moving the ephemeral
+          # runner to origin/main. Other jobs may have committed meanwhile.
+          DAY=$(TZ=Asia/Taipei date +%F)
+          BACKUP=$(mktemp -d)
+          cp audit-results/latest.json "$BACKUP/latest.json"
+          if [ -s audit-results/full-catalog-latest.json ]; then
+            cp audit-results/full-catalog-latest.json "$BACKUP/full.json"
+          fi
           git config user.name "foodradar-audit-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add audit-results/latest.json "audit-results/$(TZ=Asia/Taipei date +%F)/report.json"
-          if ! git diff --cached --quiet; then
+          SAVED=0
+          for ATTEMPT in 1 2 3 4 5; do
+            git fetch --no-tags origin main
+            git reset --hard origin/main
+            mkdir -p "audit-results/$DAY"
+            cp "$BACKUP/latest.json" audit-results/latest.json
+            cp "$BACKUP/latest.json" "audit-results/$DAY/report.json"
+            if [ -s "$BACKUP/full.json" ]; then
+              cp "$BACKUP/full.json" audit-results/full-catalog-latest.json
+              cp "$BACKUP/full.json" "audit-results/$DAY/full-catalog-report.json"
+            else
+              rm -f audit-results/full-catalog-latest.json
+            fi
+            git add -A audit-results/latest.json audit-results/full-catalog-latest.json \
+              "audit-results/$DAY/report.json" "audit-results/$DAY/full-catalog-report.json"
+            if git diff --cached --quiet; then
+              SAVED=1
+              break
+            fi
             git commit -m "audit: daily three-method observation results [skip ci]"
-            git push
+            if git push origin HEAD:main; then
+              SAVED=1
+              break
+            fi
+            echo "Concurrent Git update; retrying audit evidence submission ($ATTEMPT/5)"
+            sleep $((ATTEMPT * 2))
+          done
+          if [ "$SAVED" -ne 1 ]; then
+            echo "Failed to preserve latest report after five safe retries"
+            exit 1
           fi
       - name: Upload detailed screenshots and audit proof
         if: always()
