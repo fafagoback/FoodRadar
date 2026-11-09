@@ -24,13 +24,17 @@ DOM_ITEMS=r"""() => {
    if(!name || name.length<3)continue;
    const rx=/(?:NT\s*)?[$＄]\s*([\d,]+(?:\.\d{1,2})?)/g;
    const prices=[];
-   for(const line of lines){
+   const titleLine=lines.findIndex(x=>x===name);
+   // Store cards show reference/strikethrough and current prices BEFORE
+   // the title. Scan the entire price block and choose the current lower
+   // standard price; skip Costco's separate member-only prices.
+   const priceLines=titleLine>=0 ? lines.slice(0,titleLine) : lines.slice(0,5);
+   for(const line of priceLines){
      if(/會員價|每公斤|\/kg|\/公斤/.test(line)) continue;
      for(const m of line.matchAll(rx)){
        const parsed=Number(m[1].replaceAll(',',''));
        if(parsed>0 && Number.isFinite(parsed)) prices.push(Math.round(parsed*100));
      }
-     if(prices.length && lines.indexOf(line)<=3) break;
    }
    if(!prices.length)continue;
    const price=Math.min(...prices);
