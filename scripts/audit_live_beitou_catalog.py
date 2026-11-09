@@ -74,4 +74,18 @@ for target in targets:
             log("LIVE_CATEGORY_ERROR",{"title":title,"endpoint":endpoint,"error":str(exc)})
         if info.get("items",0)>0:
             break
+
+sections=[x.get("catalogSectionUUID") for x in catlist if x.get("catalogSectionUUID")]
+for test_sections in [sections[:2],sections]:
+  if not test_sections:continue
+  p={"sortAndFilters":None,"storeFilters":{"storeUuid":UUID,"sectionUuids":test_sections,"subsectionUuids":None},"pagingInfo":{"enabled":True,"offset":0},"source":"NV_L2_CATALOG"}
+  response=sess.post("https://www.ubereats.com/api/getCatalogPresentationV2",json=p,headers=headers,timeout=40)
+  result=native_items(response.json())
+  pg=(response.json().get("data") or {}).get("pagingInfo")
+  log("LIVE_MULTISECTION",{"sections_requested":len(test_sections),"http":response.status_code,"catalog_sections":len((response.json().get("data") or {}).get("catalog") or []),"total_items":len(result),"unique_sku":len({i.get("uuid") or i.get("itemUuid") or i.get("title") for i in result}),"pagingInfo":pg,
+       "haagen":sum("Häagen" in str(i.get("title")) for i in result)})
+  matches=[i for i in result if "Häagen" in str(i.get("title"))][:4]
+  for i in matches:
+    log("LIVE_SKU_FIELDS",{"name":i.get("title"),"keys":list(i.keys()),"price":i.get("price"),"analytics":i.get("catalogItemAnalyticsData"),"thumbnail":i.get("itemThumbnailElements"),"itemPromotion":i.get("itemPromotion"),"itemLevelPromotion":i.get("itemLevelPromotion"),"promoInfo":i.get("promoInfo"),"titleBadge":i.get("titleBadge")})
+
 print("LIVE_AUDIT_COMPLETE",flush=True)
