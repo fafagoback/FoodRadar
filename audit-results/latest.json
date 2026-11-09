@@ -1,15 +1,14 @@
 {
   "date": "2026-11-09",
-  "generated_at": "2026-11-09T14:43:48.415913+08:00",
+  "generated_at": "2026-11-09T15:21:01.159705+08:00",
   "method_a": "existing getStoreV1 + getCatalogPresentationV2",
   "method_b": "independent Chromium page DOM observation",
-  "method_c": "independent screenshot OCR observation",
   "stores": [
     {
       "store": "Costco 好市多內湖店",
       "url": "https://www.ubereats.com/tw/store/costco-%E5%A5%BD%E5%B8%82%E5%A4%9A-%E5%85%A7%E6%B9%96%E5%BA%97/rHKi5OrjWY2DLNdY8WriVA",
       "api": {
-        "count": 124,
+        "count": 123,
         "items": [
           {
             "name": "笑牛 冷藏原味迷你乾酪 250公克 X 2入",
@@ -437,11 +436,6 @@
             "sku": "f1176539-0d36-5481-ac76-8151de9bb207"
           },
           {
-            "name": "冷藏冬蚵 650公克",
-            "price_cents": 35935,
-            "sku": "d4c95f1d-7bea-518d-99fa-9fc7539c4496"
-          },
-          {
             "name": "有機小白菜 500公克",
             "price_cents": 7599,
             "sku": "aafb387a-9424-517b-a0b4-0ab88efd039d"
@@ -643,23 +637,10 @@
         "status": "BLOCKED_BY_PLATFORM_SECURITY",
         "http_status": 403,
         "title": "請稍候...",
-        "evidence": "audit-results/2026-11-09/costco_neihu/screenshot-000.png",
-        "error": "Uber storefront HTTP 403: Cloudflare challenge, no products rendered"
+        "error": "Uber storefront HTTP 403: security challenge, no products rendered"
       },
-      "screenshot_ocr": {
-        "count": null,
-        "items": [],
-        "complete": false,
-        "status": "SCREENSHOT_IS_SECURITY_CHALLENGE",
-        "http_status": 403,
-        "error": "Uber storefront HTTP 403: Cloudflare challenge, no products rendered",
-        "screenshots": 1
-      },
-      "screen_paths": [
-        "audit-results/2026-11-09/costco_neihu/screenshot-000.png"
-      ],
       "api_vs_dom": {
-        "a_only_count": 124,
+        "a_only_count": 123,
         "b_only_count": 0,
         "a_only_examples": [
           "3m安美浴室專用防滑地墊藍色",
@@ -697,7 +678,7 @@
       "store": "全聯福利中心北投明德",
       "url": "https://www.ubereats.com/tw/store/%E5%85%A8%E8%81%AF%E7%A6%8F%E5%88%A9%E4%B8%AD%E5%BF%83-%E5%8C%97%E6%8A%95%E6%98%8E%E5%BE%B7/2w4z4S62WsaVTf3t2o_ntA",
       "api": {
-        "count": 515,
+        "count": 516,
         "items": [
           {
             "name": "中華有機豆腐(非基因改造黃豆)300g",
@@ -1553,6 +1534,11 @@
             "name": "暖玉紅心蛋610g±30g(10入)(白)",
             "price_cents": 10500,
             "sku": "4be22f5c-b9a7-55f3-b618-cfce514bc797"
+          },
+          {
+            "name": "台農初農鮮蛋(白)600g+-30g(10入)",
+            "price_cents": 8500,
+            "sku": "8f9ccb27-933a-5982-8036-821b9fdeb247"
           },
           {
             "name": "天地合補EXX水亮膠原美顏飲30ml*6入",
@@ -3286,23 +3272,10 @@
         "status": "BLOCKED_BY_PLATFORM_SECURITY",
         "http_status": 403,
         "title": "請稍候...",
-        "evidence": "audit-results/2026-11-09/pxmart_beitou/screenshot-000.png",
-        "error": "Uber storefront HTTP 403: Cloudflare challenge, no products rendered"
+        "error": "Uber storefront HTTP 403: security challenge, no products rendered"
       },
-      "screenshot_ocr": {
-        "count": null,
-        "items": [],
-        "complete": false,
-        "status": "SCREENSHOT_IS_SECURITY_CHALLENGE",
-        "http_status": 403,
-        "error": "Uber storefront HTTP 403: Cloudflare challenge, no products rendered",
-        "screenshots": 1
-      },
-      "screen_paths": [
-        "audit-results/2026-11-09/pxmart_beitou/screenshot-000.png"
-      ],
       "api_vs_dom": {
-        "a_only_count": 515,
+        "a_only_count": 516,
         "b_only_count": 0,
         "a_only_examples": [
           "36法郎極品拿堤咖啡240ml",
@@ -3340,7 +3313,7 @@
       "store": "Uber Eats 優市北投店",
       "url": "https://www.ubereats.com/tw/store/uber-eats-%E5%84%AA%E5%B8%82-%E5%8C%97%E6%8A%95%E5%BA%97/0uUO4WnaXv-V8OsNuuueQg",
       "api": {
-        "count": 1035,
+        "count": 1036,
         "items": [
           {
             "name": "林鳳營特濃重乳優格 無加糖 400g（要用2的倍數下單喔！）",
@@ -4058,24 +4031,24 @@
             "sku": "245eacd9-85f9-5a42-aaea-0253ad213b3e"
           },
           {
-            "name": "ARIEL 超濃縮抗菌洗衣精 超值組-室內晾衣型 800g＋500g",
-            "price_cents": 16700,
-            "sku": "3d97dd8c-bf2c-5b94-9279-9dbbcb77ffb4"
-          },
-          {
             "name": "驅塵氏抗菌濕拖巾-茶樹(12張)（要用2的倍數下單喔！）",
             "price_cents": 9900,
             "sku": "512b5891-2554-4ad4-acc5-8f4de5bd73ba"
           },
           {
-            "name": "舒潔棉柔厚韌三層抽取衛生紙 90抽x6包/串 (新舊包裝隨機出貨)（要用2的倍數下單喔！）",
-            "price_cents": 19900,
-            "sku": "cff2c9fe-db03-416b-affd-508a103bd5df"
+            "name": "ARIEL 超濃縮抗菌洗衣精 超值組-室內晾衣型 800g＋500g",
+            "price_cents": 16700,
+            "sku": "3d97dd8c-bf2c-5b94-9279-9dbbcb77ffb4"
           },
           {
             "name": "爭鮮蒸鮮飯 170g",
             "price_cents": 4500,
             "sku": "c4456578-6e74-4e48-9779-ef046a231557"
+          },
+          {
+            "name": "舒潔棉柔厚韌三層抽取衛生紙 90抽x6包/串 (新舊包裝隨機出貨)（要用2的倍數下單喔！）",
+            "price_cents": 19900,
+            "sku": "cff2c9fe-db03-416b-affd-508a103bd5df"
           },
           {
             "name": "味全光州韓式泡菜350g",
@@ -5473,9 +5446,64 @@
             "sku": "842c349a-18e0-4918-a161-55c4867f314c"
           },
           {
+            "name": "ELLO研舒肌 益生菌淨痘調理乳霜 Urgent Acne Cream 18ml",
+            "price_cents": 39900,
+            "sku": "2f0aea5c-a72c-5218-9fc1-9f5252ee93f1"
+          },
+          {
+            "name": "HARU 熱愛型保險套 4入",
+            "price_cents": 18900,
+            "sku": "8b2cf777-c870-468b-b804-868b2902dc2c"
+          },
+          {
+            "name": "HARU DESIRE 大麻玫瑰激潮露 #",
+            "price_cents": 69900,
+            "sku": "1e510d25-a020-53fa-af8a-5e2526652381"
+          },
+          {
+            "name": "HARU THRILL  大麻極酥電麻潤滑液 快感增強版 50ml",
+            "price_cents": 84900,
+            "sku": "462c7a26-c0b4-549b-9186-48e0fbad657c"
+          },
+          {
+            "name": "HARU GLOW 大麻玫瑰喚醒按摩精油",
+            "price_cents": 106000,
+            "sku": "1653ac01-6ced-5312-bec9-8e17f4ba5175"
+          },
+          {
+            "name": "SLOW FUCK(SEX)慢慢愛 男性機能乳膏 #01",
+            "price_cents": 89900,
+            "sku": "8a759e8c-a727-577c-a83d-5c1dbeb28db9"
+          },
+          {
+            "name": "HARU女性私密護理潤滑液 155ml",
+            "price_cents": 55000,
+            "sku": "1892905a-ff11-485a-b755-51eb419a3758"
+          },
+          {
+            "name": "原萃綠茶 - 玉露入り580ML（要用2的倍數下單喔！）",
+            "price_cents": 4700,
+            "sku": "2a3e189b-a4bc-4cd9-afd9-1bc34fc6a9b8"
+          },
+          {
+            "name": "可口可樂200mlX8",
+            "price_cents": 12500,
+            "sku": "abe2728c-9617-4943-8446-65bba7e2b00e"
+          },
+          {
             "name": "可口可樂寶特瓶600ML（要用2的倍數下單喔！）",
             "price_cents": 5200,
             "sku": "8d67d3b4-5f1a-5000-ac4b-445fa7ced40e"
+          },
+          {
+            "name": "原萃鍋煮風味麥茶 600ml（要用2的倍數下單喔！）",
+            "price_cents": 5200,
+            "sku": "169c8fd5-6656-5dec-a497-863e26a38624"
+          },
+          {
+            "name": "原萃日式焙茶寶特580ML（要用2的倍數下單喔！）",
+            "price_cents": 4700,
+            "sku": "46bbd191-f097-49a9-8c14-82e880a47ce7"
           },
           {
             "name": "可口可樂易開罐330MLX6（要用2的倍數下單喔！）",
@@ -5483,9 +5511,259 @@
             "sku": "bae5f19e-3761-45f5-a1de-25087a4fa648"
           },
           {
+            "name": "Schweppes 舒味思氣泡水原味 500ml",
+            "price_cents": 2900,
+            "sku": "b3919456-1b08-421a-a75a-05b01b2effcb"
+          },
+          {
             "name": "可口可樂ZERO寶特瓶600ML（要用2的倍數下單喔！）",
             "price_cents": 5200,
             "sku": "ae02783a-f8d6-4560-915e-482477fa8d73"
+          },
+          {
+            "name": "喬亞滴濾無糖黑咖啡 350ml",
+            "price_cents": 3200,
+            "sku": "100661e6-950a-467d-98f4-49f5b12be566"
+          },
+          {
+            "name": "喬亞滴濾拿鐵 350ml",
+            "price_cents": 3200,
+            "sku": "bb4315e1-f8d1-4275-9171-889e25555d21"
+          },
+          {
+            "name": "原萃錫蘭無糖紅茶寶特580ML",
+            "price_cents": 2500,
+            "sku": "79e252bb-040c-485e-a92d-90989ad43779"
+          },
+          {
+            "name": "原萃日式綠茶寶特580ml（要用2的倍數下單喔！）",
+            "price_cents": 4700,
+            "sku": "575f4763-eabe-4bd8-935f-72ede3cecab8"
+          },
+          {
+            "name": "原萃鐵觀音580ML",
+            "price_cents": 2500,
+            "sku": "d9d68c9b-0a93-4d68-a08d-929b779ad2c0"
+          },
+          {
+            "name": "可口可樂ZERO無糖零卡200mlX8",
+            "price_cents": 12500,
+            "sku": "40ccc034-0405-4349-82e7-45f1db35e9ae"
+          },
+          {
+            "name": "可口可樂2000ml",
+            "price_cents": 5500,
+            "sku": "9adc6875-9d6a-4f41-9e28-9c7f6028ad12"
+          },
+          {
+            "name": "美粒果零加糖蜜桃蘇打500ml",
+            "price_cents": 3200,
+            "sku": "b9ca29e4-eb22-43f7-a121-bbe020da4d62"
+          },
+          {
+            "name": "林鳳營特濃重乳優格 藍莓400g（要用2的倍數下單喔！）",
+            "price_cents": 14500,
+            "sku": "3f5c314d-dc42-4669-a945-66f1e17b358b"
+          },
+          {
+            "name": "林鳳營特濃重乳優格(無加糖) 120g*2",
+            "price_cents": 5900,
+            "sku": "7fd105e7-18b8-4178-9645-aedec815c49f"
+          },
+          {
+            "name": "林鳳營精品優格_希臘式優格(無加糖) 400g（要用2的倍數下單喔！）",
+            "price_cents": 17200,
+            "sku": "612b1978-9d84-4077-8b94-70f335b35b4d"
+          },
+          {
+            "name": "林鳳營特濃重乳優格-草莓400g（要用2的倍數下單喔！）",
+            "price_cents": 14500,
+            "sku": "b2a76d13-b86c-4f77-af1f-3a1a07851b3b"
+          },
+          {
+            "name": "林鳳營精品優格_鮮奶優格(無加糖) 400g（要用2的倍數下單喔！）",
+            "price_cents": 17200,
+            "sku": "cbab366b-4a9b-5049-b0f4-85554861a137"
+          },
+          {
+            "name": "林鳳營特濃重乳優格 微甜 400g（要用2的倍數下單喔！）",
+            "price_cents": 14500,
+            "sku": "6ea2479f-4811-4501-9ac4-389a5d554120"
+          },
+          {
+            "name": "林鳳營特濃重乳優格 藍莓 120gx2",
+            "price_cents": 5900,
+            "sku": "124cf95e-ce26-4aa5-a380-26da32496790"
+          },
+          {
+            "name": "大醇豆無加糖豆漿 1857ml",
+            "price_cents": 6200,
+            "sku": "0abb8a0a-6668-5703-9cad-9fc58281c3ac"
+          },
+          {
+            "name": "每日C PLUS 100%綜合果蔬汁(含維生素A) 800ml",
+            "price_cents": 6900,
+            "sku": "c50ae9c4-4c3e-471f-8c3e-4a97144486b7"
+          },
+          {
+            "name": "LCA506活菌發酵乳－清爽100ml*10入",
+            "price_cents": 5900,
+            "sku": "2aa31658-b0b5-420b-98c0-6412365d4ae1"
+          },
+          {
+            "name": "大醇豆無加糖豆漿936ml",
+            "price_cents": 3500,
+            "sku": "c563ce67-1136-4930-ade5-c211e474611f"
+          },
+          {
+            "name": "林鳳營益生菌優酪乳-無加糖880ml",
+            "price_cents": 7200,
+            "sku": "94749711-2e2c-40a1-bfca-1414b8ec0ed9"
+          },
+          {
+            "name": "林鳳營特濃重乳優格 120g*2",
+            "price_cents": 5900,
+            "sku": "9b64f9b2-09ba-40a5-98a9-57b9e9189bab"
+          },
+          {
+            "name": "ACE 紅鑽大蔓越莓乾110公克（要用2的倍數下單喔！）",
+            "price_cents": 28000,
+            "sku": "87a1ef7a-0524-4404-8d50-e9045842c970"
+          },
+          {
+            "name": "Kodak 柯達 Ultra F8 復古底片相機-月光白 #",
+            "price_cents": 118200,
+            "sku": "801cfff7-e47a-5402-af74-e95d3fff07e4"
+          },
+          {
+            "name": "滿意寶寶 瞬潔乾爽輕巧褲(L)(44片/包)",
+            "price_cents": 36900,
+            "sku": "23214d83-3c15-4dde-8c6c-a3ff82a5c05f"
+          },
+          {
+            "name": "舒跑運動飲料 590ml",
+            "price_cents": 2500,
+            "sku": "38812945-e5ef-4614-860e-d892ab9bc5c5"
+          },
+          {
+            "name": "Kodak 柯達 i60 新型底片相機-哈密瓜綠| 禮物首選 #",
+            "price_cents": 166100,
+            "sku": "faeb320e-a7e5-5948-998f-46f8267d71ff"
+          },
+          {
+            "name": "Häagen-Dazs 草莓冰淇淋 100ml【哈根達斯】",
+            "price_cents": 11900,
+            "sku": "726986fd-bee2-4736-b060-7c3554a1097a"
+          },
+          {
+            "name": "提提研極緻修護禮盒11入",
+            "price_cents": 80000,
+            "sku": "f36bdb27-d819-5478-a3be-4c1d80a16905"
+          },
+          {
+            "name": "滿意寶寶 瞬潔乾爽輕巧褲(XL)(38片/包)",
+            "price_cents": 43900,
+            "sku": "16af6e99-f928-421e-a6e6-fc1706cdd476"
+          },
+          {
+            "name": "德國百靈Oral-B PRO 1 3D電動牙刷-白色",
+            "price_cents": 149000,
+            "sku": "771aa9ef-7ee9-4428-983e-1d789fe777e3"
+          },
+          {
+            "name": "美國三色馬鈴薯600g±10%",
+            "price_cents": 12900,
+            "sku": "8cdc1c8d-fd54-569a-b19d-53f2bb33a592"
+          },
+          {
+            "name": "美國進口馬鈴薯600g±10%",
+            "price_cents": 6900,
+            "sku": "26fff45e-e5e5-57ba-9c1d-29f30a8e1bb1"
+          },
+          {
+            "name": "Häagen-Dazs 迷你杯海鹽焦糖開心果義式冰淇淋 110ml 【哈根達斯日本限定】",
+            "price_cents": 9900,
+            "sku": "638cfacf-ffcb-5521-a11c-77d596496e9c"
+          },
+          {
+            "name": "Häagen-Dazs 夏威夷果仁冰淇淋 100ml【哈根達斯】",
+            "price_cents": 11900,
+            "sku": "5c3046e8-300f-4269-962c-ed08d48172c3"
+          },
+          {
+            "name": "Häagen-Dazs 品脫比利時巧克力冰淇淋 473ML【哈根達斯】",
+            "price_cents": 30900,
+            "sku": "136b44af-3abd-5e9b-ab21-3c19c69b9e7e"
+          },
+          {
+            "name": "Häagen-Dazs 開心果冰淇淋 420ml【哈根達斯】",
+            "price_cents": 25900,
+            "sku": "df841027-9887-5a00-b400-073d1f017dce"
+          },
+          {
+            "name": "Häagen-Dazs 開心果冰淇淋 100ml【哈根達斯】",
+            "price_cents": 11900,
+            "sku": "11f2f1b0-9c95-5bb5-a439-6e13a6a33949"
+          },
+          {
+            "name": "灣仔碼頭鮮蝦韭黃水餃 22.5g*20入",
+            "price_cents": 26900,
+            "sku": "b410deb6-4424-4a70-92a7-fa8f3e82e0d5"
+          },
+          {
+            "name": "灣仔碼頭玉米蔬菜豬肉手工水餃 23.5g*40入",
+            "price_cents": 26900,
+            "sku": "b191c41e-2f48-40c4-9f0b-85965325202e"
+          },
+          {
+            "name": "Häagen-Dazs 夏威夷果仁冰淇淋 473ml【哈根達斯】",
+            "price_cents": 25900,
+            "sku": "5a1ea1cd-947a-41ae-8ea0-050d6d39e29e"
+          },
+          {
+            "name": "Häagen-Dazs 抹茶雪酥 60ml 【哈根達斯日本限定】",
+            "price_cents": 9900,
+            "sku": "11bd135b-c651-556d-88bd-c3d3053f7982"
+          },
+          {
+            "name": "Häagen-Dazs 仲夏野莓冰淇淋 100ml【哈根達斯】",
+            "price_cents": 10900,
+            "sku": "36ea3016-fb2c-43df-8cc8-ce6af2c38af9"
+          },
+          {
+            "name": "灣仔碼頭川香麻辣豬肉水餃 23.5g*40入",
+            "price_cents": 26900,
+            "sku": "93da6294-9ce6-4221-a5a4-2114dd700aaf"
+          },
+          {
+            "name": "Häagen-Dazs 比利時巧克力冰淇淋 100ml【哈根達斯】",
+            "price_cents": 11900,
+            "sku": "f3563a60-024f-4eb4-acc5-afa6e9310443"
+          },
+          {
+            "name": "Häagen-Dazs 抹茶冰淇淋 473ml【哈根達斯】",
+            "price_cents": 25900,
+            "sku": "1985e779-7cae-48dc-887a-942b835d8b97"
+          },
+          {
+            "name": "Häagen-Dazs 蘭姆葡萄冰淇淋 473ml【哈根達斯】",
+            "price_cents": 25900,
+            "sku": "9d4f48f4-94d7-4b03-9ab6-33fa2fceceaf"
+          },
+          {
+            "name": "Häagen-Dazs 淇淋巧酥冰淇淋 100ml【哈根達斯】",
+            "price_cents": 11900,
+            "sku": "020dd862-d067-4bd9-8438-0294e3c9f590"
+          },
+          {
+            "name": "Häagen-Dazs 迷你杯草莓麻糬冰淇淋 100ML 【哈根達斯夏季限定】 #01",
+            "price_cents": 8900,
+            "sku": "19e0f7a2-45cc-5c89-acf2-f1b53ae21ffd"
+          },
+          {
+            "name": "Häagen-Dazs 咖啡冰淇淋 473ml【哈根達斯】",
+            "price_cents": 25900,
+            "sku": "45983034-438f-4e99-8fe9-46b71fb9da5b"
           },
           {
             "name": "冷凍舒康雞-帶骨雞腿切塊(貼體包裝) 300g/盒",
@@ -5536,6 +5814,11 @@
             "name": "冷凍舒康雞-棒棒腿(貼體包裝) 320g/盒",
             "price_cents": 18500,
             "sku": "5ca43117-3440-5c98-bb0e-33414273b4c6"
+          },
+          {
+            "name": "冷凍熟蟹黃 125g",
+            "price_cents": 25500,
+            "sku": "b4918df5-5dfc-5c24-b9ef-56bfc1e71389"
           },
           {
             "name": "KID-O量販包 奶油 340g",
@@ -5628,19 +5911,74 @@
             "sku": "9152304b-2f0d-4aec-ab93-18b1e139ed94"
           },
           {
-            "name": "Kodak 柯達 Ultra F8 復古底片相機-月光白 #",
-            "price_cents": 118200,
-            "sku": "801cfff7-e47a-5402-af74-e95d3fff07e4"
+            "name": "嬌生嬰兒純水柔濕巾-加厚型 80片*3入",
+            "price_cents": 15500,
+            "sku": "44f54620-a7e6-4c12-ac32-445c30312491"
+          },
+          {
+            "name": "幫寶適安睡褲XL 26片",
+            "price_cents": 49900,
+            "sku": "08cdc57f-0535-510f-95a6-e6100134ff81"
+          },
+          {
+            "name": "幫寶適一級幫散熱拉拉褲XXL 24+4片 (新舊包裝隨機出貨)",
+            "price_cents": 46900,
+            "sku": "f1224310-fdd0-59e9-87e4-6e371084e07d"
+          },
+          {
+            "name": "75%立得清食品級酒精擦濕巾10抽（要用2的倍數下單喔！）",
+            "price_cents": 5900,
+            "sku": "e7d6339b-c989-5b00-84b2-e5368c11ffc8"
+          },
+          {
+            "name": "【好奇】小森林好動褲/褲型尿布/ XXXL 24片/包",
+            "price_cents": 51600,
+            "sku": "344e2e24-a55a-4e94-b687-0cc843d6ff58"
+          },
+          {
+            "name": "幫寶適一級幫散熱拉拉褲XL 32片 (新舊包裝隨機出貨)",
+            "price_cents": 46900,
+            "sku": "cf3bc693-9d3f-5896-bf7b-0af9313adc3d"
+          },
+          {
+            "name": "滿意寶寶 瞬潔乾爽輕巧褲(XXL)(26片/包)",
+            "price_cents": 43900,
+            "sku": "656f7002-9c52-47a6-bd3c-57e9deebf20e"
+          },
+          {
+            "name": "貝恩嬰兒保養柔濕巾80抽x3包(串)",
+            "price_cents": 20900,
+            "sku": "5c147fbc-0cea-5640-9f30-2dc25d6b388a"
+          },
+          {
+            "name": "幫寶適奢寵黑金幫成長禮盒組 (S*48片+M*38片)",
+            "price_cents": 99900,
+            "sku": "677b430f-3a4b-5351-a09d-4e0a71b303ba"
+          },
+          {
+            "name": "農心頂級辛拉麵 (微辣牛骨湯) 130g（要用2的倍數下單喔！）",
+            "price_cents": 12200,
+            "sku": "c30eff56-e607-4d6e-a701-31bff5b9b640"
+          },
+          {
+            "name": "(限定販售) 冷凍日本國產和牛 F1奧羽牛霜降腹肉片(貼體包裝) 100g/盒（要用2的倍數下單喔！）",
+            "price_cents": 29900,
+            "sku": "7e59e632-0f9a-5ca5-956b-872b2d2171bd"
+          },
+          {
+            "name": "禾香鮮乳(奶素)936ml",
+            "price_cents": 8900,
+            "sku": "e2cd4602-3761-4f4c-a28c-947867e974f3"
+          },
+          {
+            "name": "Häagen-Dazs 雪糕覆盆子巧酥雪糕 80ML【哈根達斯】",
+            "price_cents": 10900,
+            "sku": "3621e48b-6b19-574e-806e-172c4f1762a4"
           },
           {
             "name": "Rement 皮克敏瓶中收藏盲盒二代 #",
             "price_cents": 40800,
             "sku": "13834e15-7055-5bed-b81d-2a2320fffef2"
-          },
-          {
-            "name": "Kodak 柯達 i60 新型底片相機-哈密瓜綠| 禮物首選 #",
-            "price_cents": 166100,
-            "sku": "faeb320e-a7e5-5948-998f-46f8267d71ff"
           },
           {
             "name": "柯達 Kodak i60 新型底片相機-柯達黃| 禮物首選 #",
@@ -5688,61 +6026,6 @@
             "sku": "9734b8cf-3ec2-5833-9f85-d19eff1ec38e"
           },
           {
-            "name": "嬌生嬰兒純水柔濕巾-加厚型 80片*3入",
-            "price_cents": 15500,
-            "sku": "44f54620-a7e6-4c12-ac32-445c30312491"
-          },
-          {
-            "name": "幫寶適安睡褲XL 26片",
-            "price_cents": 49900,
-            "sku": "08cdc57f-0535-510f-95a6-e6100134ff81"
-          },
-          {
-            "name": "幫寶適一級幫散熱拉拉褲XXL 24+4片 (新舊包裝隨機出貨)",
-            "price_cents": 46900,
-            "sku": "f1224310-fdd0-59e9-87e4-6e371084e07d"
-          },
-          {
-            "name": "75%立得清食品級酒精擦濕巾10抽（要用2的倍數下單喔！）",
-            "price_cents": 5900,
-            "sku": "e7d6339b-c989-5b00-84b2-e5368c11ffc8"
-          },
-          {
-            "name": "滿意寶寶 瞬潔乾爽輕巧褲(L)(44片/包)",
-            "price_cents": 36900,
-            "sku": "23214d83-3c15-4dde-8c6c-a3ff82a5c05f"
-          },
-          {
-            "name": "【好奇】小森林好動褲/褲型尿布/ XXXL 24片/包",
-            "price_cents": 51600,
-            "sku": "344e2e24-a55a-4e94-b687-0cc843d6ff58"
-          },
-          {
-            "name": "幫寶適一級幫散熱拉拉褲XL 32片 (新舊包裝隨機出貨)",
-            "price_cents": 46900,
-            "sku": "cf3bc693-9d3f-5896-bf7b-0af9313adc3d"
-          },
-          {
-            "name": "滿意寶寶 瞬潔乾爽輕巧褲(XL)(38片/包)",
-            "price_cents": 43900,
-            "sku": "16af6e99-f928-421e-a6e6-fc1706cdd476"
-          },
-          {
-            "name": "滿意寶寶 瞬潔乾爽輕巧褲(XXL)(26片/包)",
-            "price_cents": 43900,
-            "sku": "656f7002-9c52-47a6-bd3c-57e9deebf20e"
-          },
-          {
-            "name": "貝恩嬰兒保養柔濕巾80抽x3包(串)",
-            "price_cents": 20900,
-            "sku": "5c147fbc-0cea-5640-9f30-2dc25d6b388a"
-          },
-          {
-            "name": "幫寶適奢寵黑金幫成長禮盒組 (S*48片+M*38片)",
-            "price_cents": 99900,
-            "sku": "677b430f-3a4b-5351-a09d-4e0a71b303ba"
-          },
-          {
             "name": "桂冠蛋餃 104g",
             "price_cents": 5500,
             "sku": "2ebc1aee-23a7-41b4-bf3a-0f506b0ab13c"
@@ -5776,316 +6059,6 @@
             "name": "桂冠波隆那肉醬義大利麵 330g",
             "price_cents": 7500,
             "sku": "62c38039-43bc-5a0e-b81b-b31ed5a3cfbc"
-          },
-          {
-            "name": "Häagen-Dazs 草莓冰淇淋 100ml【哈根達斯】",
-            "price_cents": 11900,
-            "sku": "726986fd-bee2-4736-b060-7c3554a1097a"
-          },
-          {
-            "name": "Häagen-Dazs 迷你杯海鹽焦糖開心果義式冰淇淋 110ml 【哈根達斯日本限定】",
-            "price_cents": 9900,
-            "sku": "638cfacf-ffcb-5521-a11c-77d596496e9c"
-          },
-          {
-            "name": "Häagen-Dazs 夏威夷果仁冰淇淋 100ml【哈根達斯】",
-            "price_cents": 11900,
-            "sku": "5c3046e8-300f-4269-962c-ed08d48172c3"
-          },
-          {
-            "name": "Häagen-Dazs 品脫比利時巧克力冰淇淋 473ML【哈根達斯】",
-            "price_cents": 30900,
-            "sku": "136b44af-3abd-5e9b-ab21-3c19c69b9e7e"
-          },
-          {
-            "name": "Häagen-Dazs 開心果冰淇淋 420ml【哈根達斯】",
-            "price_cents": 25900,
-            "sku": "df841027-9887-5a00-b400-073d1f017dce"
-          },
-          {
-            "name": "Häagen-Dazs 開心果冰淇淋 100ml【哈根達斯】",
-            "price_cents": 11900,
-            "sku": "11f2f1b0-9c95-5bb5-a439-6e13a6a33949"
-          },
-          {
-            "name": "灣仔碼頭鮮蝦韭黃水餃 22.5g*20入",
-            "price_cents": 26900,
-            "sku": "b410deb6-4424-4a70-92a7-fa8f3e82e0d5"
-          },
-          {
-            "name": "灣仔碼頭玉米蔬菜豬肉手工水餃 23.5g*40入",
-            "price_cents": 26900,
-            "sku": "b191c41e-2f48-40c4-9f0b-85965325202e"
-          },
-          {
-            "name": "Häagen-Dazs 夏威夷果仁冰淇淋 473ml【哈根達斯】",
-            "price_cents": 25900,
-            "sku": "5a1ea1cd-947a-41ae-8ea0-050d6d39e29e"
-          },
-          {
-            "name": "Häagen-Dazs 抹茶雪酥 60ml 【哈根達斯日本限定】",
-            "price_cents": 9900,
-            "sku": "11bd135b-c651-556d-88bd-c3d3053f7982"
-          },
-          {
-            "name": "Häagen-Dazs 仲夏野莓冰淇淋 100ml【哈根達斯】",
-            "price_cents": 10900,
-            "sku": "36ea3016-fb2c-43df-8cc8-ce6af2c38af9"
-          },
-          {
-            "name": "灣仔碼頭川香麻辣豬肉水餃 23.5g*40入",
-            "price_cents": 26900,
-            "sku": "93da6294-9ce6-4221-a5a4-2114dd700aaf"
-          },
-          {
-            "name": "Häagen-Dazs 比利時巧克力冰淇淋 100ml【哈根達斯】",
-            "price_cents": 11900,
-            "sku": "f3563a60-024f-4eb4-acc5-afa6e9310443"
-          },
-          {
-            "name": "Häagen-Dazs 抹茶冰淇淋 473ml【哈根達斯】",
-            "price_cents": 25900,
-            "sku": "1985e779-7cae-48dc-887a-942b835d8b97"
-          },
-          {
-            "name": "Häagen-Dazs 蘭姆葡萄冰淇淋 473ml【哈根達斯】",
-            "price_cents": 25900,
-            "sku": "9d4f48f4-94d7-4b03-9ab6-33fa2fceceaf"
-          },
-          {
-            "name": "Häagen-Dazs 淇淋巧酥冰淇淋 100ml【哈根達斯】",
-            "price_cents": 11900,
-            "sku": "020dd862-d067-4bd9-8438-0294e3c9f590"
-          },
-          {
-            "name": "Häagen-Dazs 迷你杯草莓麻糬冰淇淋 100ML 【哈根達斯夏季限定】 #01",
-            "price_cents": 8900,
-            "sku": "19e0f7a2-45cc-5c89-acf2-f1b53ae21ffd"
-          },
-          {
-            "name": "Häagen-Dazs 咖啡冰淇淋 473ml【哈根達斯】",
-            "price_cents": 25900,
-            "sku": "45983034-438f-4e99-8fe9-46b71fb9da5b"
-          },
-          {
-            "name": "農心頂級辛拉麵 (微辣牛骨湯) 130g（要用2的倍數下單喔！）",
-            "price_cents": 12200,
-            "sku": "c30eff56-e607-4d6e-a701-31bff5b9b640"
-          },
-          {
-            "name": "(限定販售) 冷凍日本國產和牛 F1奧羽牛霜降腹肉片(貼體包裝) 100g/盒（要用2的倍數下單喔！）",
-            "price_cents": 29900,
-            "sku": "7e59e632-0f9a-5ca5-956b-872b2d2171bd"
-          },
-          {
-            "name": "禾香鮮乳(奶素)936ml",
-            "price_cents": 8900,
-            "sku": "e2cd4602-3761-4f4c-a28c-947867e974f3"
-          },
-          {
-            "name": "Häagen-Dazs 雪糕覆盆子巧酥雪糕 80ML【哈根達斯】",
-            "price_cents": 10900,
-            "sku": "3621e48b-6b19-574e-806e-172c4f1762a4"
-          },
-          {
-            "name": "美國三色馬鈴薯600g±10%",
-            "price_cents": 12900,
-            "sku": "8cdc1c8d-fd54-569a-b19d-53f2bb33a592"
-          },
-          {
-            "name": "美國進口馬鈴薯600g±10%",
-            "price_cents": 6900,
-            "sku": "26fff45e-e5e5-57ba-9c1d-29f30a8e1bb1"
-          },
-          {
-            "name": "冷凍熟蟹黃 125g",
-            "price_cents": 25500,
-            "sku": "b4918df5-5dfc-5c24-b9ef-56bfc1e71389"
-          },
-          {
-            "name": "林鳳營特濃重乳優格 藍莓400g（要用2的倍數下單喔！）",
-            "price_cents": 14500,
-            "sku": "3f5c314d-dc42-4669-a945-66f1e17b358b"
-          },
-          {
-            "name": "林鳳營特濃重乳優格(無加糖) 120g*2",
-            "price_cents": 5900,
-            "sku": "7fd105e7-18b8-4178-9645-aedec815c49f"
-          },
-          {
-            "name": "林鳳營精品優格_希臘式優格(無加糖) 400g（要用2的倍數下單喔！）",
-            "price_cents": 17200,
-            "sku": "612b1978-9d84-4077-8b94-70f335b35b4d"
-          },
-          {
-            "name": "林鳳營特濃重乳優格-草莓400g（要用2的倍數下單喔！）",
-            "price_cents": 14500,
-            "sku": "b2a76d13-b86c-4f77-af1f-3a1a07851b3b"
-          },
-          {
-            "name": "林鳳營精品優格_鮮奶優格(無加糖) 400g（要用2的倍數下單喔！）",
-            "price_cents": 17200,
-            "sku": "cbab366b-4a9b-5049-b0f4-85554861a137"
-          },
-          {
-            "name": "林鳳營特濃重乳優格 微甜 400g（要用2的倍數下單喔！）",
-            "price_cents": 14500,
-            "sku": "6ea2479f-4811-4501-9ac4-389a5d554120"
-          },
-          {
-            "name": "林鳳營特濃重乳優格 藍莓 120gx2",
-            "price_cents": 5900,
-            "sku": "124cf95e-ce26-4aa5-a380-26da32496790"
-          },
-          {
-            "name": "大醇豆無加糖豆漿 1857ml",
-            "price_cents": 6200,
-            "sku": "0abb8a0a-6668-5703-9cad-9fc58281c3ac"
-          },
-          {
-            "name": "每日C PLUS 100%綜合果蔬汁(含維生素A) 800ml",
-            "price_cents": 6900,
-            "sku": "c50ae9c4-4c3e-471f-8c3e-4a97144486b7"
-          },
-          {
-            "name": "LCA506活菌發酵乳－清爽100ml*10入",
-            "price_cents": 5900,
-            "sku": "2aa31658-b0b5-420b-98c0-6412365d4ae1"
-          },
-          {
-            "name": "大醇豆無加糖豆漿936ml",
-            "price_cents": 3500,
-            "sku": "c563ce67-1136-4930-ade5-c211e474611f"
-          },
-          {
-            "name": "林鳳營益生菌優酪乳-無加糖880ml",
-            "price_cents": 7200,
-            "sku": "94749711-2e2c-40a1-bfca-1414b8ec0ed9"
-          },
-          {
-            "name": "林鳳營特濃重乳優格 120g*2",
-            "price_cents": 5900,
-            "sku": "9b64f9b2-09ba-40a5-98a9-57b9e9189bab"
-          },
-          {
-            "name": "原萃綠茶 - 玉露入り580ML（要用2的倍數下單喔！）",
-            "price_cents": 4700,
-            "sku": "2a3e189b-a4bc-4cd9-afd9-1bc34fc6a9b8"
-          },
-          {
-            "name": "可口可樂200mlX8",
-            "price_cents": 12500,
-            "sku": "abe2728c-9617-4943-8446-65bba7e2b00e"
-          },
-          {
-            "name": "原萃鍋煮風味麥茶 600ml（要用2的倍數下單喔！）",
-            "price_cents": 5200,
-            "sku": "169c8fd5-6656-5dec-a497-863e26a38624"
-          },
-          {
-            "name": "原萃日式焙茶寶特580ML（要用2的倍數下單喔！）",
-            "price_cents": 4700,
-            "sku": "46bbd191-f097-49a9-8c14-82e880a47ce7"
-          },
-          {
-            "name": "Schweppes 舒味思氣泡水原味 500ml",
-            "price_cents": 2900,
-            "sku": "b3919456-1b08-421a-a75a-05b01b2effcb"
-          },
-          {
-            "name": "喬亞滴濾無糖黑咖啡 350ml",
-            "price_cents": 3200,
-            "sku": "100661e6-950a-467d-98f4-49f5b12be566"
-          },
-          {
-            "name": "喬亞滴濾拿鐵 350ml",
-            "price_cents": 3200,
-            "sku": "bb4315e1-f8d1-4275-9171-889e25555d21"
-          },
-          {
-            "name": "原萃錫蘭無糖紅茶寶特580ML",
-            "price_cents": 2500,
-            "sku": "79e252bb-040c-485e-a92d-90989ad43779"
-          },
-          {
-            "name": "原萃日式綠茶寶特580ml（要用2的倍數下單喔！）",
-            "price_cents": 4700,
-            "sku": "575f4763-eabe-4bd8-935f-72ede3cecab8"
-          },
-          {
-            "name": "原萃鐵觀音580ML",
-            "price_cents": 2500,
-            "sku": "d9d68c9b-0a93-4d68-a08d-929b779ad2c0"
-          },
-          {
-            "name": "可口可樂ZERO無糖零卡200mlX8",
-            "price_cents": 12500,
-            "sku": "40ccc034-0405-4349-82e7-45f1db35e9ae"
-          },
-          {
-            "name": "可口可樂2000ml",
-            "price_cents": 5500,
-            "sku": "9adc6875-9d6a-4f41-9e28-9c7f6028ad12"
-          },
-          {
-            "name": "美粒果零加糖蜜桃蘇打500ml",
-            "price_cents": 3200,
-            "sku": "b9ca29e4-eb22-43f7-a121-bbe020da4d62"
-          },
-          {
-            "name": "ACE 紅鑽大蔓越莓乾110公克（要用2的倍數下單喔！）",
-            "price_cents": 28000,
-            "sku": "87a1ef7a-0524-4404-8d50-e9045842c970"
-          },
-          {
-            "name": "舒跑運動飲料 590ml",
-            "price_cents": 2500,
-            "sku": "38812945-e5ef-4614-860e-d892ab9bc5c5"
-          },
-          {
-            "name": "萬丹紅紅豆水 530ml（要用2的倍數下單喔！）",
-            "price_cents": 5600,
-            "sku": "53ed8ab9-e08b-42d5-a08c-273e060b72b1"
-          },
-          {
-            "name": "提提研極緻修護禮盒11入",
-            "price_cents": 80000,
-            "sku": "f36bdb27-d819-5478-a3be-4c1d80a16905"
-          },
-          {
-            "name": "ELLO研舒肌 益生菌淨痘調理乳霜 Urgent Acne Cream 18ml",
-            "price_cents": 39900,
-            "sku": "2f0aea5c-a72c-5218-9fc1-9f5252ee93f1"
-          },
-          {
-            "name": "HARU 熱愛型保險套 4入",
-            "price_cents": 18900,
-            "sku": "8b2cf777-c870-468b-b804-868b2902dc2c"
-          },
-          {
-            "name": "HARU DESIRE 大麻玫瑰激潮露 #",
-            "price_cents": 69900,
-            "sku": "1e510d25-a020-53fa-af8a-5e2526652381"
-          },
-          {
-            "name": "HARU THRILL  大麻極酥電麻潤滑液 快感增強版 50ml",
-            "price_cents": 84900,
-            "sku": "462c7a26-c0b4-549b-9186-48e0fbad657c"
-          },
-          {
-            "name": "HARU GLOW 大麻玫瑰喚醒按摩精油",
-            "price_cents": 106000,
-            "sku": "1653ac01-6ced-5312-bec9-8e17f4ba5175"
-          },
-          {
-            "name": "SLOW FUCK(SEX)慢慢愛 男性機能乳膏 #01",
-            "price_cents": 89900,
-            "sku": "8a759e8c-a727-577c-a83d-5c1dbeb28db9"
-          },
-          {
-            "name": "HARU女性私密護理潤滑液 155ml",
-            "price_cents": 55000,
-            "sku": "1892905a-ff11-485a-b755-51eb419a3758"
           },
           {
             "name": "(限定販售) 伊藤和牛 冷凍日本A5霜降牛排(貼體包裝) 100g/盒（要用2的倍數下單喔！）",
@@ -6173,14 +6146,14 @@
             "sku": "58e7c06f-58be-53ac-9b0c-52ad1b10ca75"
           },
           {
-            "name": "KIRIN 生茶-焙茶525ml（要用2的倍數下單喔！）",
-            "price_cents": 5500,
-            "sku": "ff3e0259-02cf-52dd-b04a-33214f9271b4"
-          },
-          {
             "name": "橘子工坊天然濃縮制菌洗衣精補充包1500ml-洗淨病毒升級版",
             "price_cents": 20900,
             "sku": "2f5c4529-6934-4223-9303-fd3b52acbe24"
+          },
+          {
+            "name": "KIRIN 生茶-焙茶525ml（要用2的倍數下單喔！）",
+            "price_cents": 5500,
+            "sku": "ff3e0259-02cf-52dd-b04a-33214f9271b4"
           },
           {
             "name": "台鹽海洋鹼性離子水850ml",
@@ -6238,14 +6211,14 @@
             "sku": "387cc402-9529-4b15-80bc-f2fa4d09d300"
           },
           {
-            "name": "冷凍美國牛雪花燒烤片150g（要用2的倍數下單喔！）",
-            "price_cents": 11100,
-            "sku": "844e7ac9-2f8b-5bf5-8a3b-a42fde9ab9bb"
-          },
-          {
             "name": "冷凍大成黑蜜豬梅花火鍋肉片(200g/包)（要用2的倍數下單喔！）",
             "price_cents": 29900,
             "sku": "69871c21-3f98-552a-90b9-d5870a014f87"
+          },
+          {
+            "name": "冷凍美國牛雪花燒烤片150g（要用2的倍數下單喔！）",
+            "price_cents": 11100,
+            "sku": "844e7ac9-2f8b-5bf5-8a3b-a42fde9ab9bb"
           },
           {
             "name": "義美雞蛋豆腐 290g",
@@ -6403,14 +6376,14 @@
             "sku": "ff34e507-f33f-54d3-b7dd-e79a8ddd5205"
           },
           {
-            "name": "樂事洋芋片-美國經典原味59.5g",
-            "price_cents": 3300,
-            "sku": "8cd55768-9ac5-4d54-8164-dfa054df4870"
-          },
-          {
             "name": "進口大白菜500g(剖半)",
             "price_cents": 9900,
             "sku": "11fb4247-9583-5725-9848-9e6f624ef5d3"
+          },
+          {
+            "name": "樂事洋芋片-美國經典原味59.5g",
+            "price_cents": 3300,
+            "sku": "8cd55768-9ac5-4d54-8164-dfa054df4870"
           },
           {
             "name": "DARLIE好來 經典軟毛成人牙刷(6入)",
@@ -6478,6 +6451,11 @@
             "sku": "a623a65f-1375-592b-bcdd-2ddfed974314"
           },
           {
+            "name": "冷凍大成益活雞雞胸絞肉(貼體包裝) 200g/盒",
+            "price_cents": 13500,
+            "sku": "1a340910-dd09-52d7-a95e-6da0f2fbcd96"
+          },
+          {
             "name": "樂天 BINCH巧克力餅乾102g",
             "price_cents": 5500,
             "sku": "cdd25aba-6ae0-4574-a0ea-01a66ad792fc"
@@ -6491,11 +6469,6 @@
             "name": "李施德霖薄荷除菌漱口水500ml+250ml",
             "price_cents": 15900,
             "sku": "cbb83ea7-e8d3-4a6e-ba8a-66be5d45203b"
-          },
-          {
-            "name": "冷凍大成益活雞雞胸絞肉(貼體包裝) 200g/盒",
-            "price_cents": 13500,
-            "sku": "1a340910-dd09-52d7-a95e-6da0f2fbcd96"
           },
           {
             "name": "KIRIN 午後紅茶-紅茶 1500ml",
@@ -6553,14 +6526,14 @@
             "sku": "136c4bbe-2864-535d-b08e-6d641714ac0e"
           },
           {
-            "name": "Mdmmd.新涼感抑菌衛生棉(超涼感)-夜用型【後宮】 33cm / 6片（要用2的倍數下單喔！）",
-            "price_cents": 10900,
-            "sku": "509ae682-512a-4848-b557-6da1741b36aa"
-          },
-          {
             "name": "S&B愛思必金牌咖哩-甜味 220g",
             "price_cents": 14000,
             "sku": "9138cb4f-b8d2-5f7f-aff4-b7b7bf377f0e"
+          },
+          {
+            "name": "Mdmmd.新涼感抑菌衛生棉(超涼感)-夜用型【後宮】 33cm / 6片（要用2的倍數下單喔！）",
+            "price_cents": 10900,
+            "sku": "509ae682-512a-4848-b557-6da1741b36aa"
           },
           {
             "name": "LUX麗仕 髮の補給角蛋白胺基酸蓬鬆護髮乳450g",
@@ -6728,9 +6701,9 @@
             "sku": "a82f8ceb-ab5a-4a1c-a74b-6913a93032e2"
           },
           {
-            "name": "貝貝栗子南瓜300g±10%",
-            "price_cents": 6900,
-            "sku": "bfc131be-8e46-5b10-8dcf-98e2fa0a78c3"
+            "name": "《台灣產》【產銷履歷】福山萵苣250g±10%",
+            "price_cents": 4900,
+            "sku": "62160fb3-4e9f-5773-8530-bfee8b8c2af3"
           },
           {
             "name": "大漢傳統板豆腐(非基改) 400g",
@@ -6738,9 +6711,9 @@
             "sku": "43227a01-fb32-4aba-8e7b-dcd14348565a"
           },
           {
-            "name": "《台灣產》【產銷履歷】福山萵苣250g±10%",
-            "price_cents": 4900,
-            "sku": "62160fb3-4e9f-5773-8530-bfee8b8c2af3"
+            "name": "貝貝栗子南瓜300g±10%",
+            "price_cents": 6900,
+            "sku": "bfc131be-8e46-5b10-8dcf-98e2fa0a78c3"
           },
           {
             "name": "美國TOSTITOS莎莎醬(微辣) 439.4g",
@@ -6763,6 +6736,11 @@
             "sku": "a1d7e2a1-27a6-4ebf-80b5-3bc1d9342570"
           },
           {
+            "name": "舒潔 雲柔舒適抽取衛生紙 100抽x10包",
+            "price_cents": 13900,
+            "sku": "eb5ec558-413a-5f1c-8828-f0f20476d420"
+          },
+          {
             "name": "高絲光映透 集中調理禦痘面膜_7枚入",
             "price_cents": 22900,
             "sku": "2f0d6e89-aedc-41a2-8913-fdc4e264fd61"
@@ -6771,11 +6749,6 @@
             "name": "農心辛辣白菜風味拉麵120g*4入",
             "price_cents": 15500,
             "sku": "8b4da12f-9ec8-4cb6-84b0-6963d07cb91e"
-          },
-          {
-            "name": "舒潔 雲柔舒適抽取衛生紙 100抽x10包",
-            "price_cents": 13900,
-            "sku": "eb5ec558-413a-5f1c-8828-f0f20476d420"
           },
           {
             "name": "鮮乳坊鮮乳饅頭 35g*9入",
@@ -6938,14 +6911,14 @@
             "sku": "f5e9c5d7-43f6-4696-ac7d-c28f6355d252"
           },
           {
-            "name": "東門興記香菜豬肉水餃 650g",
-            "price_cents": 29900,
-            "sku": "07f6982a-8ad5-5c5f-b4f3-c9bb013e809a"
-          },
-          {
             "name": "義美無加糖厚濃豆奶 936ml",
             "price_cents": 5000,
             "sku": "59a52f88-a3b5-4ddc-8703-f89c5534c398"
+          },
+          {
+            "name": "東門興記香菜豬肉水餃 650g",
+            "price_cents": 29900,
+            "sku": "07f6982a-8ad5-5c5f-b4f3-c9bb013e809a"
           },
           {
             "name": "Fudotime飼糧倉綿綿雞腿50g",
@@ -6998,6 +6971,11 @@
             "sku": "ca6132a2-fbb9-56c4-a33a-94358f092531"
           },
           {
+            "name": "萬丹紅紅豆水 530ml（要用2的倍數下單喔！）",
+            "price_cents": 5600,
+            "sku": "53ed8ab9-e08b-42d5-a08c-273e060b72b1"
+          },
+          {
             "name": "千張豆腐皮 90g",
             "price_cents": 14900,
             "sku": "2ee2a208-f6e8-5c56-9ad3-4288633c32a9"
@@ -7048,19 +7026,24 @@
             "sku": "ceddf5a8-5f76-4d50-aca8-52995cff5f01"
           },
           {
+            "name": "紐西蘭DAZZLE炫光蘋果(2-3入盒裝)420g±10%",
+            "price_cents": 13900,
+            "sku": "4b7277ee-44d3-599d-8e1b-505325ac3133"
+          },
+          {
             "name": "Hair Recipe髮的食譜 無花果白茶控油蓬鬆洗髮露510G",
             "price_cents": 37900,
             "sku": "5e2d26f6-e4dc-5c6a-af20-f81e84154780"
           },
           {
+            "name": "《台灣產》小春蜜木瓜(2-3入)600g±10%",
+            "price_cents": 12900,
+            "sku": "92049be1-64e8-4259-9128-e1b6d162eea9"
+          },
+          {
             "name": "日清咚兵衛油豆腐烏龍麵 (碗) (速食麵) 95g",
             "price_cents": 8900,
             "sku": "eb272e23-0842-4cb1-86d9-e9cd007dd6ed"
-          },
-          {
-            "name": "紐西蘭DAZZLE炫光蘋果(2-3入盒裝)420g±10%",
-            "price_cents": 13900,
-            "sku": "4b7277ee-44d3-599d-8e1b-505325ac3133"
           },
           {
             "name": "Greens 冷凍番茄丁 1kg",
@@ -7076,11 +7059,6 @@
             "name": "三好米 契約栽培芋香米2.5Kg(芋頭香)",
             "price_cents": 21500,
             "sku": "1ed52f58-5397-4ca6-a805-7b93e6ec06d6"
-          },
-          {
-            "name": "《台灣產》小春蜜木瓜(2-3入)600g±10%",
-            "price_cents": 12900,
-            "sku": "92049be1-64e8-4259-9128-e1b6d162eea9"
           },
           {
             "name": "冷凍泰國蝦 10-12P 500g",
@@ -7103,14 +7081,14 @@
             "sku": "81f9258d-75be-5d9a-9479-b592876fd5bd"
           },
           {
-            "name": "安佳頂級大師專用乳酪絲 300g",
-            "price_cents": 18700,
-            "sku": "9ed5cf6e-3010-4876-8d01-d9bafc9e39d9"
-          },
-          {
             "name": "冷凍大比目魚切片200g",
             "price_cents": 13900,
             "sku": "4eb5faf0-195b-4a92-92b9-c70d9de634dd"
+          },
+          {
+            "name": "安佳頂級大師專用乳酪絲 300g",
+            "price_cents": 18700,
+            "sku": "9ed5cf6e-3010-4876-8d01-d9bafc9e39d9"
           },
           {
             "name": "冷藏現流蝦仁 150g",
@@ -7193,6 +7171,11 @@
             "sku": "a60f26e5-39d8-4803-9d26-d32d107a66a0"
           },
           {
+            "name": "吉蒸牧場阿秀鮮奶 936ml",
+            "price_cents": 9900,
+            "sku": "2eb39980-2f6d-49d0-9ace-757892dc9882"
+          },
+          {
             "name": "歐碧衛生棉條-量多夜安型 16入",
             "price_cents": 14900,
             "sku": "b19d73ea-3cc0-4f44-8ea0-bb2bc5a95ff1"
@@ -7213,11 +7196,6 @@
             "sku": "04d5441a-f319-442e-bf61-0730b20e6de4"
           },
           {
-            "name": "吉蒸牧場阿秀鮮奶 936ml",
-            "price_cents": 9900,
-            "sku": "2eb39980-2f6d-49d0-9ace-757892dc9882"
-          },
-          {
             "name": "樹頂蔓越莓氣泡飲320 ML鋁罐裝（要用2的倍數下單喔！）",
             "price_cents": 5000,
             "sku": "755f560d-aa1a-4346-ad31-2383747db1d3"
@@ -7228,14 +7206,19 @@
             "sku": "ed49a53a-78c3-5bd1-8143-2f38af258438"
           },
           {
-            "name": "卡迪那95℃北海道風味薯條-原味16gx5入",
-            "price_cents": 8500,
-            "sku": "c81bb342-b290-4f33-b2ca-f293bb9e9f66"
-          },
-          {
             "name": "MILKLAB 澳洲進口100%嚴選無乳糖牛奶 1000ml （冷藏）",
             "price_cents": 13900,
             "sku": "ba8ef964-95f7-4353-9bbf-1ea4018b5e2d"
+          },
+          {
+            "name": "統一瑞穗低脂鮮奶 930ml",
+            "price_cents": 9200,
+            "sku": "85d1e986-37d6-5b4d-ace2-c94a7725064b"
+          },
+          {
+            "name": "卡迪那95℃北海道風味薯條-原味16gx5入",
+            "price_cents": 8500,
+            "sku": "c81bb342-b290-4f33-b2ca-f293bb9e9f66"
           },
           {
             "name": "冷凍生食級干貝 130g",
@@ -7251,11 +7234,6 @@
             "name": "馬修分享號優格(無加糖) 960g",
             "price_cents": 35900,
             "sku": "4ab6259b-612f-5e76-a049-e4ffce696ade"
-          },
-          {
-            "name": "統一瑞穗低脂鮮奶 930ml",
-            "price_cents": 9200,
-            "sku": "85d1e986-37d6-5b4d-ace2-c94a7725064b"
           },
           {
             "name": "農心安城湯麵125g*4入",
@@ -7543,24 +7521,24 @@
             "sku": "f1669ab8-cc79-4535-abc8-b4229d41dca9"
           },
           {
-            "name": "光泉麥芽牛乳200mlx6入",
-            "price_cents": 8900,
-            "sku": "70b9ffdf-fec1-4f63-b630-d0a003232671"
-          },
-          {
             "name": "質立希臘優格(無加糖)150g*2入",
             "price_cents": 6200,
             "sku": "d2fa6f4c-aad2-4482-8fe3-4c5bf705f1a3"
           },
           {
-            "name": "冷凍土雞骨腿切塊600g",
-            "price_cents": 22900,
-            "sku": "031079da-5234-47a1-bc0f-f4a42dd60e19"
+            "name": "光泉麥芽牛乳200mlx6入",
+            "price_cents": 8900,
+            "sku": "70b9ffdf-fec1-4f63-b630-d0a003232671"
           },
           {
             "name": "統一滿漢大餐蔥燒牛肉袋麵187gx3入",
             "price_cents": 15500,
             "sku": "ed884496-d8af-416d-a694-ebc3f668f0ae"
+          },
+          {
+            "name": "冷凍土雞骨腿切塊600g",
+            "price_cents": 22900,
+            "sku": "031079da-5234-47a1-bc0f-f4a42dd60e19"
           },
           {
             "name": "DARLIE 好來超氟牙膏 175g*2+超氟牙膏 50g",
@@ -7573,11 +7551,6 @@
             "sku": "1ceb4b58-821b-4461-aec8-003b91190ab6"
           },
           {
-            "name": "馬修嚴選葡萄蘋果優格飲180ml",
-            "price_cents": 7500,
-            "sku": "18cc0755-809b-51f0-b5fb-020ab1e1ad88"
-          },
-          {
             "name": "統一飲冰室茶集-綠奶茶400ml",
             "price_cents": 2400,
             "sku": "3330dfc8-0fb0-46dd-a930-14865462f0e8"
@@ -7586,6 +7559,11 @@
             "name": "冷凍薄鹽鮭魚日切 250g",
             "price_cents": 17500,
             "sku": "a88331c7-3545-4978-8668-7db1777e23fb"
+          },
+          {
+            "name": "馬修嚴選葡萄蘋果優格飲180ml",
+            "price_cents": 7500,
+            "sku": "18cc0755-809b-51f0-b5fb-020ab1e1ad88"
           },
           {
             "name": "究好豬-冷凍五花肉片(精裝)(貼體包裝)180g/盒",
@@ -7623,11 +7601,6 @@
             "sku": "fabf03c5-b6d9-5ca9-b9a2-745c9f1d4049"
           },
           {
-            "name": "橋頭 道地重慶老火鍋底料 360g (90g×4小包)",
-            "price_cents": 21900,
-            "sku": "cea5afc6-a230-5283-b650-6b7045c478c3"
-          },
-          {
             "name": "日本桃屋-拌飯蒜頭醬125g",
             "price_cents": 17900,
             "sku": "8c9bf946-88c8-5076-baef-f769740b1e51"
@@ -7646,6 +7619,11 @@
             "name": "冷藏安心雞翅小腿 /300g",
             "price_cents": 7500,
             "sku": "76224bb2-dc33-4d68-8e49-d3edb1bf2996"
+          },
+          {
+            "name": "橋頭 道地重慶老火鍋底料 360g (90g×4小包)",
+            "price_cents": 21900,
+            "sku": "cea5afc6-a230-5283-b650-6b7045c478c3"
           },
           {
             "name": "可樂果-古早味 88g",
@@ -7783,11 +7761,6 @@
             "sku": "2ce350bb-e7be-4d9b-a1dc-f5ec88640967"
           },
           {
-            "name": "《台灣產》【產銷履歷】九層塔50g±10%",
-            "price_cents": 5900,
-            "sku": "5b89a640-b5b6-520b-882e-db06139496b1"
-          },
-          {
             "name": "樹頂100%蔓越莓綜合果汁200MLx6入",
             "price_cents": 15300,
             "sku": "7b5d5cd9-b7f3-438b-8e00-f4bbf2165489"
@@ -7803,14 +7776,14 @@
             "sku": "abfd0107-cb1f-4736-a5c3-7ea379c8a029"
           },
           {
-            "name": "糯米椒200g±10%",
-            "price_cents": 9900,
-            "sku": "9de3b57d-7af0-560a-8716-58bdd5986dbe"
-          },
-          {
             "name": "冷凍大成益活雞翅中(貼體包裝) 300g",
             "price_cents": 16900,
             "sku": "befd987c-1428-4f73-bc79-9224caf99117"
+          },
+          {
+            "name": "《台灣產》【產銷履歷】九層塔50g±10%",
+            "price_cents": 5900,
+            "sku": "5b89a640-b5b6-520b-882e-db06139496b1"
           },
           {
             "name": "日本地球製藥 溫泡濃郁碳酸入浴錠-奢華橘柚12錠(4種類*3錠)",
@@ -7826,6 +7799,11 @@
             "name": "華元蝦肉蝦餅-我好辣風味100g",
             "price_cents": 6200,
             "sku": "7738a9d5-3746-4b9e-8a4a-afaab8d5657f"
+          },
+          {
+            "name": "糯米椒200g±10%",
+            "price_cents": 9900,
+            "sku": "9de3b57d-7af0-560a-8716-58bdd5986dbe"
           },
           {
             "name": "36° South 冷凍澳洲榖飼牛五花肉片500g",
@@ -7878,6 +7856,11 @@
             "sku": "0de3aa40-5c5c-4653-ae56-f21b44ad6cf4"
           },
           {
+            "name": "【玉美】Baby Leaf貝比綜合生菜30g±10%/盒",
+            "price_cents": 7900,
+            "sku": "a1070914-5a09-5da0-a0f4-d03395fa490f"
+          },
+          {
             "name": "九層塔50g±10%",
             "price_cents": 4900,
             "sku": "ebe4c455-171f-4c14-b513-f0a05504420f"
@@ -7886,11 +7869,6 @@
             "name": "沙威隆抗菌沐浴露-經典松木 1000ml",
             "price_cents": 13800,
             "sku": "05aeacc4-198d-430d-a3a9-7dfdf4ae7a88"
-          },
-          {
-            "name": "【玉美】Baby Leaf貝比綜合生菜30g±10%/盒",
-            "price_cents": 7900,
-            "sku": "a1070914-5a09-5da0-a0f4-d03395fa490f"
           },
           {
             "name": "樹頂100%葡萄綜合果汁300ML玻璃瓶",
@@ -8003,11 +7981,6 @@
             "sku": "8c03fb58-4919-52a5-83e2-07697819fb1a"
           },
           {
-            "name": "大成安心土雞去皮雞胸肉 600g",
-            "price_cents": 19900,
-            "sku": "6dc16452-0c5f-4e73-93ea-4f0dd79ce7ad"
-          },
-          {
             "name": "金門一條根遠紅紫外線貼布溫熱用 10片（要用2的倍數下單喔！）",
             "price_cents": 19900,
             "sku": "fc7fc4e8-2994-4ddf-b3bd-9601154266b2"
@@ -8028,19 +8001,19 @@
             "sku": "e61789ae-24de-46e7-a8d7-33bb52eb8753"
           },
           {
+            "name": "《台灣產》【有機】秀珍菇120g±10%",
+            "price_cents": 4900,
+            "sku": "fc2bc049-46b9-42fe-a363-b114ce8a5181"
+          },
+          {
             "name": "歐納丘純天然美國加州特級核桃 150g",
             "price_cents": 19800,
             "sku": "fd824f84-e970-578a-b840-a03a95abbc76"
           },
           {
-            "name": "《台灣產》【產地直採】福山萵苣(大陸A菜)250g±10%",
-            "price_cents": 5900,
-            "sku": "ee54ec13-6c4f-5c4b-a320-ac8c40fa0b8c"
-          },
-          {
-            "name": "《台灣產》【有機】秀珍菇120g±10%",
-            "price_cents": 4900,
-            "sku": "fc2bc049-46b9-42fe-a363-b114ce8a5181"
+            "name": "林鳳營全脂鮮乳 期間限定超值組(1857ml+936ml)",
+            "price_cents": 24500,
+            "sku": "851830c3-0f15-4480-b6ef-4b158a1c64a8"
           },
           {
             "name": "馬修嚴選-原味優格日嚐杯G+ 250g/杯",
@@ -8048,9 +8021,9 @@
             "sku": "989cf88a-84d7-5615-a8fa-d5a0c96f5ba2"
           },
           {
-            "name": "林鳳營全脂鮮乳 期間限定超值組(1857ml+936ml)",
-            "price_cents": 24500,
-            "sku": "851830c3-0f15-4480-b6ef-4b158a1c64a8"
+            "name": "《台灣產》【產地直採】福山萵苣(大陸A菜)250g±10%",
+            "price_cents": 5900,
+            "sku": "ee54ec13-6c4f-5c4b-a320-ac8c40fa0b8c"
           },
           {
             "name": "維力炸醬麵-重量碗110g",
@@ -8078,9 +8051,9 @@
             "sku": "076e213e-217c-4530-895b-c7f7e83faee2"
           },
           {
-            "name": "光泉調味乳飲-巧克力 936ml",
-            "price_cents": 7700,
-            "sku": "336a49b3-60be-4544-bf7f-fb93aaaa8a56"
+            "name": "統一AB優酪乳無糖 902ml",
+            "price_cents": 7500,
+            "sku": "73b00992-ab22-4ba0-9c61-6017f4b94e89"
           },
           {
             "name": "新鮮薄荷葉50g±10%",
@@ -8088,14 +8061,14 @@
             "sku": "42e5f12c-370f-5197-9045-ffaaf120b37b"
           },
           {
+            "name": "光泉調味乳飲-巧克力 936ml",
+            "price_cents": 7700,
+            "sku": "336a49b3-60be-4544-bf7f-fb93aaaa8a56"
+          },
+          {
             "name": "《台灣產》帝王芭樂(2-3入)500g",
             "price_cents": 9900,
             "sku": "c1dd43c9-e325-4e3d-880f-21a598d8e3a1"
-          },
-          {
-            "name": "統一AB優酪乳無糖 902ml",
-            "price_cents": 7500,
-            "sku": "73b00992-ab22-4ba0-9c61-6017f4b94e89"
           },
           {
             "name": "樹頂100%純蘋果汁980ml",
@@ -8153,24 +8126,19 @@
             "sku": "649be112-5ff8-43f9-b6b0-21beaa1be9fa"
           },
           {
-            "name": "冷藏安心雞棒腿切塊 300g",
-            "price_cents": 8500,
-            "sku": "30ed743c-ff0b-4329-a7dc-9a4c858212ae"
-          },
-          {
             "name": "酷椰嶼椰子俱樂部100%椰子水1L",
             "price_cents": 7700,
             "sku": "a27253d8-810b-49bf-9fe1-8a7bec7b933a"
           },
           {
+            "name": "冷藏安心雞棒腿切塊 300g",
+            "price_cents": 8500,
+            "sku": "30ed743c-ff0b-4329-a7dc-9a4c858212ae"
+          },
+          {
             "name": "Häagen-Dazs 巧克力冰淇淋 473ml【哈根達斯】",
             "price_cents": 25900,
             "sku": "aee7a5df-1d2e-44fb-b2f5-bf688906bccb"
-          },
-          {
-            "name": "統一瑞穗全脂鮮奶 930ml",
-            "price_cents": 9200,
-            "sku": "cce554a2-9d9f-51f0-a3ce-fcd677c12bf7"
           },
           {
             "name": "喬麥屋高級拉麵 100g*3入",
@@ -8181,6 +8149,11 @@
             "name": "蒜米200g±10%",
             "price_cents": 9900,
             "sku": "bc717b8b-21d4-4fea-82f5-ee1b5a36476f"
+          },
+          {
+            "name": "統一瑞穗全脂鮮奶 930ml",
+            "price_cents": 9200,
+            "sku": "cce554a2-9d9f-51f0-a3ce-fcd677c12bf7"
           },
           {
             "name": "盛香珍豐葵焦糖香瓜子150G",
@@ -8258,11 +8231,6 @@
             "sku": "1e017d3b-bed2-5fb2-8bb4-ba40d3ddd79c"
           },
           {
-            "name": "冷凍安心雞清胸肉(三連包) 1.1kg/組",
-            "price_cents": 26900,
-            "sku": "c75cc086-77d0-50cf-b59b-7c954f92e9b1"
-          },
-          {
             "name": "刷樂雙線超細滑牙線棒 50支（要用2的倍數下單喔！）",
             "price_cents": 7900,
             "sku": "1602c77a-69a8-46e3-a90f-093e9d8b5cfc"
@@ -8271,6 +8239,11 @@
             "name": "日本牛乳石鹼Bouncia美肌滋潤沐浴乳(優雅花香) 480ml",
             "price_cents": 18900,
             "sku": "e1e1df65-7dc0-43f1-a927-b350b186a1e4"
+          },
+          {
+            "name": "冷凍安心雞清胸肉(三連包) 1.1kg/組",
+            "price_cents": 26900,
+            "sku": "c75cc086-77d0-50cf-b59b-7c954f92e9b1"
           },
           {
             "name": "冷凍舒康雞-雞腿肉(貼體包裝) 240g/盒",
@@ -8298,14 +8271,14 @@
             "sku": "57eafaa4-5670-45e7-87eb-d486f14ce845"
           },
           {
-            "name": "蒜球300g",
-            "price_cents": 11900,
-            "sku": "2dcbc9f9-6895-4f97-a125-5282487083b1"
-          },
-          {
             "name": "養樂多活菌發酵乳100ml 10入/組",
             "price_cents": 7600,
             "sku": "3d5aba26-1a04-49ff-b80f-9636419abf69"
+          },
+          {
+            "name": "蒜球300g",
+            "price_cents": 11900,
+            "sku": "2dcbc9f9-6895-4f97-a125-5282487083b1"
           },
           {
             "name": "這一鍋慢燉老火雞白湯 50g*3入/包",
@@ -8323,14 +8296,14 @@
             "sku": "4d31c640-bb5f-56ee-a8a7-44f255fdc1d1"
           },
           {
-            "name": "嫩薑150g±10%",
-            "price_cents": 6900,
-            "sku": "6969752d-c067-4586-b312-0935540c48ce"
-          },
-          {
             "name": "冷凍舒康雞-雞胸肉(貼體包裝) 300g/盒",
             "price_cents": 17500,
             "sku": "3383dc45-24ae-4f55-9889-0dc1a3827c60"
+          },
+          {
+            "name": "嫩薑150g±10%",
+            "price_cents": 6900,
+            "sku": "6969752d-c067-4586-b312-0935540c48ce"
           },
           {
             "name": "好自在熊抱安睡褲XL 4片",
@@ -8348,19 +8321,24 @@
             "sku": "d025bd5d-17b6-44e8-87a6-69b947c0d3e0"
           },
           {
-            "name": "韭菜200g±10%",
-            "price_cents": 6900,
-            "sku": "8b409248-37bc-452f-8630-b11ad525fd58"
-          },
-          {
             "name": "好自在INFINITY液體衛生棉-量多日用 27cm 10片",
             "price_cents": 20900,
             "sku": "425876cd-c6fa-4d29-ae17-62384a1235a8"
           },
           {
+            "name": "韭菜200g±10%",
+            "price_cents": 6900,
+            "sku": "8b409248-37bc-452f-8630-b11ad525fd58"
+          },
+          {
             "name": "好自在熊抱安睡褲M4片",
             "price_cents": 15900,
             "sku": "1970e5b2-5807-4eb2-ac2e-b576abfca018"
+          },
+          {
+            "name": "好自在INFINITY液體衛生棉-超長夜用 34cm 10片",
+            "price_cents": 20900,
+            "sku": "ebbd1c37-a0db-4b49-823d-54b3adf18047"
           },
           {
             "name": "碧菲絲特 毛孔即淨卸妝棉 46張（要用2的倍數下單喔！）",
@@ -8378,14 +8356,14 @@
             "sku": "d7d2e894-8468-4770-813f-8e559e3c00c4"
           },
           {
-            "name": "好自在INFINITY液體衛生棉-超長夜用 34cm 10片",
-            "price_cents": 20900,
-            "sku": "ebbd1c37-a0db-4b49-823d-54b3adf18047"
-          },
-          {
             "name": "好自在熊抱安睡褲L4片",
             "price_cents": 15900,
             "sku": "bb713363-5088-431c-bd71-1c578422b07c"
+          },
+          {
+            "name": "好自在INFINITY液體衛生棉-日用 24cm 10片",
+            "price_cents": 20900,
+            "sku": "32e82ef7-a839-43e9-8c70-0336f2a6c2b5"
           },
           {
             "name": "馬修嚴選蘋果百香優格飲180ml",
@@ -8398,11 +8376,6 @@
             "sku": "d6220278-1cff-4485-ac20-c65d424e06b7"
           },
           {
-            "name": "好自在INFINITY液體衛生棉-日用 24cm 10片",
-            "price_cents": 20900,
-            "sku": "32e82ef7-a839-43e9-8c70-0336f2a6c2b5"
-          },
-          {
             "name": "Häagen-Dazs 芒果冰淇淋 100ml【哈根達斯】",
             "price_cents": 11900,
             "sku": "ddd6977e-82e8-41fb-b9cd-b7209f57d67e"
@@ -8413,14 +8386,14 @@
             "sku": "63a75f20-9938-55df-83b7-80e98da1d182"
           },
           {
-            "name": "3M細滑牙線棒 35入（要用2的倍數下單喔！）",
-            "price_cents": 12400,
-            "sku": "614d3b5e-94f2-5612-8284-ecfd3a8aaa15"
-          },
-          {
             "name": "絲花 潤澤化妝棉 40片x3盒/組（要用2的倍數下單喔！）",
             "price_cents": 37900,
             "sku": "e442810c-a87d-48f9-8555-9dc977a9a43c"
+          },
+          {
+            "name": "3M細滑牙線棒 35入（要用2的倍數下單喔！）",
+            "price_cents": 12400,
+            "sku": "614d3b5e-94f2-5612-8284-ecfd3a8aaa15"
           },
           {
             "name": "Biore蜜妮 頂級深層卸粧棉攜帶包-水嫩保濕型 10片（要用2的倍數下單喔！）",
@@ -8448,14 +8421,14 @@
             "sku": "51dc3211-14eb-52f3-be7a-da824dc9bd9f"
           },
           {
-            "name": "Biore蜜妮 深層卸粧棉補充包46片（要用2的倍數下單喔！）",
-            "price_cents": 19900,
-            "sku": "6b53e7ad-1376-4ffc-91b7-99262d7b68e1"
-          },
-          {
             "name": "碧菲絲特 水嫩即淨卸妝棉 46張（要用2的倍數下單喔！）",
             "price_cents": 39900,
             "sku": "0c9d0a38-f42a-59c8-9066-5b90716cfb35"
+          },
+          {
+            "name": "Biore蜜妮 深層卸粧棉補充包46片（要用2的倍數下單喔！）",
+            "price_cents": 19900,
+            "sku": "6b53e7ad-1376-4ffc-91b7-99262d7b68e1"
           },
           {
             "name": "碧菲絲特 水嫩即淨卸妝棉(10片裝)（要用2的倍數下單喔！）",
@@ -8466,6 +8439,11 @@
             "name": "台畜高崎火腿肩胛切片 100g",
             "price_cents": 11900,
             "sku": "e9891f3c-596f-49ae-86f7-e68930823cbc"
+          },
+          {
+            "name": "UCC職人珈琲濃縮球-無糖14g*8（要用2的倍數下單喔！）",
+            "price_cents": 17900,
+            "sku": "a6dc2341-1f79-5ec6-a527-079919d765dc"
           },
           {
             "name": "魔爪ULTRA超越 能量碳酸飲料355ml",
@@ -8529,23 +8507,10 @@
         "status": "BLOCKED_BY_PLATFORM_SECURITY",
         "http_status": 403,
         "title": "請稍候...",
-        "evidence": "audit-results/2026-11-09/uber_grocery_beitou/screenshot-000.png",
-        "error": "Uber storefront HTTP 403: Cloudflare challenge, no products rendered"
+        "error": "Uber storefront HTTP 403: security challenge, no products rendered"
       },
-      "screenshot_ocr": {
-        "count": null,
-        "items": [],
-        "complete": false,
-        "status": "SCREENSHOT_IS_SECURITY_CHALLENGE",
-        "http_status": 403,
-        "error": "Uber storefront HTTP 403: Cloudflare challenge, no products rendered",
-        "screenshots": 1
-      },
-      "screen_paths": [
-        "audit-results/2026-11-09/uber_grocery_beitou/screenshot-000.png"
-      ],
       "api_vs_dom": {
-        "a_only_count": 1035,
+        "a_only_count": 1036,
         "b_only_count": 0,
         "a_only_examples": [
           "(限定販售)伊藤和牛冷凍日本a5無骨牛小排肉片(貼體包裝)100g/盒（要用2的倍數下單喔！）",
@@ -8581,7 +8546,7 @@
     }
   ],
   "full_catalog_reconciliation": {
-    "checked_at": "2026-11-09T14:43:48.171625+08:00",
+    "checked_at": "2026-11-09T15:21:00.928832+08:00",
     "batch_id": "20261109133009",
     "status": "PASS_WITHIN_OBSERVED_RAW_SCOPE",
     "scope": "All stores in latest successful HF Raw batch; NOT all undisclosed Uber Eats inventory",
@@ -18421,5 +18386,5 @@
       "same_batch": true
     }
   },
-  "all_three_independent_methods_verified": false
+  "both_independent_methods_verified": false
 }
