@@ -62,6 +62,9 @@ jobs:
           PY
       - name: Python 全套回歸測試
         run: python -m unittest discover -s tests -v
+      - name: 指定執行的真實北投店 HTTP Raw → SQLite → 網頁索引驗收
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(live):')) }}
+        run: python scripts/acceptance_live_catalog.py
       - name: 網站資料契約與 JavaScript 測試
         run: |
           node --check web/app.js
