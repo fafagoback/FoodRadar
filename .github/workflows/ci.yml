@@ -96,6 +96,12 @@ jobs:
         run: |
           python scripts/audit_failed_http_raw.py
           python scripts/retest_catalog_failures.py
+      - name: 實測真實網頁渲染（WebKit Firefox Chromium）
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(dom):') }}
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium firefox webkit
+          python scripts/probe_rendered_dom_engines.py
       - name: 網站資料契約與 JavaScript 測試
         run: |
           node --check web/app.js
