@@ -120,18 +120,24 @@ def restore_history(config, rebuild_all=False):
             if len(docs) != len(meta['stores']):
                 raise ValueError('HF original store count mismatch')
             apply_snapshot(conn, docs, current_batch)
-            audit = update_verified_weekly(conn, current_batch)
             replayed.append(manifest_path + ':' + digest)
             batch = current_batch
             print('HF_RAW_TO_DB='+json.dumps({
                 'batch':batch,
                 'stores':len(docs),
-                'qualified_comparisons':audit['qualified_comparisons'],
-                'deals':audit['deals'],
+                'replay_complete':True,
                 'legacy_batches':0,
             },ensure_ascii=False),flush=True)
         if not replayed:
             raise RuntimeError("No complete immutable HF Raw batches to build serving DB")
+        # Weekly discount projection depends exclusively on the final snapshot
+        # and immutable historical numeric observations. Applying it after
+        # every historical batch repeatedly scans the same growing history.
+        # Derive it ONCE after all raw snapshots have been applied.
+        audit = update_verified_weekly(conn, batch)
+        print('HF_RAW_FINAL_VERIFIED_WEEKLY=' + json.dumps({
+            'batch':batch, **audit,
+        },ensure_ascii=False),flush=True)
         conn.execute(
             "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
             ('raw_source', f'{folder}/'))
