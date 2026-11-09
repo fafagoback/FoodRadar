@@ -115,11 +115,32 @@ def collect_browser_and_ocr(browser, label, url, lat, lon, store_dir):
             shot = store_dir / ("screenshot-%03d.png" % step)
             page.screenshot(path=str(shot))
             image_paths.append(str(shot.relative_to(ROOT)))
-            lines = pytesseract.image_to_string(Image.open(shot), lang="chi_tra+eng")
-            for line in lines.splitlines():
-                line = line.strip()
-                if len(line) >= 4 and not re.search(r"^[$NT\\d, .]+$", line):
-                    ocr_titles.add(norm(line))
+            # Estimate visible product cards independently from screenshot pixels.
+            # Count only OCR text with a nearby visible price, not arbitrary UI labels.
+            o = pytesseract.image_to_data(Image.open(shot), lang="chi_tra+eng",
+                                          output_type=pytesseract.Output.DICT)
+            grouped = {}
+            for i, word in enumerate(o["text"]):
+                word = str(word or "").strip()
+                if not word or float(o["conf"][i]) < 25: continue
+                key = (o["block_num"][i], o["par_num"][i], o["line_num"][i])
+                rec = grouped.setdefault(key, {"words":[], "top":o["top"][i],
+                                                "left":o["left"][i]})
+                rec["words"].append(word)
+            visible_lines = [{"text":" ".join(g["words"]),"top":g["top"],
+                              "left":g["left"]} for g in grouped.values()]
+            for line in visible_lines:
+                if not re.search(r"(?:NT\\$|\\$|＄)\\s*[0-9][0-9,.]*|[0-9][0-9,.]*\\s*元",line["text"]):
+                    continue
+                adjacent = [z for z in visible_lines if z is not line
+                            and abs(z["top"]-line["top"]) < 115
+                            and abs(z["left"]-line["left"]) < 340
+                            and len(z["text"]) >= 4
+                            and not re.search(r"(?:NT\\$|\\$|＄)\\s*[0-9]",z["text"])]
+                if adjacent:
+                    best = min(adjacent,key=lambda z: abs(z["top"]-line["top"]))
+                    name = norm(best["text"])
+                    if len(name) >= 4: ocr_titles.add(name)
             before = page.evaluate("document.scrollingElement.scrollTop")
             page.mouse.wheel(0, 900)
             page.wait_for_timeout(400)
