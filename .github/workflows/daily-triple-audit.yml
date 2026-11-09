@@ -1,4 +1,4 @@
-name: FoodRadar 04 | Daily Triple Audit (read-only)
+name: FoodRadar 04 | Daily Dual Audit (read-only)
 on:
   push:
     branches: [main]
@@ -26,12 +26,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install three independent observation engines
+      - name: Install two independent observation engines
         run: |
-          python -m pip install requests playwright pillow pytesseract huggingface_hub zstandard msgpack
+          python -m pip install requests playwright huggingface_hub zstandard msgpack
           python -m playwright install --with-deps chromium
-          sudo apt-get update -qq
-          sudo apt-get install -y tesseract-ocr tesseract-ocr-chi-tra
       - name: Remove prior audit evidence before checking new batch
         run: rm -f audit-results/full-catalog-latest.json
       - name: Independently reconcile all captured stores and products through HF Raw and Turso
@@ -42,7 +40,7 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/audit_full_catalog.py
-      - name: Run API + live-browser DOM + screenshot OCR audit
+      - name: Run API + live-browser DOM audit
         id: audit
         continue-on-error: true
         env:
@@ -62,7 +60,7 @@ jobs:
           now=datetime.now(timezone(timedelta(hours=8)))
           Path('audit-results/latest.json').write_text(json.dumps({
             "date":now.strftime('%Y-%m-%d'),"generated_at":now.isoformat(),
-            "fatal_error":"The triple audit failed before writing a report",
+            "fatal_error":"The two-method audit failed before writing a report",
             "stores":[]},ensure_ascii=False,indent=2))
           PY
           fi
@@ -100,7 +98,7 @@ jobs:
               SAVED=1
               break
             fi
-            git commit -m "audit: daily three-method observation results [skip ci]"
+            git commit -m "audit: daily two-method observation results [skip ci]"
             if git push origin HEAD:main; then
               SAVED=1
               break
@@ -112,11 +110,11 @@ jobs:
             echo "Failed to preserve latest report after five safe retries"
             exit 1
           fi
-      - name: Upload detailed screenshots and audit proof
+      - name: Upload two-method audit proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: foodradar-triple-audit
+          name: foodradar-dual-audit
           path: |
             audit-results/latest.json
             audit-results/full-catalog-latest.json
@@ -124,11 +122,10 @@ jobs:
             audit-results/*/*/result.json
             audit-results/*/*/*.body
             audit-results/*/*/catalog/**/*.body
-            audit-results/*/*/screenshot-*.png
           retention-days: 5
           if-no-files-found: ignore
       - name: Mark audit failure without suppressing report
         if: steps.audit.outcome != 'success' || steps.full.outcome != 'success'
         run: |
-          echo "Daily audit NOT VERIFIED: API/browser/OCR or full native Raw->ETL->Turso check failed."
+          echo "Daily audit NOT VERIFIED: API/browser or full native Raw->ETL->Turso check failed."
           exit 1
