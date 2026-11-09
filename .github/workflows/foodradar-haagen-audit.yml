@@ -1,0 +1,113 @@
+name: FoodRadar Haagen audit
+on:
+  push:
+    paths:
+      - '.github/workflows/foodradar-haagen-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    name: HF Raw and Turso read-only trace
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'huggingface_hub>=0.32' 'requests>=2.32' 'msgpack>=1.1' 'zstandard>=0.24'
+      - name: Trace target store across every processing stage
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os,json,re,tarfile,base64,sys,unicodedata
+          from pathlib import Path
+          from urllib.parse import unquote
+          from huggingface_hub import HfApi,hf_hub_download
+          import requests,msgpack,zstandard as zstd
+          sys.path.insert(0,'scripts')
+          from publish_turso_delta import Remote
+          UID='d2e50ee1-69da-5eff-95f0-eb0dbaeb9e42'
+          HF_REPO='hub-google/FoodRadar'
+          def match(x):
+              s=unicodedata.normalize('NFKD',str(x or '')).casefold()
+              s=''.join(c for c in s if not unicodedata.combining(c))
+              return '哈根達斯' in s or 'haagen' in s or 'hagen-dazs' in s
+          def compact(rows):
+              return rows[:25]
+          def display(tag, data):
+              print(tag+'='+json.dumps(data,ensure_ascii=False,default=str),flush=True)
+          api=HfApi(token=os.environ['HF_TOKEN'])
+          files=api.list_repo_files(repo_id=HF_REPO,repo_type='dataset')
+          manifests=sorted(f for f in files if re.fullmatch(r'Raw/\d{14}/manifest.json',f))
+          history=[]
+          latest_m=None
+          for f in manifests:
+              m=json.loads(Path(hf_hub_download(repo_id=HF_REPO,filename=f,repo_type='dataset',token=os.environ['HF_TOKEN'])).read_text(encoding='utf-8'))
+              matches=[s for s in m.get('stores',[]) if str(s.get('store_uuid','')).lower()==UID or ('北投' in unquote(s.get('store_url','')) and '優市' in unquote(s.get('store_url','')))]
+              history.append({'batch':m.get('batch_id'),'stores':len(m.get('stores',[])),'matches':[{'uuid':a.get('store_uuid'),'url':a.get('store_url'),'success':a.get('success'),'inactive':a.get('inactive')} for a in matches]})
+              latest_m=m
+          latest=json.loads(Path(hf_hub_download(repo_id=HF_REPO,filename='Raw/latest.json',repo_type='dataset',token=os.environ['HF_TOKEN'])).read_text(encoding='utf-8'))
+          display('AUDIT_HF',{'latest_batch':latest.get('batch_id'),'manifest_count':len(manifests),'matching_batches':compact([a for a in history if a['matches']]),'latest_seen':bool(history and history[-1]['matches']),'latest_store_count':len(latest.get('stores',[]))})
+          hits=[]
+          for h in reversed(history):
+              if h['matches']:
+                  hits=h['matches']
+                  batch=h['batch']; break
+          if hits:
+              latest_match=next((s for s in latest_m['stores'] if str(s.get('store_uuid','')).lower()==UID or ('北投' in unquote(s.get('store_url','')) and '優市' in unquote(s.get('store_url','')))),None) if batch==latest.get('batch_id') else None
+              m=latest_m if latest_match else json.loads(Path(hf_hub_download(repo_id=HF_REPO,filename=f'Raw/{batch}/manifest.json',repo_type='dataset',token=os.environ['HF_TOKEN'])).read_text())
+              target=next(s for s in m['stores'] if str(s.get('store_uuid','')).lower()==UID or ('北投' in unquote(s.get('store_url','')) and '優市' in unquote(s.get('store_url',''))))
+              archive=Path(hf_hub_download(repo_id=HF_REPO,filename=m['archive_path'],repo_type='dataset',token=os.environ['HF_TOKEN']))
+              with tarfile.open(archive,'r:gz') as t:
+                  raw=json.load(t.extractfile(target['response_path']))
+              data=raw.get('data') or {}
+              items=[]
+              for sections in (data.get('catalogSectionsMap') or {}).values():
+                  for sec in sections or []:
+                      for item in ((sec.get('payload') or {}).get('standardItemsPayload') or {}).get('catalogItems') or []:
+                          items.append(item)
+              filtered=[{'name':i.get('title'),'uuid':i.get('uuid') or i.get('itemUuid'),'price_cents':i.get('price'),'promo_type':(i.get('catalogItemAnalyticsData') or {}).get('promoType'),'native_promotion':bool(i.get('itemPromotion') or i.get('itemLevelPromotion'))} for i in items if match(i.get('title'))]
+              display('AUDIT_HF_STORE_RAW',{'batch':batch,'store_uuid':target.get('store_uuid'),'http_status_response':target.get('response_path'),'store_title':data.get('title'),'api_items':len(items),'brand_count':len(filtered),'brand_items':compact(filtered)})
+          else:
+              display('AUDIT_HF_STORE_RAW',{'result':'STORE_NOT_DISCOVERED_IN_ANY_HF_RAW_MANIFEST'})
+          url=os.environ['TURSO_DATABASE_URL'].replace('libsql://','https://')
+          remote=Remote(url,os.environ['TURSO_READONLY_TOKEN'])
+          try:
+              meta={r['key']:json.loads(r['value']) for r in remote.query('SELECT key,value FROM metadata')}
+              display('AUDIT_TURSO_META',{'latest_batch':meta.get('latest_batch'),'source_counts':meta.get('source_counts'),'active_products':meta.get('active_products'),'active_platform_promotions':meta.get('active_platform_promotions')})
+              directory=remote.query("SELECT store_id,store_uuid,name,status,is_open,last_seen,chunk_count FROM store_directory WHERE store_uuid='"+UID+"' OR (name LIKE '%北投%' AND name LIKE '%優市%')")
+              display('AUDIT_TURSO_DIRECTORY',{'rows':directory})
+              for d in directory:
+                  uuid=d['store_uuid'];sid=d['store_id']
+                  summary=remote.query("SELECT count(*) as total,sum(case when promo=1 then 1 else 0 end) as promos FROM web_products WHERE store_uuid='"+uuid+"'")
+                  results=remote.query("SELECT json_extract(card,'$.product_name') as name, json_extract(card,'$.price_evidence_status') as price_status,promo,platform_promo,price_drop,discount_pct, unit_price FROM web_products WHERE store_uuid='"+uuid+"' AND (instr(lower(search_text),'哈根達斯')>0 OR instr(lower(search_text),'haagen')>0 OR instr(lower(search_text),'häagen')>0 OR instr(lower(search_text),'dazs')>0) LIMIT 120")
+                  display('AUDIT_WEB_INDEX',{'store_uuid':uuid,'store_totals':summary,'brand_count':len(results),'brand_items':compact(results)})
+                  sql="SELECT chunk_no,payload FROM store_bundles WHERE store_id="+str(int(sid))+" ORDER BY chunk_no"
+                  resp=requests.post(remote.url,headers={'Authorization':'Bearer '+os.environ['TURSO_READONLY_TOKEN']},json={'requests':[{'type':'execute','stmt':{'sql':sql,'want_rows':True}}]},timeout=90)
+                  resp.raise_for_status()
+                  body=resp.json()
+                  if body['results'][0]['type']=='error':raise RuntimeError(str(body['results'][0]['error']))
+                  cells=body['results'][0]['response']['result']['rows']
+                  allproducts=[];pcols=None
+                  for row in cells:
+                      value=row[1]
+                      rawblob=base64.b64decode(value.get('base64') or value.get('value') or '')
+                      chunk=msgpack.unpackb(zstd.ZstdDecompressor().decompress(rawblob),raw=False)
+                      if chunk.get('product_columns'):pcols=chunk['product_columns']
+                      for gid,p in chunk.get('products',[]):
+                          allproducts.append(p)
+                  if not pcols and allproducts:raise RuntimeError('missing product columns')
+                  products=[dict(zip(pcols,p)) for p in allproducts]
+                  brand=[{key:v.get(key) for key in ('product_name','price','effective_price','promo_type','price_evidence_status','verified_discount_pct','seven_day_discount_pct','status','is_open','delivery_available','last_seen')} for v in products if match(v.get('product_name'))]
+                  display('AUDIT_NORMALIZED_BUNDLE',{'store_uuid':uuid,'all_products':len(products),'brand_count':len(brand),'brand_items':compact(brand)})
+              globalhits=remote.query("SELECT json_extract(card,'$.store_name') as store_name,json_extract(card,'$.product_name') as product_name,promo FROM web_products WHERE instr(lower(search_text),'哈根達斯')>0 OR instr(lower(search_text),'haagen')>0 OR instr(lower(search_text),'häagen')>0 OR instr(lower(search_text),'dazs')>0 LIMIT 30")
+              display('AUDIT_GLOBAL_BRAND_INDEX',{'example_count':len(globalhits),'examples':compact(globalhits)})
+          finally:
+              remote.close()
+          print('AUDIT_DONE',flush=True)
+          PY
