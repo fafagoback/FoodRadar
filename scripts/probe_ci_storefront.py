@@ -5,6 +5,7 @@ the DOM is an independent storefront observation only.
 """
 import json
 import os
+import sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -13,6 +14,8 @@ SITES=[
     ("全聯北投明德","https://www.ubereats.com/tw/store/%E5%85%A8%E8%81%AF%E7%A6%8F%E5%88%A9%E4%B8%AD%E5%BF%83-%E5%8C%97%E6%8A%95%E6%98%8E%E5%BE%B7/2w4z4S62WsaVTf3t2o_ntA"),
     ("優市北投","https://www.ubereats.com/tw/store/uber-eats-%E5%84%AA%E5%B8%82-%E5%8C%97%E6%8A%95%E5%BA%97/0uUO4WnaXv-V8OsNuuueQg"),
 ]
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 out=Path("audit-browser-probe")
 out.mkdir(exist_ok=True)
 
