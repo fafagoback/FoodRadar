@@ -107,7 +107,10 @@ def quote_from_native_item(item):
         # It must NEVER be deducted from a single SKU. However the *same*
         # native item may independently display a certified strike-through
         # markdown (e.g. NT$309 -> NT$259). Verify ONLY that marked price.
-        if native or (level and set(level) != {"multiSKUFlatPromotion"}):
+        if native or (level and (
+                set(level) - {"multiSKUFlatPromotion", "type"}
+                or not isinstance(level.get("multiSKUFlatPromotion"), dict)
+                or level.get("type") not in (None, "multiSKUFlatPromotion"))):
             return _invalid("UNKNOWN", item, "UNSUPPORTED_MIXED_PROMOTION", source_hash)
         old, current = _thumbnail_prices(item)
         if len(old) != 1 or len(current) != 1 or current != {price}:
