@@ -89,6 +89,11 @@ jobs:
                         'url':s.get('store_url')} for s in failures[:20]]
           },ensure_ascii=False),flush=True)
           PY
+      - name: 指定核對四間店 HF 原始失敗 HTTP 回應
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(hf):') }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/audit_failed_http_raw.py
       - name: 網站資料契約與 JavaScript 測試
         run: |
           node --check web/app.js
