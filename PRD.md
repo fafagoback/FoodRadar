@@ -2,6 +2,17 @@
 **版本：** 2026-11-09｜**狀態：** 完整分類 API 與精簡網站欄位整合；正式發布需逐批驗收  
 **專案：** `fafagoback/FoodRadar`｜**唯一當前 Raw Dataset：** `hub-google/FoodRadar/Raw/`
 
+## 2026-11-09 每日三軌查核及全店驗收契約（最新補充）
+
+- **不得以單一品牌作為驗收範圍**：哈根達斯只是漏抓案例。每天對同一固定配送點下，最新成功 HF Raw 批次包含的**每一間店、每一款原生 UUID 商品、每一個分頁及原生價格**進行對帳；不得宣稱知道 Uber Eats 沒有向 API 公開的隱藏商品。
+- **採集主流程（A）**：既有 GitHub Actions `getFeedV1 → getStoreV1 → getCatalogPresentationV2`，按 `hasMore/offset` 遍歷完整回應、SHA-256 無損封存 HF Raw。每店商品按原生 UUID 去重，不可拿含重複分類的出現次數冒充不同商品數。
+- **獨立來源查核（B/C）**：在 GitHub Chromium 開啟 Uber Eats 原生商店網頁，以實際 DOM 商品及截圖 OCR 文字候選交叉比對 Costco、全聯、優市北投等代表店。**2026-11-09 實測三店網頁均回 HTTP 403 Cloudflare 挑戰，沒有讀取商品畫面**，故 B/C 必須記 `BLOCKED_BY_PLATFORM_SECURITY`、`count=null`、保存原始安全驗證截圖，**不可記成 0 件商品、不可偽造 API 衍生數量、不可宣稱 100% 完整**。直到依法取得可使用的網頁存取來源並在 GitHub 實測，三源查核不能算驗收成功。
+- **全資料層稽核（額外、不可冒充第二來源）**：`scripts/audit_full_catalog.py` 從 HF `Raw/latest.json` 下載原始封存，檢驗封存 SHA-256、所有 HTTP body、店家與頁數、每一個 SKU 有無從原始回應遺失於 ETL、價格換算一致性，再核對正式 Turso `latest_batch`。這是資料**傳遞完整性**，不是獨立驗證 Uber 當天的全部品項。
+- **排程**：台灣時間每日 04:00 先執行 `.github/workflows/daily-triple-audit.yml` 產出三軌差異和全批次資料層報告；06:15 使用既有「排隊怪獸」LINE OA `hub-google/LINE/.github/workflows/foodradar-daily-line-report.yml` 推送，再於 06:30 進入正式爬蟲（GitHub Actions 可能延遲，通知須明示報告日期）。LINE 只能推送給已明確設定的收件人 `FOODRADAR_REPORT_LINE_USER_ID`，收件人未設置時必須失敗並提示，**不得廣播所有 OA 顧客**。
+- **日報內容**：每間樣本店 A/B/C 實際商品數、HTTP 錯誤與差異；全批次店家數、原生唯一 SKU 數、ETL 成功 SKU 數、漏轉筆數、價格不符數、是否與 Turso 同一批次。上次成功正式批次與本次失敗稽核須區分，不能用前一版報告宣稱當日成功。
+- **驗收範圍與限制**：2026-11-09 `20261109133009` 正式 Raw 共有 577 間店、817 份原始 body；全店最新批次不同原生 SKU 33,278，轉換後相同 33,278，漏轉 0、價格不符 0，Turso 同批。這代表已取得資料的完整傳遞，非全平台或截圖方式 100% 獨立核實。
+- **報告保存**：完整結果每日寫入 `audit-results/YYYY-MM-DD/report.json`、`audit-results/latest.json`、`audit-results/full-catalog-latest.json`；截圖和原始比對輸出留 Actions artifacts。報告提交須支援同時間其他程式更新造成的 non-fast-forward 重試；即使 B/C 被擋也必須保留異常報告並讓查核工作為失敗狀態。
+
 ## 2026-11-09 最新契約（優先於下方歷史條款）
 
 1. **業務邏輯不改**：維持平台促銷、同品買 X 送 Y 實質單價、七日內最高有效實質單價比較、實質降幅 ≥30%、新品與新店的既有定義；平台刪除線價絕不當成七日歷史最高價。
