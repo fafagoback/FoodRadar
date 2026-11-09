@@ -16,7 +16,7 @@ from verified_prices import quote_from_native_item
 def sample_item(uuid, title, price):
     return {"uuid":uuid,"title":title,"price":price,
             "catalogItemAnalyticsData":{"promoType":"MULTI_SKU_FLAT"},
-            "itemLevelPromotion":{"multiSKUFlatPromotion":{"promotionUuid":"cart-only"}},
+            "itemLevelPromotion":{"type":"multiSKUFlatPromotion","multiSKUFlatPromotion":{"promotionUuid":"cart-only"}},
             "itemThumbnailElements":[{"payload":{"labelPayload":{"label":{
                 "richTextElements":[{"text":{"text":{"text":"NT$259"},
                     "predefinedDecorations":None}},
