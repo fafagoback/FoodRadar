@@ -133,7 +133,8 @@ jobs:
     # success() propagates transitive skips, so explicitly require the actual
     # deploy job to succeed and ALWAYS run browser verification afterward.
     if: ${{ always() && needs.deploy.result == 'success' }}
-    runs-on: ubuntu-latest
+    # Playwright 1.56.1 does not provide Chromium for ubuntu-26.04 runners.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
