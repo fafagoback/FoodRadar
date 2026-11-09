@@ -19,6 +19,7 @@ from pathlib import Path
 import requests
 
 from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter
+from catalog_complete import capture_catalog, merge_catalog_pages
 
 TW = timezone(timedelta(hours=8))
 
@@ -78,11 +79,20 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 3) -> dict:
                                       captured_at=datetime.now(TW).isoformat())
                         return result
                     if isinstance(data, dict) and (data.get("title") or data.get("catalogSectionsMap")):
+                        # getStoreV1 is only a preview for large grocery stores.
+                        # Save every native catalog page before accepting a complete capture.
+                        all_catalog = capture_catalog(
+                            session, uuid, data, root, headers, capture_response)
                         result.update(success=True, response_path=relative,
-                                      captured_at=datetime.now(TW).isoformat())
+                                      captured_at=datetime.now(TW).isoformat(), **all_catalog)
+                        print("CATALOG_CAPTURE=" + json.dumps({
+                            "store_uuid": uuid,
+                            "pages": len(all_catalog["catalog_responses"]),
+                            "sections": all_catalog.get("catalog_section_count", 0),
+                            "occurrences": all_catalog["catalog_item_occurrences"]}), flush=True)
                         return result
                 result["error"] = f"HTTP {response.status_code} or incomplete response"
-            except (requests.RequestException, ValueError, TypeError) as exc:
+            except (requests.RequestException, RuntimeError, ValueError, TypeError) as exc:
                 result["error"] = str(exc)
             if attempt < max_retries:
                 time.sleep(attempt)
@@ -192,6 +202,12 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
             native = envelope.get("data") if isinstance(envelope, dict) else None
             if not isinstance(native, dict):
                 raise ValueError(f"Missing native menu: {raw}")
+            pages = store.get("catalog_responses") or []
+            if pages:
+                native = merge_catalog_pages(native, [
+                    json.loads(archive.extractfile(members[p["path"]]).read())
+                    for p in pages
+                ])
             doc = convert_api_data_to_schema(native, store["store_url"])
         doc.update(
             store_uuid=store["store_uuid"],
