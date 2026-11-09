@@ -106,6 +106,82 @@ class CatalogCompleteness(unittest.TestCase):
             self.assertTrue(first_paths.isdisjoint(second_paths))
             self.assertEqual(len(list(root.rglob("*.body"))), 4)
 
+    def test_uber_null_terminal_page_is_valid_and_preserved_raw(self):
+        # Real HF batch 20261109105106: three stores returned HTTP 200,
+        # data.catalog=null, pagingInfo={"hasMore":false} on final page.
+        sid = "a0b09a3a-4271-5a38-a5eb-fa53a160c51c"
+        data = {"title":"test","aisles":{"0":[{"catalogSectionUUID":"section"}]}}
+        class FinalPageSession(Session):
+            def post(self, url, json, headers, timeout):
+                offset=json["pagingInfo"]["offset"]
+                self.offsets.append(offset)
+                if offset == 0:
+                    return Response({"data":{"catalog":[{
+                        "payload":{"standardItemsPayload":{"catalogItems":[sample_item(
+                            "kept", "Häagen-Dazs 草莓冰淇淋", 25900)]}}}],
+                        "pagingInfo":{"hasMore":True,"offset":60}}})
+                return Response({"data":{"catalog":None,
+                    "pagingInfo":{"hasMore":False}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            session=FinalPageSession()
+            def save(directory,name,response):
+                path=directory/name
+                path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_bytes(response.content)
+            out=capture_catalog(session,sid,data,root,{},save)
+            self.assertEqual(session.offsets,[0,60])
+            self.assertEqual(len(out["catalog_responses"]),2)
+            self.assertEqual(out["catalog_item_occurrences"],1)
+            self.assertTrue(out["catalog_complete"])
+            native=[json.loads((root/x["path"]).read_bytes()) for x in out["catalog_responses"]]
+            doc=merge_catalog_pages({"catalogSectionsMap":{}},native)
+            self.assertEqual(len(doc["catalogSectionsMap"]["v2_catalog"]),1)
+            self.assertIsNone(native[1]["data"]["catalog"])
+
+    def test_uber_null_intermediate_page_advances_offset(self):
+        # Real HF batch 20261109105106: one store returned catalog=null
+        # while pagingInfo.hasMore=true and offset advanced to 420.
+        sid="f552a70c-1d18-5b45-b037-4d9d592d9f06"
+        class GapSession(Session):
+            def post(self,url,json,headers,timeout):
+                off=json["pagingInfo"]["offset"]
+                self.offsets.append(off)
+                if off==0:
+                    return Response({"data":{"catalog":[{
+                        "payload":{"standardItemsPayload":{"catalogItems":[sample_item(
+                            "one","test item",2500)]}}}],
+                        "pagingInfo":{"hasMore":True,"offset":60}}})
+                if off==60:
+                    return Response({"data":{"catalog":None,
+                        "pagingInfo":{"hasMore":True,"offset":120}}})
+                return Response({"data":{"catalog":None,
+                    "pagingInfo":{"hasMore":False}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            def save(directory,name,response):
+                path=directory/name
+                path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_bytes(response.content)
+            session=GapSession()
+            result=capture_catalog(session,sid,
+                {"aisles":{"0":[{"catalogSectionUUID":"section"}]}},
+                root,{},save)
+            self.assertEqual(session.offsets,[0,60,120])
+            self.assertEqual([p["item_count"] for p in result["catalog_responses"]],[1,0,0])
+            self.assertTrue(result["catalog_complete"])
+
+    def test_invalid_null_paging_still_fails_closed(self):
+        class BadNullSession(Session):
+            def post(self,url,json,headers,timeout):
+                return Response({"data":{"catalog":None,
+                    "pagingInfo":{"hasMore":True,"offset":0}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                capture_catalog(BadNullSession(),"uuid",
+                    {"aisles":{"0":[{"catalogSectionUUID":"section"}]}},
+                    Path(tmp),{},lambda a,b,c:None)
+
     def test_no_sections_does_not_erase_real_store_menu(self):
         data={"title":"Small cafe","catalogSectionsMap":{"a":[{"payload":{
             "standardItemsPayload":{"title":{"text":"drinks"},"catalogItems":[
