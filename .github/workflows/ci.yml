@@ -88,6 +88,55 @@ jobs:
             'sample':[{'uuid':s.get('store_uuid'),'error':s.get('error'),
                         'url':s.get('store_url')} for s in failures[:20]]
           },ensure_ascii=False),flush=True)
+          from pathlib import Path
+          import tarfile, re
+          archive_path=hf_hub_download('hub-google/FoodRadar',m['archive_path'],
+            repo_type='dataset',token=os.environ['HF_TOKEN'])
+          summaries=[]
+          with tarfile.open(archive_path,'r:gz') as archive:
+            all_names=archive.getnames()
+            for s in failures:
+              sid=s['store_uuid']
+              page_names=sorted(n for n in all_names if n.startswith('catalog/'+sid+'/'))
+              details=[]
+              for name in page_names:
+                if len(details)>32: break
+                match=re.search(r'status-(\\d+)\\.body
+        run: |
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/data-contract.js
+          node --check tests/live_site.cjs
+          node tests/web_contract.cjs
+          node tests/price_history.cjs
+          node tests/web_interactions.cjs
+          node tests/packed_concurrency.cjs
+      - name: 驗證三個 Workflow 的 GitHub Actions 語法
+        run: |
+          go run github.com/rhysd/actionlint/cmd/actionlint@latest -color=false .github/workflows/*.yml
+          python - <<'PY'
+          from pathlib import Path
+          expected={'ci.yml','crawl.yml','pages.yml','daily-triple-audit.yml'}
+          actual={p.name for p in Path('.github/workflows').glob('*.yml')}
+          assert actual==expected, f'Workflow 清單不符：{actual}'
+          PY
+,name)
+                try:
+                  response=json.load(archive.extractfile(name))
+                  data=response.get('data') or {}
+                  brief={'path':name.rsplit('/',1)[-1],
+                         'http':int(match.group(1)) if match else None,
+                         'outer_status':response.get('status'),
+                         'data_keys':list(data)[:8],
+                         'message':str(data.get('message') or response.get('message') or '')[:140],
+                         'pagingInfo':data.get('pagingInfo')}
+                except Exception as e:
+                  brief={'path':name.rsplit('/',1)[-1],'decode_error':str(e)[:100]}
+                details.append(brief)
+              summaries.append({'uuid':sid,'response_count':len(page_names),
+                                'responses':details[-24:]})
+          print('HF_FAILED_RAW_RESPONSE_DIAGNOSTICS='+
+            json.dumps(summaries,ensure_ascii=False),flush=True)
           PY
       - name: 網站資料契約與 JavaScript 測試
         run: |
