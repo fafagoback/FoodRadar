@@ -78,21 +78,44 @@ def collect_api(label, url, lat, lon, store_dir):
             "categories":pages.get("catalog_section_count",0),"complete":bool(pages.get("catalog_complete"))}
 
 JS_DOM = """() => {
-  let selectors = [
-    '[data-testid*="catalog-item"]','[data-testid*="store-item"]',
-    '[data-testid*="menu-item"]','[data-testid*="item-card"]',
-    '[data-testid*="itemCard"]'
+  // This scanner reads rendered HTML only. No Uber/FoodRadar API requests.
+  // Prefer product-specific DOM containers; fall back to semantic cards.
+  const selectors = [
+    '[data-testid*="catalog-item"]', '[data-testid*="store-item"]',
+    '[data-testid*="menu-item"]', '[data-testid*="item-card"]',
+    '[data-testid*="itemCard"]', '[data-testid*="product"]',
+    '[role="listitem"]', 'article', 'li'
   ];
-  let out = [];
-  for (const sel of selectors) {
-    for (const node of document.querySelectorAll(sel)) {
-      const txt = (node.innerText || '').trim();
-      const img = node.querySelector('img[alt]');
-      const name = img?.getAttribute('alt') || txt.split('\\n')[0] || '';
-      if (name && name.length > 2) out.push({name, text:txt.slice(0,500)});
+  const priceRegex = /(?:NT\s*[$＄]|\$|＄)\s*\d[\d,]*(?:\.\d{1,2})?/;
+  const result = [];
+  const already = new Set();
+  for (const selector of selectors) {
+    for (const node of document.querySelectorAll(selector)) {
+      if (!node.getClientRects().length) continue;
+      const text = (node.innerText || '').trim();
+      if (!text || text.length > 1100 || !priceRegex.test(text)) continue;
+      const lines = text.split(/\n/).map(s => s.trim()).filter(Boolean);
+      if (lines.length > 18) continue; // likely a whole category, not one SKU
+      const header = node.querySelector('h2,h3,h4,h5,[role="heading"]');
+      const image = node.querySelector('img[alt]');
+      const heading = (header?.innerText || '').trim();
+      const imageName = (image?.getAttribute('alt') || '').trim();
+      const firstLine = lines.find(x => !priceRegex.test(x) && x.length > 2) || '';
+      const name = heading || (imageName.length > 4 ? imageName : firstLine);
+      if (!name || name.length < 3 || name.length > 220) continue;
+      const price = (text.match(priceRegex) || [])[0] || '';
+      const key = name.toLowerCase().replace(/\s+/g,'') + '|' + price;
+      if (already.has(key)) continue;
+      already.add(key);
+      const itemId = node.getAttribute('data-item-id')
+        || node.getAttribute('data-uuid')
+        || node.getAttribute('data-product-id')
+        || '';
+      result.push({name, price_text:price, item_id:itemId,
+                   text:text.slice(0,500), selector});
     }
   }
-  return out;
+  return result;
 }"""
 
 def collect_browser(browser, label, url, lat, lon, store_dir, browser_source="github_hosted"):
