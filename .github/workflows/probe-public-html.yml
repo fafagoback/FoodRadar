@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - 'scripts/probe_public_html_options.py'
+      - 'scripts/probe_safari_html_shape.py'
       - '.github/workflows/probe-public-html.yml'
   workflow_dispatch:
 permissions:
@@ -17,9 +18,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install requests "curl_cffi>=0.11,<1"
+      - run: python -m pip install requests beautifulsoup4 "curl_cffi>=0.11,<1"
       - name: Read six independent public webpage paths across three merchants
         run: python scripts/probe_public_html_options.py
+      - name: Inspect real Safari-transport HTML product names and prices
+        run: python scripts/probe_safari_html_shape.py
       - if: always()
         uses: actions/upload-artifact@v4
         with:
