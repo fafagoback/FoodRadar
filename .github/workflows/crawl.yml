@@ -100,7 +100,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/bootstrap_hf_dataset.py
 
-      - name: 封存未修改的 Feed / Store 原始 HTTP 回應至獨立 HF Dataset /Raw
+      - name: 封存 Feed / Store / Catalog 完整原始 HTTP 回應至獨立 HF Dataset /Raw
         if: >-
           ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): bootstrap independent FoodRadar Raw dataset'))) }}
         env:
