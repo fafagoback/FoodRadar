@@ -1260,15 +1260,20 @@ function renderPromotions() {
             ${distanceBadge(p)}
           </div>
 
-          <h4 class="text-base font-bold text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors line-clamp-2">
-            ${escapeHtml(p.product_name)}
-          </h4>
+          <div class="flex items-center gap-3">
+            ${p.image_url ? `<img src="${escapeHtml(p.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" class="w-14 h-14 rounded-lg object-cover border border-slate-100 dark:border-slate-800 shrink-0">` : ''}
+            <h4 class="text-base font-bold text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors line-clamp-2">
+              ${escapeHtml(p.product_name)}
+            </h4>
+          </div>
+          ${p.cart_promo_label ? `<p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">另有滿額活動：${escapeHtml(p.cart_promo_label)}（不計入單品折扣）</p>` : ''}
         </div>
 
         <div class="pt-3 mt-3 border-t border-slate-100 dark:border-slate-800">
           <div class="flex items-baseline justify-between mb-3">
             <div>
               <div class="text-xs text-slate-400">平台售價 ${window.UBER_DATA_CONTRACT.money(p.price)}${multiUnit ? `（活動共 ${promoInfo.totalQty} 件）` : ''}</div>
+              ${p.display_original_price > p.price ? `<div class="text-xs text-slate-500">平台刪除線參考價 <s>${window.UBER_DATA_CONTRACT.money(p.display_original_price)}</s>（非七日歷史價）</div>` : ''}
               <div class="text-xl font-black text-purple-600 dark:text-purple-400 font-mono">
                 ${multiUnit ? '平均單件成本' : '優惠售價'} ${window.UBER_DATA_CONTRACT.money(multiUnit ? eff : p.price)}
               </div>
@@ -1708,9 +1713,14 @@ function renderGlobalProducts() {
             </div>
           </div>
 
-          <h4 class="text-sm font-bold text-slate-900 dark:text-white line-clamp-2 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors mb-2" title="${escapeHtml(p.product_name)}">
-            ${escapeHtml(p.product_name)}
-          </h4>
+          <div class="flex items-center gap-2 mb-2">
+            ${p.image_url ? `<img src="${escapeHtml(p.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" class="w-12 h-12 object-cover rounded-lg border border-slate-100 dark:border-slate-800 shrink-0">` : ''}
+            <h4 class="text-sm font-bold text-slate-900 dark:text-white line-clamp-2 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors" title="${escapeHtml(p.product_name)}">
+              ${escapeHtml(p.product_name)}
+            </h4>
+          </div>
+          ${p.display_original_price > p.price ? `<p class="text-[11px] text-slate-500 mb-1">平台刪除線參考價 <s>${window.UBER_DATA_CONTRACT.money(p.display_original_price)}</s>（非歷史價）</p>` : ''}
+          ${p.is_sold_out === true ? '<p class="text-[11px] font-medium text-rose-600 mb-1">最近採集時售罄</p>' : p.is_available === false ? '<p class="text-[11px] font-medium text-amber-600 mb-1">最近採集時不可購買</p>' : ''}
 
           <div class="flex items-center gap-1.5 flex-wrap text-xs">
             ${hasPromo ? `
@@ -1729,6 +1739,7 @@ function renderGlobalProducts() {
               </span>
             ` : ''}
             ${distanceBadge(p)}
+            ${p.cart_promo_label ? `<span class="text-[11px] text-indigo-600 dark:text-indigo-400">另有滿額活動（不計入單品折扣）</span>` : ''}
             ${hasQtyPromo ? `
               <span class="text-[11px] text-slate-400 dark:text-slate-500 font-mono">
                 (標價 ${window.UBER_DATA_CONTRACT.money(p.price)} 共 ${promoInfo.totalQty} 件)
