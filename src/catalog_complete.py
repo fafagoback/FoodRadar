@@ -54,6 +54,25 @@ class _DeepOffsetRejected(ValueError):
     """Uber returned a verified application-level 500 for a deep page."""
 
 
+class _UpstreamRateLimit(ValueError):
+    """HTTP 429 or Uber's HTTP-200 application error code 429."""
+
+
+def _check_rate_limit(response, body, attempt):
+    data = body.get("data") if isinstance(body, dict) else None
+    application_code = (
+        str(data.get("code") or "") if isinstance(data, dict)
+        and body.get("status") == "failure" else ""
+    )
+    if response.status_code == 429 or application_code == "429":
+        # Uber often sends HTTP 200 + data.code=429. A short local retry alone
+        # can keep every worker throttled; pause all threads instead.
+        seconds = min(120, 15 * (2 ** (attempt - 1)))
+        kind = "HTTP 429" if response.status_code == 429 else "application 429"
+        global_limiter.trigger_backoff(seconds, f"Catalog {kind}")
+        raise _UpstreamRateLimit(f"Catalog {kind} (retry {attempt})")
+
+
 def _subsections_for(base_data, section_uuid):
     """Only accept real subsection UUIDs supplied by getStoreV1."""
     for section in base_data.get("sections") or []:
@@ -115,7 +134,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                        "pagingInfo": {"enabled": True, "offset": offset},
                        "source": "NV_L2_CATALOG"}
             body, data, n, relative = None, None, 0, None
-            for attempt in range(1, 4):
+            for attempt in range(1, 7):
                 try:
                     global_limiter.wait()
                     resp = session.post(CATALOG_API, json=payload,
@@ -128,10 +147,10 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                         f"attempt-{attempt:02d}-status-{resp.status_code}.body")
                     capture_response(root, relative, resp)
                     if resp.status_code != 200:
-                        if resp.status_code == 429:
-                            global_limiter.trigger_backoff(attempt * 8, "Catalog HTTP 429")
+                        _check_rate_limit(resp, None, attempt)
                         raise ValueError(f"Catalog HTTP {resp.status_code}")
                     body = resp.json()
+                    _check_rate_limit(resp, body, attempt)
                     failure = body.get("data") if isinstance(body, dict) else None
                     if (offset > 1000 and isinstance(failure, dict)
                             and body.get("status") == "failure"
@@ -156,6 +175,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                             capture_response(root, alt_relative, alt)
                             if alt.status_code == 200:
                                 alt_body = alt.json()
+                                _check_rate_limit(alt, alt_body, attempt)
                                 alt_data, alt_entries = _catalog_entries(alt_body)
                                 if _item_count(alt_entries) > 0:
                                     body, data, entries = alt_body, alt_data, alt_entries
@@ -164,7 +184,12 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                                 else:
                                     filters.pop("sectionTypes", None)
                             else:
+                                _check_rate_limit(alt, None, attempt)
                                 filters.pop("sectionTypes", None)
+                        except _UpstreamRateLimit:
+                            # Retry the entire page rather than silently accepting
+                            # an unverified empty category when alternate mode is throttled.
+                            raise
                         except (requests.RequestException, ValueError):
                             filters.pop("sectionTypes", None)
                     records.append({"path": relative, "section_uuid": section_uuid,
@@ -177,11 +202,15 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                     # A verified deterministic error. Do not waste 3 identical retries.
                     raise
                 except (requests.RequestException, ValueError) as exc:
-                    if attempt >= 3:
+                    # Keep normal transient errors at three tries, but give
+                    # rate-limited requests enough global cooldown to recover.
+                    retries = 6 if isinstance(exc, _UpstreamRateLimit) else 3
+                    if attempt >= retries:
                         raise RuntimeError(
                             f"Catalog {section_uuid}/{subsection_uuid}, "
-                            f"page {page}, offset {offset} failed") from exc
-                    time.sleep(attempt)
+                            f"page {page}, offset {offset} failed: {exc}") from exc
+                    if not isinstance(exc, _UpstreamRateLimit):
+                        time.sleep(attempt)
             if data is None:
                 raise ValueError(f"Catalog {section_uuid}/{subsection_uuid} missing body")
             paging = data["pagingInfo"]
