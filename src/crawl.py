@@ -53,7 +53,19 @@ def crawl(config, upload_raw=False):
             stores = list(pool.map(
                 lambda item: fetch_store_raw(item, raw),
                 unique.values()))
-        if any(not item.get("success") for item in stores):
+        failures = [
+            {"store_uuid": item.get("store_uuid"),
+             "store_url": item.get("store_url"),
+             "error": item.get("error", "Missing success flag")}
+            for item in stores if not item.get("success")
+        ]
+        if failures:
+            # Always print actionable diagnostics; the unmodified HTTP bodies
+            # are separately archived, and an incomplete batch never publishes.
+            print("RAW_STORE_FAILURES=" + json.dumps({
+                "batch": batch, "discovered_stores": len(unique),
+                "failed_count": len(failures), "failures": failures,
+            }, ensure_ascii=False), flush=True)
             error = "One or more store API requests failed; original bodies preserved"
     except Exception as exc:
         error = str(exc)
