@@ -60,7 +60,7 @@ class Catalog429BackoffTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             session = Session()
-            with patch("catalog_complete.global_limiter.wait"), \\
+            with patch("catalog_complete.global_limiter.wait"), \
                  patch("catalog_complete.global_limiter.trigger_backoff") as backoff:
                 out = capture_catalog(session, "store", self.BASE, root, {}, save)
             self.assertTrue(out["catalog_complete"])
@@ -80,7 +80,7 @@ class Catalog429BackoffTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             session = Session()
-            with patch("catalog_complete.global_limiter.wait"), \\
+            with patch("catalog_complete.global_limiter.wait"), \
                  patch("catalog_complete.global_limiter.trigger_backoff") as backoff:
                 with self.assertRaisesRegex(RuntimeError, "application 429"):
                     capture_catalog(session, "store", self.BASE, root, {}, save)
@@ -98,7 +98,7 @@ class Catalog429BackoffTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             session = Session()
-            with patch("catalog_complete.global_limiter.wait"), \\
+            with patch("catalog_complete.global_limiter.wait"), \
                  patch("catalog_complete.global_limiter.trigger_backoff") as backoff:
                 out = capture_catalog(session, "store", self.BASE, root, {}, save)
             self.assertTrue(out["catalog_complete"])
@@ -121,7 +121,7 @@ class Catalog429BackoffTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             session = Session()
-            with patch("catalog_complete.global_limiter.wait"), \\
+            with patch("catalog_complete.global_limiter.wait"), \
                  patch("catalog_complete.global_limiter.trigger_backoff") as backoff:
                 out = capture_catalog(session, "store", self.BASE, root, {}, save)
             self.assertTrue(out["catalog_complete"])
