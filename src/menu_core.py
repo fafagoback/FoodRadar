@@ -170,7 +170,9 @@ class AdaptiveRateLimiter:
                 print(f"\n   🛑 【全域避讓】檢測到 {reason}！全域冷卻暫停 {backoff_seconds:.1f} 秒...\n", flush=True)
 
 
-global_limiter = AdaptiveRateLimiter(min_interval=0.12, max_interval=0.28)
+# Uber's catalog API enforces rate limits even when the HTTP status is 200.
+# Serialize calls across all store workers at a sustainable crawl pace.
+global_limiter = AdaptiveRateLimiter(min_interval=0.8, max_interval=1.1)
 
 ALL_DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
