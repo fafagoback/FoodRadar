@@ -1,0 +1,31 @@
+name: FoodRadar | Diagnose archived failed Raw captures
+on:
+  push:
+    paths:
+      - '.github/workflows/diagnose-raw-failures.yml'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    environment: github-pages
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: Read failed capture manifests (read only)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          for batch in ('20261110124256', '20261110144253'):
+              url = f'https://huggingface.co/datasets/hub-google/FoodRadar/resolve/main/Raw/{batch}/manifest.json'
+              req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['HF_TOKEN']})
+              try:
+                  with urllib.request.urlopen(req, timeout=50) as response:
+                      data = json.load(response)
+                  failures = [{k: s.get(k) for k in ('store_uuid','store_url','error')} for s in data.get('stores',[]) if not s.get('success')]
+                  print('ARCHIVED_RAW_DIAGNOSTICS=' + json.dumps({'batch':batch,'total':len(data.get('stores',[])),'failed_count':len(failures),'failures':failures}, ensure_ascii=False), flush=True)
+              except Exception as exc:
+                  print('ARCHIVED_RAW_DIAGNOSTICS_ERROR=' + json.dumps({'batch':batch,'error':str(exc)}), flush=True)
+          PY
