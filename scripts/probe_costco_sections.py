@@ -9,7 +9,7 @@ import requests
 from sys import path
 path.insert(0,"src")
 path.insert(0,"scripts")
-from daily_triple_audit import HEADERS
+HEADERS = {"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36", "Accept-Language":"zh-TW,zh;q=0.9", "Content-Type":"application/json", "x-csrf-token":"x"}
 from menu_core import attach_delivery_location, normalize_store_uuid
 from catalog_complete import _section_ids, capture_catalog, _catalog_entries, merge_catalog_pages
 
