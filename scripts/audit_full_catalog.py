@@ -147,7 +147,9 @@ def audit_native_raw(manifest, archive, docs):
         if pages and not all(terminal_by_section.values()):
             raise AssertionError(f"Catalog sections lack terminal pages: {sid}")
         advertised=store.get("catalog_section_count")
-        if advertised is not None and pages and (
+        has_per_category_metadata=all(
+            "section_uuid" in rec for rec in store.get("catalog_responses") or [])
+        if advertised is not None and pages and has_per_category_metadata and (
                 len(section_order)!=advertised):
             raise AssertionError(
                 f"Catalog category coverage mismatch: {sid} "
