@@ -104,6 +104,9 @@ def crawl(config, upload_raw=False):
     complete = bool(not error and pages and stores)
     if upload_raw and any(raw.rglob("*.body")):
         archive_and_upload(raw, config, batch, stores, pages, complete)
+    # Keep final API pacing evidence even when a batch cannot be published.
+    print("RAW_CAPTURE_API_METRICS=" + json.dumps(
+        global_limiter.snapshot(), ensure_ascii=False), flush=True)
     if error:
         raise RuntimeError(error)
     if not complete:
