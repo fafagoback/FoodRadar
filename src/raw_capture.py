@@ -93,7 +93,13 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 3) -> dict:
                         return result
                 result["error"] = f"HTTP {response.status_code} or incomplete response"
             except (requests.RequestException, RuntimeError, ValueError, TypeError) as exc:
-                result["error"] = str(exc)
+                # Preserve the deepest native HTTP/parsing failure in the report,
+                # including exceptions wrapped by catalog pagination.
+                chain, cause = [], exc
+                while cause is not None and len(chain) < 4:
+                    chain.append(f"{type(cause).__name__}: {cause}")
+                    cause = cause.__cause__
+                result["error"] = " <- ".join(chain)
             if attempt < max_retries:
                 time.sleep(attempt)
     finally:
