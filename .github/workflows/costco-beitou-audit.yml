@@ -1,0 +1,39 @@
+name: FoodRadar 05 | Costco Beitou two-method crosscheck
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/catalog_complete.py'
+      - 'scripts/live_webkit_dom.py'
+      - 'scripts/compare_costco_beitou.py'
+      - '.github/workflows/costco-beitou-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: foodradar-costco-beitou-audit
+  cancel-in-progress: false
+jobs:
+  crosscheck:
+    name: Costco 北投店｜獨立 API 與 WebKit 全分類驗證
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝最小化 API 與瀏覽器執行環境
+        run: |
+          python -m pip install requests playwright
+          python -m playwright install --with-deps webkit
+      - name: 同店同座標兩種方法逐品交叉驗證
+        run: python scripts/compare_costco_beitou.py
+      - name: 保存 Costco 北投店交叉驗證資料
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: costco-beitou-two-method-report
+          path: audit-results/costco-beitou-two-method-latest.json
+          retention-days: 14
+          if-no-files-found: warn
