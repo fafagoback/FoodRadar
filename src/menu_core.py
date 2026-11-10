@@ -134,45 +134,98 @@ def parse_review_count(raw_str) -> int:
 
 
 class AdaptiveRateLimiter:
-    """全域執行緒安全自適應調步器與斷路冷卻器"""
+    """Global adaptive Uber API pace: fast when healthy, cautious after 429.
 
-    def __init__(self, min_interval: float = 0.12, max_interval: float = 0.28):
+    All callers (store and catalog) share this limiter. Unlike the former
+    fixed 0.8-1.1-second delay, healthy traffic starts at the measured
+    pre-incident pace; native 429 responses enforce a shared cooldown and
+    temporarily slow *all* workers. Sustained successes gradually restore
+    the baseline. No response is dropped or synthesized.
+    """
+
+    def __init__(self, min_interval: float = 0.18, max_interval: float = 0.30):
+        if not 0 < min_interval <= max_interval:
+            raise ValueError("Invalid API request intervals")
         self.min_interval = min_interval
         self.max_interval = max_interval
         self.lock = threading.Lock()
         self.last_request_time = 0.0
         self.pause_until = 0.0
+        self.current_interval = min_interval
+        self.last_throttle_at = 0.0
+        self.success_streak = 0
+        self.total_requests = 0
+        self.successful_requests = 0
+        self.throttle_events = 0
 
     def wait(self):
-        """排隊等待，確保微小調步與冷卻"""
+        """Serialize shared API starts; sleep only until the next safe slot."""
         with self.lock:
-            now = time.time()
-            if now < self.pause_until:
-                sleep_duration = self.pause_until - now
-                print(f"   ⏳ [冷卻中] 等待伺服器恢復，剩餘 {sleep_duration:.1f} 秒...", flush=True)
-                time.sleep(sleep_duration)
-                now = time.time()
+            now = time.monotonic()
+            earliest = max(
+                self.pause_until,
+                self.last_request_time + random.uniform(
+                    self.current_interval,
+                    self.current_interval + (self.max_interval - self.min_interval)
+                ),
+            )
+            if earliest > now:
+                time.sleep(earliest - now)
+            self.last_request_time = time.monotonic()
+            self.total_requests += 1
 
-            elapsed = now - self.last_request_time
-            target_delay = random.uniform(self.min_interval, self.max_interval)
-            if elapsed < target_delay:
-                time.sleep(target_delay - elapsed)
-
-            self.last_request_time = time.time()
+    def record_success(self):
+        """Restore former fast pace only after stable successful responses."""
+        with self.lock:
+            self.successful_requests += 1
+            self.success_streak += 1
+            if (self.current_interval > self.min_interval
+                    and self.success_streak >= 40
+                    and time.monotonic() - self.last_throttle_at >= 60):
+                self.current_interval = max(
+                    self.min_interval, round(self.current_interval * 0.80, 3))
+                self.success_streak = 0
+                print(f"API_RATE_RECOVERY={{'interval_seconds': {self.current_interval}}}",
+                      flush=True)
 
     def trigger_backoff(self, backoff_seconds: float, reason: str = "HTTP 429"):
-        """觸發全域暫停避讓"""
+        """Global cooldown on HTTP 429 *or* HTTP-200 application code 429.
+
+        Increase pace interval only when the API confirms throttling, rather
+        than penalizing all normal requests permanently.
+        """
         with self.lock:
-            now = time.time()
-            new_pause = now + backoff_seconds
-            if new_pause > self.pause_until:
-                self.pause_until = new_pause
-                print(f"\n   🛑 【全域避讓】檢測到 {reason}！全域冷卻暫停 {backoff_seconds:.1f} 秒...\n", flush=True)
+            now = time.monotonic()
+            self.throttle_events += 1
+            self.last_throttle_at = now
+            self.success_streak = 0
+            self.current_interval = min(
+                2.0, max(0.65, round(self.current_interval * 1.6, 3)))
+            seconds = max(0.0, min(float(backoff_seconds), 120.0))
+            self.pause_until = max(self.pause_until, now + seconds)
+            print(
+                "API_RATE_LIMIT=" + json.dumps({
+                    "reason": reason,
+                    "cooldown_seconds": seconds,
+                    "interval_seconds": self.current_interval,
+                    "throttle_events": self.throttle_events,
+                }, ensure_ascii=False), flush=True)
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "requests": self.total_requests,
+                "successes": self.successful_requests,
+                "rate_limit_events": self.throttle_events,
+                "interval_seconds": self.current_interval,
+                "cooldown_remaining_seconds": round(
+                    max(0.0, self.pause_until - time.monotonic()), 1),
+            }
 
 
-# Uber's catalog API enforces rate limits even when the HTTP status is 200.
-# Serialize calls across all store workers at a sustainable crawl pace.
-global_limiter = AdaptiveRateLimiter(min_interval=0.8, max_interval=1.1)
+# Restore pre-incident throughput when Uber is healthy, but always back off
+# after a *verified* HTTP/app-level 429 across all workers.
+global_limiter = AdaptiveRateLimiter(min_interval=0.18, max_interval=0.30)
 
 ALL_DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
