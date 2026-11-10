@@ -171,7 +171,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                                 f"section-{section_index:03d}-{section_uuid}-"
                                 f"sub-{subsection_uuid or 'none'}-"
                                 f"page-0000-offset-000000-collection-"
-                                f"status-{alt.status_code}.body")
+                                f"attempt-{attempt:02d}-status-{alt.status_code}.body")
                             capture_response(root, alt_relative, alt)
                             if alt.status_code == 200:
                                 alt_body = alt.json()
