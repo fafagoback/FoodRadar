@@ -44,10 +44,15 @@ DOM_ITEMS=r"""() => {
  return results;
 }"""
 
-def scan_live_webpage(page, *, limit_categories=0, scroll_steps=16, stop_after_stale=3):
-    """Explore actual visible category tabs, never API or embedded JSON."""
+def scan_live_webpage(page, *, limit_categories=0, scroll_steps=35, stop_after_stale=6):
+    """Observe every rendered category by UI interaction, with tab recovery.
+
+    No hydration, fetch response, or native API payload is inspected. Scrolling
+    back to the top before each tab fixes tab controls disappearing after a
+    long scroll down a supermarket's extensive catalogue.
+    """
     seen={}
-    category_stats=[]
+    stats=[]
     errors=[]
     def extract():
         current=page.evaluate(DOM_ITEMS)
@@ -56,42 +61,88 @@ def scan_live_webpage(page, *, limit_categories=0, scroll_steps=16, stop_after_s
             if sku not in seen:
                 seen[sku]=item
         return len(current)
+
     extract()
-    # Capture real UI category labels before they are virtualized.
     labels=page.locator('[role="tab"]').all_text_contents()
-    labels=[x.strip() for x in labels if x.strip()]
-    max_items=len(labels) if limit_categories<=0 else min(limit_categories,len(labels))
-    for idx in range(max_items):
-        label=labels[idx]
+    labels=list(dict.fromkeys(x.strip() for x in labels if x.strip()))
+    total=len(labels)
+    maximum=total if limit_categories<=0 else min(limit_categories,total)
+    for idx,label in enumerate(labels[:maximum]):
         try:
+            page.evaluate("() => window.scrollTo(0,0)")
+            page.wait_for_timeout(320)
             tab=page.get_by_role("tab",name=label,exact=True).first
-            tab.click(timeout=12000)
-            page.wait_for_timeout(750)
-            old=len(seen)
+            try:
+                tab.scroll_into_view_if_needed(timeout=6500)
+                tab.click(timeout=9500)
+            except Exception:
+                # The app may detach the sticky tab bar after deep scrolling.
+                # Recover at document top and use the native DOM click only
+                # if the exact matching rendered tab exists.
+                page.evaluate("() => window.scrollTo(0,0)")
+                page.wait_for_timeout(900)
+                clicked=page.evaluate("""(label) => {
+                    const tabs=[...document.querySelectorAll('[role="tab"]')];
+                    const node=tabs.find(x=>(x.innerText||'').trim()===label);
+                    if(!node)return false;
+                    node.scrollIntoView({block:'center',inline:'nearest'});
+                    node.click();
+                    return true;
+                }""",label)
+                if not clicked:
+                    tab=page.get_by_role("tab",name=label,exact=True).first
+                    tab.click(timeout=15000,force=True)
+            page.wait_for_timeout(700)
+            before=len(seen)
             extract()
+            last_scroll=-1
             stale=0
-            for _ in range(scroll_steps):
-                page.mouse.wheel(0,1250)
-                page.wait_for_timeout(280)
-                before=len(seen)
+            bottom_reached=False
+            for step in range(scroll_steps):
+                page.mouse.wheel(0,1150)
+                page.wait_for_timeout(290)
+                n_before=len(seen)
                 extract()
-                stale=(stale+1) if len(seen)==before else 0
+                position=page.evaluate("""() => {
+                    const e=document.scrollingElement || document.documentElement;
+                    return {top:e.scrollTop,
+                            end:e.scrollHeight-e.clientHeight};
+                }""")
+                if len(seen)==n_before and position["top"]==last_scroll:
+                    stale+=1
+                else:
+                    stale=0
+                last_scroll=position["top"]
+                if position["end"]-position["top"]<=3:
+                    bottom_reached=True
+                    # Give lazy loading one final chance to render cards.
+                    page.wait_for_timeout(450)
+                    extract()
                 if stale>=stop_after_stale:
                     break
-            category_stats.append({"category":label,"new_skus":len(seen)-old,
-                                   "cumulative_skus":len(seen)})
+            stats.append({"category":label,"new_skus":len(seen)-before,
+                          "cumulative_skus":len(seen),
+                          "bottom_reached":bottom_reached})
         except Exception as err:
-            errors.append({"category":label,"error":type(err).__name__+":"+str(err)[:120]})
+            errors.append({"category":label,
+                           "error":type(err).__name__+":"+str(err)[:240]})
+    visited=len(stats)
     return {
         "count":len(seen),
-        "items":[{"sku":x["sku"],"name":x["name"],"price_cents":x["price_cents"],
-                  "price_candidates":x["price_candidates"]} for x in seen.values()],
-        "categories_listed":len(labels),"categories_visited":len(category_stats),
-        "category_stats":category_stats,"errors":errors,
+        "items":[{"sku":x["sku"],"name":x["name"],
+                  "price_cents":x["price_cents"],
+                  "price_candidates":x["price_candidates"]}
+                 for x in seen.values()],
+        "categories_listed":total,"categories_visited":visited,
+        "category_stats":stats,"errors":errors,
+        # Visiting all tabs is a navigation check, not proof that the app
+        # showed all items or that all prices were available.
+        "all_tabs_visited":total>0 and visited==total and not errors,
         "complete":False,
         "status":"REAL_RENDERED_UI_OBSERVED_NOT_PROVEN_COMPLETE",
         "method":"webkit_visible_ui_only",
     }
+
 
 def capture_store(url, *, limit_categories=0, scroll_steps=16):
     with sync_playwright() as pw:
