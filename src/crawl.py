@@ -6,12 +6,13 @@ The separate HF -> DB workflow owns all interpretation.
 import argparse
 import json
 import math
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from time import monotonic
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from feed_core import scan_single_point
-from menu_core import normalize_store_uuid
+from menu_core import normalize_store_uuid, global_limiter
 from raw_capture import fetch_store_raw, archive_and_upload
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,10 +50,41 @@ def crawl(config, upload_raw=False):
             key = normalize_store_uuid(
                 discovered_store["store_uuid"], discovered_store["store_url"])
             unique.setdefault(key, discovered_store)
+        # Report completed stores incrementally, without changing archive order
+        # or treating partial captures as successful.
+        items = list(unique.values())
+        stores = [None] * len(items)
+        started = monotonic()
         with ThreadPoolExecutor(max_workers=config["workers"]) as pool:
-            stores = list(pool.map(
-                lambda item: fetch_store_raw(item, raw),
-                unique.values()))
+            pending = {
+                pool.submit(fetch_store_raw, item, raw): index
+                for index, item in enumerate(items)
+            }
+            failures_so_far = 0
+            for completed, future in enumerate(as_completed(pending), start=1):
+                index = pending[future]
+                try:
+                    stores[index] = future.result()
+                except Exception as exc:
+                    stores[index] = {
+                        "store_uuid": items[index]["store_uuid"],
+                        "store_url": items[index]["store_url"],
+                        "success": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                if not stores[index].get("success"):
+                    failures_so_far += 1
+                if completed % 25 == 0 or completed == len(items):
+                    duration = max(0.001, monotonic() - started)
+                    print("RAW_CAPTURE_PROGRESS=" + json.dumps({
+                        "batch": batch,
+                        "completed_stores": completed,
+                        "total_stores": len(items),
+                        "failed_stores": failures_so_far,
+                        "elapsed_seconds": round(duration, 1),
+                        "stores_per_minute": round(completed * 60 / duration, 1),
+                        "api": global_limiter.snapshot(),
+                    }, ensure_ascii=False), flush=True)
         failures = [
             {"store_uuid": item.get("store_uuid"),
              "store_url": item.get("store_url"),
