@@ -90,6 +90,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
                                       captured_at=datetime.now(TW).isoformat())
                         return result
                     if isinstance(data, dict) and (data.get("title") or data.get("catalogSectionsMap")):
+                        global_limiter.record_success()
                         # getStoreV1 is only a preview for large grocery stores.
                         # Save every native catalog page before accepting a complete capture.
                         all_catalog = capture_catalog(
