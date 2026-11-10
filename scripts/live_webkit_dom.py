@@ -14,10 +14,14 @@ from playwright.sync_api import sync_playwright
 DOM_ITEMS=r"""() => {
  const nodes=[...document.querySelectorAll('[data-testid^="store-item-"]')];
  const results=[];
+ // DOM-only incremental observation: never re-read the same expensive
+ // rendered innerText on every scroll. No API or app state is accessed.
+ const observed=window.__foodradar_dom_observed ||= new Set();
  for(const n of nodes) {
    if(!n.getClientRects().length)continue;
    const id=(n.getAttribute('data-testid')||'').slice('store-item-'.length);
    if(!/^[a-f0-9-]{36}$/i.test(id))continue;
+   if(observed.has(id))continue;
    const lines=(n.innerText||'').split(/\n/).map(x=>x.trim()).filter(Boolean);
    const img=n.querySelector('img[alt]');
    const name=(img?.getAttribute('alt')||'').trim();
@@ -40,6 +44,7 @@ DOM_ITEMS=r"""() => {
    const price=Math.min(...prices);
    results.push({sku:id,name,price_cents:price,price_candidates:prices,
                  display_lines:lines.slice(0,7)});
+   observed.add(id);
  }
  return results;
 }"""
