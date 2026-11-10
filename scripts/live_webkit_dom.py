@@ -120,12 +120,20 @@ def scan_live_webpage(page, *, limit_categories=0, scroll_steps=35, stop_after_s
                     extract()
                 if stale>=stop_after_stale:
                     break
-            stats.append({"category":label,"new_skus":len(seen)-before,
-                          "cumulative_skus":len(seen),
-                          "bottom_reached":bottom_reached})
+            stat={"category":label,"new_skus":len(seen)-before,
+                  "cumulative_skus":len(seen),
+                  "bottom_reached":bottom_reached}
+            stats.append(stat)
+            print("RENDERED_UI_CATEGORY="+json.dumps({
+                "index":idx+1,"total":total,**stat
+            },ensure_ascii=False),flush=True)
         except Exception as err:
-            errors.append({"category":label,
-                           "error":type(err).__name__+":"+str(err)[:240]})
+            error={"category":label,
+                   "error":type(err).__name__+":"+str(err)[:240]}
+            errors.append(error)
+            print("RENDERED_UI_CATEGORY_ERROR="+json.dumps({
+                "index":idx+1,"total":total,**error
+            },ensure_ascii=False),flush=True)
     visited=len(stats)
     return {
         "count":len(seen),
