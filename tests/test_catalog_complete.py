@@ -193,5 +193,61 @@ class CatalogCompleteness(unittest.TestCase):
         self.assertEqual(merge_catalog_pages(data,[]),data)
 
 
+    def test_distinct_catalog_categories_each_start_at_zero(self):
+        """Grouped category requests may truncate; each category is independent."""
+        sid="a4e2201d-5fc7-5a10-a41a-dfe58975a7a7"
+        initial={"catalogSectionsMap":{},"aisles":{"cat":[
+            {"catalogSectionUUID":"fresh"},
+            {"catalogSectionUUID":"snacks"}]}}
+        class CategorySession:
+            def __init__(self):
+                self.calls=[]
+            def post(self,url,json,headers,timeout):
+                cat=json["storeFilters"]["sectionUuids"]
+                off=json["pagingInfo"]["offset"]
+                self.calls.append((cat[0],off))
+                self_item=sample_item(cat[0],cat[0]+"-product",20000)
+                return Response({"data":{"catalog":[{
+                    "payload":{"standardItemsPayload":{"catalogItems":[self_item]}}}],
+                    "pagingInfo":{"hasMore":False}}})
+        session=CategorySession()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            def save(directory,name,response):
+                out=directory/name
+                out.parent.mkdir(parents=True,exist_ok=True)
+                out.write_bytes(response.content)
+            meta=capture_catalog(session,sid,initial,root,{},save)
+            self.assertEqual(session.calls,[("fresh",0),("snacks",0)])
+            self.assertEqual(meta["catalog_sections_finished"],2)
+            self.assertEqual(len(meta["catalog_responses"]),2)
+            self.assertEqual(len({x["path"] for x in meta["catalog_responses"]}),2)
+            pages=[json.loads((root/x["path"]).read_bytes())
+                   for x in meta["catalog_responses"]]
+            merged=merge_catalog_pages(initial,pages)
+            names=[x["title"]
+                   for group in merged["catalogSectionsMap"]["v2_catalog"]
+                   for x in group["payload"]["standardItemsPayload"]["catalogItems"]]
+            self.assertEqual(set(names),{"fresh-product","snacks-product"})
+
+    def test_failing_later_category_does_not_report_complete(self):
+        sid="a4e2201d-5fc7-5a10-a41a-dfe58975a7a7"
+        base={"catalogSectionsMap":{},"aisles":{"cat":[
+            {"catalogSectionUUID":"fresh"},{"catalogSectionUUID":"snacks"}]}}
+        class MixedSession:
+            def post(self,url,json,headers,timeout):
+                cat=json["storeFilters"]["sectionUuids"][0]
+                if cat=="snacks":
+                    return Response({"data":{"catalog":[]}})
+                return Response({"data":{"catalog":[{
+                    "payload":{"standardItemsPayload":{
+                        "catalogItems":[sample_item("fresh-1","Fresh",10000)]}}}],
+                    "pagingInfo":{"hasMore":False}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            with self.assertRaises(RuntimeError):
+                capture_catalog(MixedSession(),sid,base,root,{},lambda a,b,c:None)
+
+
 if __name__ == "__main__":
     unittest.main()
