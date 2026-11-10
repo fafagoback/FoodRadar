@@ -51,95 +51,128 @@ def _item_count(entries):
 
 
 def capture_catalog(session, store_uuid, base_data, root, headers, capture_response, store_attempt=1):
-    """Return immutable page paths; if any page is missing, raise and reject this batch.
+    """Capture every category separately, preserving original HTTP response bytes.
 
-    Uses category IDs provided by the same getStoreV1 response. Uber's first
-    catalog-presentation page often contains most sections, but pagingInfo.hasMore
-    still requires subsequent offset requests to avoid losing long-tail SKUs.
+    A grouped sectionUuids request is NOT complete merely because its pagination
+    reports hasMore=false: it can return only a small fraction of a large store.
+    Each category needs its own independent offset=0..terminal traversal.
     """
     section_uuids = _section_ids(base_data)
     if not section_uuids:
         paging = base_data.get("catalogSectionPagingInfo") or {}
         if paging.get("hasMore"):
             raise ValueError("Store reports more menu pages but exposes no category IDs")
-        return {"catalog_responses": [], "catalog_complete": True, "catalog_item_occurrences": 0}
+        return {"catalog_responses": [], "catalog_complete": True,
+                "catalog_section_count": 0, "catalog_sections_finished": 0,
+                "catalog_section_reports": [], "catalog_item_occurrences": 0}
 
-    responses, offset, page, seen_offsets = [], 0, 0, set()
-    use_collection_type = False
-    while page < MAX_CATALOG_PAGES:
-        if offset in seen_offsets:
-            raise ValueError(f"Catalog pagination loop at offset={offset}")
-        seen_offsets.add(offset)
-        filters = {"storeUuid": store_uuid, "sectionUuids": section_uuids, "subsectionUuids": None}
-        if use_collection_type:
-            filters["sectionTypes"] = ["COLLECTION"]
-        payload = {"sortAndFilters": None, "storeFilters": filters,
-                   "pagingInfo": {"enabled": True, "offset": offset},
-                   "source": "NV_L2_CATALOG"}
-        body = None
-        for attempt in range(1, 4):
-            try:
-                global_limiter.wait()
-                resp = session.post(CATALOG_API, json=payload, headers=headers, timeout=30)
-                relative = (f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-page-{page:04d}-offset-{offset:06d}-"
-                            f"attempt-{attempt:02d}-status-{resp.status_code}.body")
-                capture_response(root, relative, resp)
-                if resp.status_code != 200:
-                    if resp.status_code == 429:
-                        global_limiter.trigger_backoff(attempt * 8, "Catalog HTTP 429")
-                    if attempt < 3:
-                        time.sleep(attempt * 2)
-                        continue
-                    raise ValueError(f"Catalog HTTP {resp.status_code}")
-                body = resp.json()
-                data, entries = _catalog_entries(body)
-                paging_info = data.get("pagingInfo")
-                if not isinstance(paging_info, dict) or type(paging_info.get("hasMore")) is not bool:
-                    raise ValueError("Catalog pagination metadata missing; refusal to truncate")
-                n = _item_count(entries)
-                # Some collection-store responses are empty without sectionTypes,
-                # while others only work without it. Try the other form once.
-                if page == 0 and n == 0 and not use_collection_type:
-                    use_collection_type = True
-                    filters["sectionTypes"] = ["COLLECTION"]
-                    try:
-                        global_limiter.wait()
-                        alt = session.post(CATALOG_API, json=payload, headers=headers, timeout=30)
-                        alt_relative = (f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-page-0000-offset-000000-"
-                                        f"collection-status-{alt.status_code}.body")
-                        capture_response(root, alt_relative, alt)
-                        if alt.status_code == 200:
-                            alt_body = alt.json()
-                            alt_data, alt_entries = _catalog_entries(alt_body)
-                            if (_item_count(alt_entries) > 0
-                                    and isinstance(alt_data.get("pagingInfo"), dict)):
-                                body, data, entries = alt_body, alt_data, alt_entries
-                                relative, n = alt_relative, _item_count(alt_entries)
+    responses, section_reports = [], []
+    for section_index, section_uuid in enumerate(section_uuids):
+        offset, page, seen_offsets = 0, 0, set()
+        use_collection_type = False
+        category_occurrences = 0
+        while page < MAX_CATALOG_PAGES:
+            if offset in seen_offsets:
+                raise ValueError(
+                    f"Catalog paging loop in section {section_uuid} at offset={offset}")
+            seen_offsets.add(offset)
+            filters = {"storeUuid": store_uuid,
+                       "sectionUuids": [section_uuid], "subsectionUuids": None}
+            if use_collection_type:
+                filters["sectionTypes"] = ["COLLECTION"]
+            payload = {"sortAndFilters": None, "storeFilters": filters,
+                       "pagingInfo": {"enabled": True, "offset": offset},
+                       "source": "NV_L2_CATALOG"}
+            body, data = None, None
+            for attempt in range(1, 4):
+                try:
+                    global_limiter.wait()
+                    resp = session.post(CATALOG_API, json=payload,
+                                        headers=headers, timeout=30)
+                    relative = (
+                        f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-"
+                        f"section-{section_index:03d}-{section_uuid}-"
+                        f"page-{page:04d}-offset-{offset:06d}-"
+                        f"attempt-{attempt:02d}-status-{resp.status_code}.body")
+                    capture_response(root, relative, resp)
+                    if resp.status_code != 200:
+                        if resp.status_code == 429:
+                            global_limiter.trigger_backoff(attempt * 8, "Catalog HTTP 429")
+                        raise ValueError(f"Catalog HTTP {resp.status_code}")
+                    body = resp.json()
+                    data, entries = _catalog_entries(body)
+                    n = _item_count(entries)
+                    # Some collection categories need sectionTypes=COLLECTION.
+                    # Persist both attempts; only the chosen body is in manifest.
+                    if page == 0 and n == 0 and not use_collection_type:
+                        filters["sectionTypes"] = ["COLLECTION"]
+                        try:
+                            global_limiter.wait()
+                            alt = session.post(CATALOG_API, json=payload,
+                                               headers=headers, timeout=30)
+                            alt_relative = (
+                                f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-"
+                                f"section-{section_index:03d}-{section_uuid}-"
+                                f"page-0000-offset-000000-collection-"
+                                f"status-{alt.status_code}.body")
+                            capture_response(root, alt_relative, alt)
+                            if alt.status_code == 200:
+                                alternative, alt_entries = _catalog_entries(alt.json())
+                                if _item_count(alt_entries) > 0:
+                                    body = {"data": alternative}
+                                    data, entries = alternative, alt_entries
+                                    relative, n = alt_relative, _item_count(alt_entries)
+                                    use_collection_type = True
+                                else:
+                                    filters.pop("sectionTypes", None)
                             else:
-                                use_collection_type = False
-                        else:
-                            use_collection_type = False
-                    except (requests.RequestException, ValueError):
-                        use_collection_type = False
-                responses.append({"path": relative, "offset": offset, "item_count": n})
+                                filters.pop("sectionTypes", None)
+                        except (requests.RequestException, ValueError):
+                            filters.pop("sectionTypes", None)
+                    responses.append({
+                        "path": relative, "section_uuid": section_uuid,
+                        "section_index": section_index, "page": page,
+                        "offset": offset, "item_count": n})
+                    category_occurrences += n
+                    break
+                except (requests.RequestException, ValueError) as exc:
+                    if attempt >= 3:
+                        raise RuntimeError(
+                            f"Catalog section {section_uuid}, page {page}, "
+                            f"offset {offset} failed") from exc
+                    time.sleep(attempt)
+            if data is None:
+                raise ValueError(f"Catalog section {section_uuid} returned no data")
+            paging = data["pagingInfo"]
+            page += 1
+            if paging["hasMore"] is False:
+                section_reports.append({
+                    "section_uuid": section_uuid,
+                    "pages": page,
+                    "item_occurrences": category_occurrences,
+                    "terminal_has_more": False})
                 break
-            except (requests.RequestException, ValueError) as exc:
-                if attempt >= 3:
-                    raise RuntimeError(f"Catalog page {page} at offset={offset} failed") from exc
-                time.sleep(attempt)
-        if body is None:
-            raise ValueError("Catalog body missing")
-        paging_info = data["pagingInfo"]
-        page += 1
-        if not paging_info["hasMore"]:
-            return {"catalog_responses": responses, "catalog_complete": True,
-                    "catalog_section_count": len(section_uuids),
-                    "catalog_item_occurrences": sum(x["item_count"] for x in responses)}
-        next_offset = paging_info.get("offset")
-        if not isinstance(next_offset, int) or next_offset <= offset:
-            raise ValueError(f"Catalog pagination stalled at {offset} -> {next_offset}")
-        offset = next_offset
-    raise ValueError(f"Catalog exceeded {MAX_CATALOG_PAGES} pages; refusing partial batch")
+            next_offset = paging.get("offset")
+            if not isinstance(next_offset, int) or next_offset <= offset:
+                raise ValueError(
+                    f"Catalog section {section_uuid} offset stalled: "
+                    f"{offset} -> {next_offset}")
+            offset = next_offset
+        else:
+            raise ValueError(
+                f"Catalog section {section_uuid} exceeded "
+                f"{MAX_CATALOG_PAGES} pages")
+
+    if len(section_reports) != len(section_uuids):
+        raise ValueError("Not all catalog sections reached a terminal page")
+    return {
+        "catalog_responses": responses,
+        "catalog_complete": True,
+        "catalog_section_count": len(section_uuids),
+        "catalog_sections_finished": len(section_reports),
+        "catalog_section_reports": section_reports,
+        "catalog_item_occurrences": sum(x["item_count"] for x in responses),
+    }
 
 
 def merge_catalog_pages(native, raw_bodies):
