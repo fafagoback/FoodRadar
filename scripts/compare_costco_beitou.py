@@ -20,6 +20,13 @@ LAT, LON = 25.13184, 121.498632
 
 with tempfile.TemporaryDirectory(prefix="costco-beitou-audit-") as td:
     result = {"store": NAME, "store_url": URL, "delivery_lat": LAT, "delivery_lon": LON}
+    # Collect method A first so its real result is visible even if WebKit is slow.
+    api = collect_api(NAME,URL,LAT,LON,Path(td))
+    aa = {x["sku"]:x for x in api["items"] if x.get("sku")}
+    print("COSTCO_BEITOU_API_CAPTURED="+json.dumps({
+        "count":api["count"],"pages":api["pages"],
+        "categories":api["categories"],"complete":api["complete"]
+    },ensure_ascii=False),flush=True)
     with sync_playwright() as pw:
         browser = pw.webkit.launch(headless=True)
         try:
@@ -66,9 +73,7 @@ with tempfile.TemporaryDirectory(prefix="costco-beitou-audit-") as td:
         "visited":result.get("categories_visited"),"errors":result.get("ui_errors"),
         "stats":result.get("category_stats"),
     },ensure_ascii=False),flush=True)
-    # API collected at the same store URL / delivery point in the same CI run.
-    api = collect_api(NAME,URL,LAT,LON,Path(td))
-    aa = {x["sku"]:x for x in api["items"] if x.get("sku")}
+    # Both paths use the same store and delivery coordinate in one CI run.
     same=set(aa)&set(bb)
     only_ui=set(bb)-set(aa)
     only_api=set(aa)-set(bb)
