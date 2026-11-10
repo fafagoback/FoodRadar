@@ -89,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix="foodradar-four-") as folder:
                     raise RuntimeError("Store website security challenge (not a verified capture)")
                 if not page.locator('[role="tab"]').count():
                     raise RuntimeError("No rendered category tabs on page")
-                ui=scan_live_webpage(page,limit_categories=0,scroll_steps=14,stop_after_stale=4)
+                ui=scan_live_webpage(page,limit_categories=0,scroll_steps=42,stop_after_stale=6)
                 bb={x["sku"]:x for x in ui["items"] if x.get("sku")}
                 result["ui"]={
                     "count":len(bb),"categories_listed":ui["categories_listed"],
@@ -97,6 +97,7 @@ with tempfile.TemporaryDirectory(prefix="foodradar-four-") as folder:
                     "category_stats":ui["category_stats"],"errors":ui["errors"],
                     "all_tabs_visited":ui["all_tabs_visited"],
                     "whole_catalog_proven_complete":False,
+                    "scan_budgets_exhausted":ui.get("scan_budgets_exhausted",0),
                 }
                 save()
                 print("STORE_METHOD_B="+json.dumps({
@@ -129,12 +130,23 @@ with tempfile.TemporaryDirectory(prefix="foodradar-four-") as folder:
             "ui_only_skus":len(bonly),
             "api_only_examples":[{"sku":sku,**aa[sku]} for sku in sorted(aonly)[:10]],
             "ui_only_examples":[{"sku":sku,**bb[sku]} for sku in sorted(bonly)[:10]],
+            "api_only_all_skus":sorted(aonly),
+            "ui_only_all_skus":sorted(bonly),
             "display_price_mismatches":len(prices),
             "price_mismatch_examples":prices[:10],
         }
-        result["complete"]=bool(result["api"]["pagination_complete"] and
-                                 result["ui"]["all_tabs_visited"] and
-                                 not result["ui"]["errors"])
+        result["capture_execution_complete"]=bool(
+            result["api"]["pagination_complete"] and
+            result["ui"]["all_tabs_visited"] and
+            not result["ui"]["errors"])
+        result["exact_sku_match"]=not aonly and not bonly
+        result["browser_scan_budget_exhausted"]=bool(
+            result["ui"]["scan_budgets_exhausted"])
+        # Catalog inventory completeness is NOT proven by visiting every tab.
+        result["complete"]=False
+        result["status"]=("BOTH_METHODS_CAPTURED_DIFFERENCES_UNRESOLVED"
+                          if result["capture_execution_complete"] else
+                          "CAPTURE_INCOMPLETE")
     result["elapsed_seconds"]=round(time.monotonic()-start,2)
     save()
     print("FOUR_STORE_CROSSCHECK="+json.dumps({
@@ -144,9 +156,12 @@ with tempfile.TemporaryDirectory(prefix="foodradar-four-") as folder:
         "categories_listed":result.get("ui",{}).get("categories_listed"),
         "comparison":result.get("comparison"),
         "complete":result["complete"],
+        "capture_execution_complete":result.get("capture_execution_complete",False),
+        "status":result.get("status","CAPTURE_INCOMPLETE"),
+        "browser_scan_budget_exhausted":result.get("browser_scan_budget_exhausted"),
         "seconds":result["elapsed_seconds"],
         "errors":[result.get("api_error"),result.get("ui_error"),
                   result.get("ui",{}).get("errors")],
     },ensure_ascii=False),flush=True)
-    if not result["complete"]:
-        raise SystemExit("INCOMPLETE: check crosscheck JSON for capture failure")
+    if not result.get("capture_execution_complete"):
+        raise SystemExit("CAPTURE INCOMPLETE: inspect reported API/UI data and scan budgets")
