@@ -249,5 +249,84 @@ class CatalogCompleteness(unittest.TestCase):
                 capture_catalog(MixedSession(),sid,base,root,{},lambda a,b,c:None)
 
 
+    def test_deep_offset_failure_recovers_native_subsections_only(self):
+        base={"aisles":{"store":[{"catalogSectionUUID":"parent"}]},
+              "sections":[{"uuid":"parent","subsectionUuids":["child-a","child-b"]}],
+              "catalogSectionsMap":{}}
+        class FakeSession:
+            def __init__(self):
+                self.calls=[]
+            def post(self,url,json,headers,timeout):
+                sf=json["storeFilters"]
+                sub=(sf["subsectionUuids"] or [None])[0]
+                off=json["pagingInfo"]["offset"]
+                self.calls.append((sub,off))
+                if sub is None and off==1020:
+                    return Response({"status":"failure","data":{"code":500,
+                        "message":"status code error"}})
+                if sub is None:
+                    return Response({"status":"success","data":{"catalog":[{
+                        "payload":{"standardItemsPayload":{"catalogItems":[
+                            sample_item("old","Seen in parent",10000)]}}}],
+                        "pagingInfo":{"hasMore":True,"offset":1020}}})
+                items = ([sample_item("old","Seen in parent",10000)] if sub=="child-a"
+                         else [sample_item("new","Only in child",20000)])
+                return Response({"status":"success","data":{"catalog":[{
+                    "payload":{"standardItemsPayload":{"catalogItems":items}}}],
+                    "pagingInfo":{"hasMore":False}}})
+        session=FakeSession()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            def save(directory,name,response):
+                path=directory/name
+                path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_bytes(response.content)
+            out=capture_catalog(session,"store",base,root,{},save)
+            self.assertTrue(out["catalog_complete"])
+            self.assertEqual(out["catalog_section_reports"][0]["mode"],
+                             "subsections_after_deep_offset_error")
+            self.assertEqual([x["subsection_uuid"]
+                              for x in out["catalog_responses"]],
+                             ["child-a","child-b"])
+            self.assertEqual(session.calls,[
+                (None,0),(None,1020),("child-a",0),("child-b",0)])
+            self.assertEqual(len(list(root.rglob("*.body"))),4)
+            pages=[json.loads((root/x["path"]).read_bytes())
+                   for x in out["catalog_responses"]]
+            self.assertEqual(_item_ids(merge_catalog_pages(base,pages)),
+                             {"old","new"})
+
+    def test_deep_offset_fails_closed_without_subcategories(self):
+        base={"aisles":{"store":[{"catalogSectionUUID":"parent"}]}}
+        class FakeSession:
+            def post(self,url,json,headers,timeout):
+                off=json["pagingInfo"]["offset"]
+                if off:
+                    return Response({"status":"failure","data":{
+                        "code":500,"message":"status code error"}})
+                return Response({"status":"success","data":{"catalog":[{
+                    "payload":{"standardItemsPayload":{
+                        "catalogItems":[sample_item("old","Seen",10000)]}}}],
+                    "pagingInfo":{"hasMore":True,"offset":1020}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            def save(directory,name,response):
+                path=directory/name
+                path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_bytes(response.content)
+            with self.assertRaisesRegex(RuntimeError,"native subsection UUIDs unavailable"):
+                capture_catalog(FakeSession(),"store",base,root,{},save)
+
+
+def _item_ids(native):
+    ids=set()
+    for group in native.get("catalogSectionsMap",{}).values():
+        for section in group:
+            for item in (((section.get("payload") or {})
+                          .get("standardItemsPayload") or {}).get("catalogItems") or []):
+                ids.add(item["uuid"])
+    return ids
+
+
 if __name__ == "__main__":
     unittest.main()
