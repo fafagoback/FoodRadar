@@ -99,9 +99,6 @@ jobs:
       - name: 定位全聯北投明德分類 API 第 17 頁失敗原因
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(probe):') }}
         run: python scripts/probe_pxmart_paging.py
-      - name: 檢查北投好市多每分類 API 商品數
-        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(probe):') }}
-        run: python scripts/probe_costco_sections.py
       - name: 單獨比對北投好市多（相同外送定位；API vs WebKit 全分類）
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(beitou):') }}
         run: |
