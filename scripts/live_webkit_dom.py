@@ -49,16 +49,40 @@ DOM_ITEMS=r"""() => {
  return results;
 }"""
 
-def scan_live_webpage(page, *, limit_categories=0, scroll_steps=14, stop_after_stale=4):
-    """Fast independent DOM observation. No network/hydration/API inspection.
+def scan_live_webpage(page, *, limit_categories=0, scroll_steps=42, stop_after_stale=6):
+    """Observe rendered product cards. A tab click alone is NOT inventory proof.
 
-    Visit tabs using their rendered text, scroll through loaded products,
-    and record any missed category instead of reporting false completeness.
+    Evidence-based fixes: prior 14-scroll / 4-stale heuristic stopped early;
+    only mark the category exhausted upon verified scroll-end/stagnation, or
+    explicitly flag the scan budget limit (instead of silently succeeding).
+    Do not use any API, hydration data, screenshots, or shared API results.
     """
     seen, stats, errors = {}, [], []
+
     def extract():
         for item in page.evaluate(DOM_ITEMS):
             seen.setdefault(item["sku"], item)
+
+    def position():
+        return page.evaluate("""() => {
+            const el=document.scrollingElement || document.documentElement;
+            return {scroll_top:Math.round(el.scrollTop),
+                    scroll_end:Math.round(Math.max(0,el.scrollHeight-el.clientHeight))};
+        }""")
+
+    def card_diagnostics():
+        return page.evaluate("""() => {
+            let rendered=0, missing_alt=0, missing_price=0;
+            for(const node of document.querySelectorAll('[data-testid^="store-item-"]')){
+                if(!node.getClientRects().length)continue;
+                rendered++;
+                if(!(node.querySelector('img[alt]')?.getAttribute('alt')||'').trim())
+                    missing_alt++;
+                if(!/(?:NT\\s*)?[$＄]\\s*[\\d,]+/.test(node.innerText||''))
+                    missing_price++;
+            }
+            return {rendered_cards:rendered, missing_alt, missing_price};
+        }""")
 
     extract()
     labels = list(dict.fromkeys(x.strip() for x in
@@ -66,10 +90,8 @@ def scan_live_webpage(page, *, limit_categories=0, scroll_steps=14, stop_after_s
     total = len(labels)
     maximum = total if limit_categories <= 0 else min(limit_categories, total)
     for index, label in enumerate(labels[:maximum]):
-        start = time.monotonic()
+        started = time.monotonic()
         try:
-            # Native click avoids Playwright scrolling through thousands of cards.
-            # It only triggers the rendered tab's real click handler.
             clicked = page.evaluate("""(label) => {
                 const tabs=[...document.querySelectorAll('[role="tab"]')];
                 const t=tabs.find(x=>(x.textContent||'').trim()===label);
@@ -79,24 +101,50 @@ def scan_live_webpage(page, *, limit_categories=0, scroll_steps=14, stop_after_s
             }""", label)
             if not clicked:
                 page.evaluate("window.scrollTo(0,0)")
-                page.get_by_role("tab", name=label, exact=True).first.click(timeout=3000)
-            page.wait_for_timeout(350)
-            before = len(seen)
+                page.get_by_role("tab",name=label,exact=True).first.click(timeout=4500)
+            page.wait_for_timeout(400)
+            old = len(seen)
             extract()
-            stale = 0
-            for step in range(scroll_steps):
-                page.mouse.wheel(0, 1450)
-                page.wait_for_timeout(190)
-                n = len(seen)
+            last = position()
+            stable_at_bottom = 0
+            stagnant = 0
+            end_seen = False
+            scanned_steps = 0
+            scan_exhausted = True
+            for scanned_steps in range(1, scroll_steps + 1):
+                page.mouse.wheel(0,1350)
+                page.wait_for_timeout(210)
+                before=len(seen)
                 extract()
-                stale = (stale + 1) if n == len(seen) else 0
-                if stale >= stop_after_stale:
+                pos=position()
+                no_new=(len(seen)==before)
+                same_scroll=(pos["scroll_top"]==last["scroll_top"])
+                at_end=(pos["scroll_top"]>=pos["scroll_end"]-4)
+                end_seen=end_seen or at_end
+                stagnant=(stagnant+1) if same_scroll and no_new else 0
+                stable_at_bottom=(stable_at_bottom+1) if at_end and no_new else 0
+                last=pos
+                # A stalled viewport at the end (not merely 4 empty UUID
+                # reads) is independent evidence the browser cannot advance.
+                if stable_at_bottom>=stop_after_stale or stagnant>=stop_after_stale:
+                    scan_exhausted=False
                     break
-            report = {"category": label, "new_skus":len(seen)-before,
-                      "cumulative_skus":len(seen),"elapsed_seconds":round(time.monotonic()-start,2)}
-            stats.append(report)
+            # Keep unexplained exhaustion explicit rather than claiming success.
+            diagnostic=card_diagnostics()
+            stat={"category":label,
+                  "new_skus":len(seen)-old,
+                  "cumulative_skus":len(seen),
+                  "elapsed_seconds":round(time.monotonic()-started,2),
+                  "scroll_steps":scanned_steps,
+                  "scroll_end_seen":end_seen,
+                  "stopped_by_stagnation":not scan_exhausted,
+                  "budget_exhausted":scan_exhausted,
+                  "final_scroll_top":last["scroll_top"],
+                  "final_scroll_end":last["scroll_end"],
+                  **diagnostic}
+            stats.append(stat)
             print("RENDERED_UI_CATEGORY="+json.dumps({
-                "index":index+1,"total":total, **report
+                "index":index+1,"total":total, **stat
             },ensure_ascii=False),flush=True)
         except Exception as err:
             report={"category":label,"error":type(err).__name__+":"+str(err)[:180]}
@@ -104,6 +152,7 @@ def scan_live_webpage(page, *, limit_categories=0, scroll_steps=14, stop_after_s
             print("RENDERED_UI_CATEGORY_ERROR="+json.dumps({
                 "index":index+1,"total":total,**report
             },ensure_ascii=False),flush=True)
+    all_visited=total>0 and len(stats)==total and not errors
     return {
         "count":len(seen),
         "items":[{"sku":i["sku"],"name":i["name"],
@@ -113,7 +162,8 @@ def scan_live_webpage(page, *, limit_categories=0, scroll_steps=14, stop_after_s
         "categories_listed":total,
         "categories_visited":len(stats),
         "category_stats":stats,"errors":errors,
-        "all_tabs_visited": total>0 and len(stats)==total and not errors,
+        "all_tabs_visited":all_visited,
+        "scan_budgets_exhausted":sum(bool(s["budget_exhausted"]) for s in stats),
         "complete":False,
         "status":"REAL_RENDERED_UI_OBSERVED_NOT_PROVEN_COMPLETE",
         "method":"webkit_visible_ui_only",
