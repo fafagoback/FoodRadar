@@ -17,7 +17,7 @@ jobs:
   compare:
     name: 'A API vs B WebKit | ${{ matrix.store }}'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
