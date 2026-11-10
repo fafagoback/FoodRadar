@@ -159,6 +159,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                             f"Catalog {section_uuid}/{subsection_uuid} "
                             f"offset {offset}: native code 500")
                     data, entries = _catalog_entries(body)
+                    global_limiter.record_success()
                     n = _item_count(entries)
                     if page == 0 and n == 0 and not use_collection_type:
                         filters["sectionTypes"] = ["COLLECTION"]
@@ -177,6 +178,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                                 alt_body = alt.json()
                                 _check_rate_limit(alt, alt_body, attempt)
                                 alt_data, alt_entries = _catalog_entries(alt_body)
+                                global_limiter.record_success()
                                 if _item_count(alt_entries) > 0:
                                     body, data, entries = alt_body, alt_data, alt_entries
                                     relative, n = alt_relative, _item_count(alt_entries)
