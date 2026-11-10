@@ -62,7 +62,8 @@ jobs:
     needs: [schedule-recovery]
     if: ${{ always() && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A full store/catalog crawl with upstream 429 cooldowns can exceed 90 minutes.
+    timeout-minutes: 240
     concurrency:
       group: foodradar-database-publisher
       # Only an explicitly requested fresh full crawl replaces stale
