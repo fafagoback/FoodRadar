@@ -185,8 +185,8 @@ class AdaptiveRateLimiter:
                 self.current_interval = max(
                     self.min_interval, round(self.current_interval * 0.80, 3))
                 self.success_streak = 0
-                print(f"API_RATE_RECOVERY={{'interval_seconds': {self.current_interval}}}",
-                      flush=True)
+                print("API_RATE_RECOVERY=" + json.dumps(
+                    {"interval_seconds": self.current_interval}), flush=True)
 
     def trigger_backoff(self, backoff_seconds: float, reason: str = "HTTP 429"):
         """Global cooldown on HTTP 429 *or* HTTP-200 application code 429.
