@@ -130,19 +130,21 @@ def audit_native_raw(manifest, archive, docs):
             info=payload.get("pagingInfo") or {}
             current=record.get("offset")
             section_uuid=record.get("section_uuid") or "__legacy_all_sections__"
-            previous=previous_by_section.get(section_uuid,-1)
+            sub_uuid=record.get("subsection_uuid")
+            pagination_key=(section_uuid, sub_uuid)
+            previous=previous_by_section.get(pagination_key,-1)
             if not isinstance(current,int) or current <= previous:
                 raise AssertionError(
                     f"Non-monotonic native page offsets: {sid}/{section_uuid}")
             if type(info.get("hasMore")) is not bool:
                 raise AssertionError(f"Native page lacks hasMore boolean: {sid}")
-            if terminal_by_section.get(section_uuid):
+            if terminal_by_section.get(pagination_key):
                 raise AssertionError(
                     f"Pages continue after terminal page: {sid}/{section_uuid}")
             if section_uuid not in section_order:
                 section_order.append(section_uuid)
-            previous_by_section[section_uuid]=current
-            terminal_by_section[section_uuid]=info["hasMore"] is False
+            previous_by_section[pagination_key]=current
+            terminal_by_section[pagination_key]=info["hasMore"] is False
             pages.append(page)
         if pages and not all(terminal_by_section.values()):
             raise AssertionError(f"Catalog sections lack terminal pages: {sid}")
