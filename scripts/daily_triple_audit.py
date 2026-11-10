@@ -23,12 +23,14 @@ TW = timezone(timedelta(hours=8))
 OUT = ROOT / "audit-results"
 OUT.mkdir(parents=True, exist_ok=True)
 STORES = [
-    ("costco_neihu", "Costco 好市多內湖店",
-     "https://www.ubereats.com/tw/store/costco-%E5%A5%BD%E5%B8%82%E5%A4%9A-%E5%85%A7%E6%B9%96%E5%BA%97/rHKi5OrjWY2DLNdY8WriVA", 25.063, 121.577),
+    ("costco_beitou", "Costco 好市多北投店",
+     "https://www.ubereats.com/tw/store/costco-%E5%A5%BD%E5%B8%82%E5%A4%9A-%E5%8C%97%E6%8A%95%E5%BA%97/pOIgHV_HWhCkGt_liXWnpw", 25.13184, 121.498632),
     ("pxmart_beitou", "全聯福利中心北投明德",
      "https://www.ubereats.com/tw/store/%E5%85%A8%E8%81%AF%E7%A6%8F%E5%88%A9%E4%B8%AD%E5%BF%83-%E5%8C%97%E6%8A%95%E6%98%8E%E5%BE%B7/2w4z4S62WsaVTf3t2o_ntA", 25.115, 121.520),
     ("uber_grocery_beitou", "Uber Eats 優市北投店",
      "https://www.ubereats.com/tw/store/uber-eats-%E5%84%AA%E5%B8%82-%E5%8C%97%E6%8A%95%E5%BA%97/0uUO4WnaXv-V8OsNuuueQg", 25.123246847935267, 121.52951826298867),
+    ("carrefour_beitou_guangming", "家樂福超市北投光明店",
+     "https://www.ubereats.com/tw/store/%E5%AE%B6%E6%A8%82%E7%A6%8F%E8%B6%85%E5%B8%82-%E5%8C%97%E6%8A%95%E5%85%89%E6%98%8E%E5%BA%97/d6zC-zVpUzikW3dTh2EYSQ", 25.134, 121.500),
 ]
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
            "Accept-Language": "zh-TW,zh;q=0.9", "Content-Type": "application/json", "x-csrf-token": "x"}
@@ -212,6 +214,8 @@ def main():
                     ctx=browser.new_context(locale="zh-TW",
                                             viewport={"width":1440,"height":980})
                     try:
+                        ctx.add_cookies([{"name":"uev2.loc","value":loc_cookie(lat,lon),
+                                         "domain":".ubereats.com","path":"/"}])
                         page=ctx.new_page()
                         response=page.goto(url,wait_until="domcontentloaded",timeout=45000)
                         page.wait_for_timeout(1600)
