@@ -33,7 +33,7 @@ def capture_response(directory: Path, filename: str, response) -> str:
     return path.as_posix()
 
 
-def fetch_store_raw(store: dict, root: Path, max_retries: int = 3) -> dict:
+def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
     """Capture native getStoreV1 response bytes; no menu/schema conversion."""
     uuid = normalize_store_uuid(store["store_uuid"], store["store_url"])
     if not re.fullmatch(r"[0-9a-f-]{36}", uuid):
@@ -61,6 +61,11 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 3) -> dict:
                 )
                 relative = f"stores/{uuid}-attempt-{attempt:02d}-status-{response.status_code}.body"
                 capture_response(root, relative, response)
+                if response.status_code == 429:
+                    global_limiter.trigger_backoff(
+                        min(120, 15 * (2 ** (attempt - 1))), "Store HTTP 429")
+                    result["error"] = "Store HTTP 429 (too many requests)"
+                    continue
                 # Terminal inactive responses are complete captures too.
                 # Only the DB adapter turns them into an inactive-store record.
                 if response.status_code in (404, 410):
@@ -73,6 +78,12 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 3) -> dict:
                     data = payload.get("data") if isinstance(payload, dict) else None
                     code = str(data.get("code") or "") if isinstance(data, dict) else ""
                     message = str(data.get("message") or "").lower() if isinstance(data, dict) else ""
+                    if payload.get("status") == "failure" and code == "429":
+                        global_limiter.trigger_backoff(
+                            min(120, 15 * (2 ** (attempt - 1))),
+                            "Store application 429")
+                        result["error"] = "Store application code 429 (too many requests)"
+                        continue
                     if (payload.get("status") == "failure" and
                             (code in ("404", "410") or "inactive_account" in message)):
                         result.update(success=True, inactive=True, response_path=relative,
