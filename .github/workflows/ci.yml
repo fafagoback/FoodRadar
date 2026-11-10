@@ -105,6 +105,14 @@ jobs:
           python -m pip install playwright
           python -m playwright install --with-deps webkit
           python scripts/compare_costco_beitou.py
+      - name: 保存北投店兩種方法交叉驗證報告
+        if: ${{ always() && github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(beitou):') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: costco-beitou-two-method
+          path: audit-results/costco-beitou-two-method-latest.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: 實測真實網頁渲染（WebKit Firefox Chromium）
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(dom):') }}
         run: |
