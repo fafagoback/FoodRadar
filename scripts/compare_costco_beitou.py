@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="costco-beitou-audit-") as td:
                     "http": result["ui_http_status"], "title": result["ui_title"],
                     "address": [LAT, LON]}, ensure_ascii=False), flush=True)
                 # Scan all categories, including out-of-viewport cards loaded by scroll.
-                ui = scan_live_webpage(page, limit_categories=0, scroll_steps=35, stop_after_stale=5)
+                ui = scan_live_webpage(page, limit_categories=0, scroll_steps=50, stop_after_stale=6)
                 result["ui_skus"] = ui["count"]
                 result["categories_listed"] = ui["categories_listed"]
                 result["categories_visited"] = ui["categories_visited"]
@@ -92,6 +92,12 @@ with tempfile.TemporaryDirectory(prefix="costco-beitou-audit-") as td:
         "price_difference_examples":differences[:15],
         "not_proven_complete":True,
     })
+    # A durable record for CI artifacts and exact reproducible SKU comparisons.
+    output=Path("audit-results")/"costco-beitou-two-method-latest.json"
+    output.parent.mkdir(parents=True,exist_ok=True)
+    output.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
     print("COSTCO_BEITOU_FINAL="+json.dumps(result, ensure_ascii=False),flush=True)
+    if result.get("categories_visited") != result.get("categories_listed"):
+        raise SystemExit("UI category visitation incomplete; cannot certify entire storefront")
     if not result.get("ui_skus") or not result.get("api_skus"):
         raise RuntimeError("At least one data path returned zero items; comparison not verified")
