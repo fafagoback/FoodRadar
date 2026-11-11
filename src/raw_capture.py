@@ -217,8 +217,7 @@ def archive_and_upload(root: Path, config: dict, batch: str,
 
 def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
     """ETL adapter: only for DB construction; never writes to HF Raw."""
-    from menu_core import convert_api_data_to_schema, create_inactive_store_schema, normalize_store_uuid
-    from uuid import UUID
+    from menu_core import convert_api_data_to_schema, create_inactive_store_schema, normalize_store_uuid, canonical_store_uuid
     from snapshot_validation import validate_document
 
     members = {m.name: m for m in archive.getmembers() if m.isfile()}
@@ -256,11 +255,7 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
         if not store.get("success"):
             raise ValueError("Cannot publish an incomplete store capture")
         reported_id = normalize_store_uuid(store["store_uuid"], store["store_url"])
-        link_id = normalize_store_uuid("", store["store_url"])
-        try:
-            canonical_id = str(UUID(link_id))
-        except (ValueError, TypeError, AttributeError):
-            canonical_id = reported_id
+        canonical_id = canonical_store_uuid(store["store_uuid"], store["store_url"])
         if not canonical_id:
             raise ValueError("Raw store has no stable UUID or URL identity")
         if canonical_id in canonical_ids:
