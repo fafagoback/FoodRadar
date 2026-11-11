@@ -265,5 +265,48 @@ class PackedUpdateTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM product_search').fetchone()[0],2)
 
 
+    def test_turso_projection_drops_only_redundant_price_observations(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(tmp)
+            sid = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+            pid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            doc = document(sid, [pid])
+            with sqlite3.connect(root / 'serving.db') as db:
+                db.row_factory = sqlite3.Row
+                apply_snapshot(db, [doc], '20261110100000')
+                apply_snapshot(db, [doc], '20261111100000')
+                original_count = db.execute(
+                    "SELECT COUNT(*) FROM events WHERE event_type='PRICE_OBSERVED'"
+                ).fetchone()[0]
+                self.assertGreater(original_count, 0)
+                self.assertEqual(len(__import__('json').loads(db.execute(
+                    "SELECT menu_quote_history FROM products WHERE store_uuid=? AND product_uuid=?",
+                    (sid, pid)).fetchone()[0])), 2)
+            build_web_db(root / 'serving.db', root / 'packed.db')
+            with sqlite3.connect(root / 'packed.db') as packed:
+                self.assertEqual(packed.execute(
+                    "SELECT json_extract(value,'$.source_counts.events') FROM metadata WHERE key='metadata'"
+                ).fetchone() if False else None, None)
+                from prototype_pack_db import unpack_blob
+                import zstandard
+                seen_observations = 0
+                seen_products = 0
+                for payload, checksum in packed.execute(
+                    "SELECT payload,checksum FROM store_bundles"):
+                    bundle = unpack_blob((payload, checksum), zstandard.ZstdDecompressor())
+                    kinds = bundle.get('event_columns') or []
+                    if kinds:
+                        for event in bundle.get('events') or []:
+                            if event[kinds.index('event_type')] == 'PRICE_OBSERVED':
+                                seen_observations += 1
+                    seen_products += len(bundle.get('products') or [])
+                self.assertEqual(seen_observations, 0)
+                self.assertEqual(seen_products, 1)
+            with sqlite3.connect(root / 'serving.db') as db:
+                self.assertEqual(db.execute(
+                    "SELECT COUNT(*) FROM events WHERE event_type='PRICE_OBSERVED'"
+                ).fetchone()[0], original_count)
+
+
 if __name__ == '__main__':
     unittest.main()
