@@ -1,28 +1,9 @@
 name: FoodRadar 02｜爬蟲與資料庫
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/crawl.py'
-      - 'config.json'
-      - 'scripts/bootstrap_hf_dataset.py'
-      - 'src/feed_core.py'
-      - 'src/raw_capture.py'
-      - 'src/catalog_complete.py'
-      - 'src/catalog_web_fields.py'
-      - 'src/menu_core.py'
-      - 'src/serving_state.py'
-      - 'scripts/audit_live_turso.py'
-      - 'scripts/prototype_pack_db.py'
-      - 'src/pipeline.py'
-      - 'src/verified_prices.py'
-      - 'scripts/publish_turso_delta.py'
-      - '.github/workflows/crawl.yml'
+  # 只接受例行排程或使用者手動啟動；程式碼 push 不啟動爬蟲。
   schedule:
-    # 台灣時間每日 06:30、18:30，GitHub cron 使用 UTC。
+    # 台灣時間每日 06:30、18:30（UTC 22:30、10:30）。不再額外排 07:30/19:30 補抓。
     - cron: '30 10,22 * * *'
-    # 台灣時間 07:30、19:30：只在上一輪漏跑時補抓。
-    - cron: '30 11,23 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -41,35 +22,15 @@ on:
 permissions:
   contents: read
 jobs:
-  schedule-recovery:
-    name: 只在排程漏跑時執行補抓
-    if: ${{ github.event_name == 'schedule' && github.event.schedule == '30 11,23 * * *' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    outputs:
-      needed: ${{ steps.check.outputs.needed }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: 檢查 Turso 是否已有上一時段資料
-        id: check
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
-          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
-        run: python scripts/should_crawl_backup.py
-
   ingest:
     name: HF 原始資料 → V2 價格 → Turso
-    needs: [schedule-recovery]
-    if: ${{ always() && (github.event_name != 'schedule' || github.event.schedule != '30 11,23 * * *' || needs.schedule-recovery.outputs.needed == 'true') }}
     runs-on: ubuntu-latest
     # A full store/catalog crawl with upstream 429 cooldowns can exceed 90 minutes.
     timeout-minutes: 240
     concurrency:
       group: foodradar-database-publisher
-      # Only an explicitly requested fresh full crawl replaces stale
-      # long-running historical replays; scheduled runs never preempt a writer.
-      cancel-in-progress: >-
-        ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture') }}
+      # 同一時間只能有一個 Turso 發布作業；新的執行排隊，不中斷已在執行的工作。
+      cancel-in-progress: false
     environment:
       name: github-pages
     steps:
@@ -96,16 +57,8 @@ jobs:
             exit 1
           fi
 
-      - name: 建立獨立 Hugging Face FoodRadar Dataset（不讀取舊倉庫）
-        if: >-
-          ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): bootstrap independent FoodRadar Raw dataset') }}
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/bootstrap_hf_dataset.py
-
       - name: 封存 Feed / Store / Catalog 完整原始 HTTP 回應至獨立 HF Dataset /Raw
-        if: >-
-          ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(raw): launch first immutable HF capture') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): bootstrap independent FoodRadar Raw dataset'))) }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
@@ -150,7 +103,7 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.FOODRADAR_TURSO_WRITE_TOKEN }}
           FOODRADAR_FULL_REBUILD: >-
-            ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'fix(raw): reset dirty Turso from clean HF Raw') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'feat(hf): bootstrap independent FoodRadar Raw dataset'))) && '1' || '0' }}
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild') && '1' || '0' }}
         run: |
           BATCH=$(cat data/latest.txt)
           python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
