@@ -125,8 +125,12 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             if offset in seen_offsets:
                 raise ValueError(f"Catalog loop at {section_uuid}/{subsection_uuid} {offset}")
             seen_offsets.add(offset)
+            # Live Uber API probes (2026-11-11) verified that
+            # sectionUuids=[parent] + subsectionUuids=[child] can yield zero
+            # items, whereas subsectionUuids=[child] alone returns real SKUs.
+            # Never constrain a genuine child with its parent simultaneously.
             filters = {"storeUuid": store_uuid,
-                       "sectionUuids": [section_uuid],
+                       "sectionUuids": ([section_uuid] if subsection_uuid is None else None),
                        "subsectionUuids": ([subsection_uuid] if subsection_uuid else None)}
             if use_collection_type:
                 filters["sectionTypes"] = ["COLLECTION"]
@@ -255,6 +259,13 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                         pass
             parent_skus = _catalog_skus(parent_bodies)
             records, bodies = [], []
+            print("CATALOG_SUBSECTION_PROBE=" + json.dumps({
+                "store_uuid": store_uuid,
+                "section_uuid": section_uuid,
+                "subsection_count": len(children),
+                "parent_observed_unique_skus": len(parent_skus),
+                "filter_mode": "subsection_uuid_only",
+            }), flush=True)
             for child in children:
                 child_records, child_bodies = collect(section_index, section_uuid, child)
                 records.extend(child_records)
