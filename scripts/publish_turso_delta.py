@@ -237,6 +237,7 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None, reset
         plans = {}
         stats = {}
         write_bytes = 0
+        per_table_bytes = {}
         for table in TABLE_KEYS:
             local = [dict(row) for row in conn.execute(f'SELECT * FROM {table}')]
             changed, deleted = plan_table(table, local, remote_rows(remote, table, tables))
@@ -246,15 +247,30 @@ def publish(database, remote, apply=False, verified_rebuild_manifest=None, reset
                 changed = local
                 deleted = []
             plans[table] = changed, deleted
-            write_bytes += sum(len(json.dumps([cell(v) for v in row.values()]).encode()) for row in changed)
-            stats[table] = {'upsert': len(changed), 'delete': len(deleted), 'total': len(local)}
+            table_bytes = sum(len(json.dumps([cell(v) for v in row.values()]).encode()) for row in changed)
+            write_bytes += table_bytes
+            per_table_bytes[table] = table_bytes
+            stats[table] = {'upsert': len(changed), 'delete': len(deleted),
+                            'total': len(local), 'bytes': table_bytes}
         report = {'previous_batch': previous_batch, 'latest_batch': target_batch,
                   'initialization': not bool(old_meta),
                   'verified_full_raw_rebuild': trusted_rebuild, 'reset_all': reset_all,
                   'delta_bytes': write_bytes,
                   'tables': stats, 'applied': False}
+        # Preserve a useful evidence trail even if a large delta is rejected.
+        # Previous code raised before writing delta-report.json, hiding which
+        # table was actually being resent. Print only aggregate counts/bytes.
+        print('FOODRADAR_TURSO_DELTA_PLAN=' + json.dumps({
+            'previous_batch': previous_batch, 'latest_batch': target_batch,
+            'bytes': write_bytes, 'limit_bytes': MAX_DELTA_BYTES,
+            'initialization': not bool(old_meta), 'reset_all': reset_all,
+            'tables': stats,
+        }, ensure_ascii=False), flush=True)
         if write_bytes > MAX_DELTA_BYTES:
-            raise ValueError('Daily delta exceeds 250 MiB; refusing full replacement')
+            raise ValueError(
+                f'Delta {write_bytes} bytes exceeds safety limit {MAX_DELTA_BYTES}; '
+                f'per_table_bytes={json.dumps(per_table_bytes, sort_keys=True)}; '
+                'refusing a destructive or oversized publish')
         if not apply or not any(a or b for a,b in plans.values()):
             return report
         remote.query('BEGIN IMMEDIATE')

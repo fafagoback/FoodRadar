@@ -9,6 +9,7 @@ sys.path.insert(0,str(ROOT/'src'))
 from pipeline import restore_history
 from build_web_db import build_web_db
 from verified_weekly import update_verified_weekly
+from audit_store_identity import audit_stores
 
 restore_history(json.loads((ROOT/'config.json').read_text(encoding='utf-8')),
                 rebuild_all=os.environ.get('FOODRADAR_REBUILD_VALID_PRICE_HISTORY') == '1')
@@ -18,4 +19,8 @@ import sqlite3
 with sqlite3.connect(ROOT/'data'/batch/'serving.db') as db:
     result = update_verified_weekly(db,batch)
     print('V2_VERIFIED_PRICE_AUDIT='+json.dumps(result),flush=True)
+    identity_report = audit_stores(db)
+    print('FOODRADAR_STORE_HISTORY_AUDIT='+json.dumps(identity_report,ensure_ascii=False),flush=True)
+    (ROOT/'data'/batch/'store-identity-report.json').write_text(
+        json.dumps(identity_report,ensure_ascii=False,indent=2),encoding='utf-8')
 build_web_db(ROOT/'data'/batch/'serving.db',ROOT/'data'/batch/'packed-serving.db')

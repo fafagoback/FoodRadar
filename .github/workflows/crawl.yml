@@ -126,6 +126,7 @@ jobs:
           name: foodradar-data-validation
           path: |
             data/**/report.json
+            data/**/store-identity-report.json
             packed-report.json
             delta-report.json
           if-no-files-found: ignore

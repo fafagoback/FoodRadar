@@ -111,6 +111,20 @@ def normalize_store_uuid(raw_uuid: str, store_url: str = "") -> str:
     return raw_uuid or ''
 
 
+def canonical_store_uuid(raw_uuid: str, store_url: str = "") -> str:
+    """Canonical Uber store key: prefer the UUID encoded in its actual URL.
+
+    Feed cards occasionally inherit a parent storeUuid. The encoded UUID in
+    /store/<slug>/<base64-id> identifies the clicked storefront consistently
+    across crawls. Fall back to the supplied UUID when no valid URL ID exists.
+    """
+    url_id = normalize_store_uuid("", store_url)
+    try:
+        return str(uuid.UUID(url_id))
+    except (ValueError, TypeError, AttributeError):
+        return normalize_store_uuid(raw_uuid, store_url)
+
+
 def get_md5_hash(text: str) -> str:
     """產生字串的 MD5 Hash 為唯一 ID"""
     return hashlib.md5(text.encode('utf-8')).hexdigest()

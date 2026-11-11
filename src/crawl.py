@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from feed_core import scan_single_point
-from menu_core import normalize_store_uuid, global_limiter
+from menu_core import normalize_store_uuid, canonical_store_uuid, global_limiter
 from raw_capture import fetch_store_raw, archive_and_upload
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,10 +47,30 @@ def crawl(config, upload_raw=False):
         # Deduplication is only used to avoid redundant HTTP requests.
         # The original feed pages are already saved byte-for-byte.
         unique = {}
+        identity_mismatches = []
         for discovered_store in discovered:
-            key = normalize_store_uuid(
+            reported = normalize_store_uuid(
                 discovered_store["store_uuid"], discovered_store["store_url"])
-            unique.setdefault(key, discovered_store)
+            # Uber's /store/<slug>/<base64-UUID> link is a stable identity
+            # independently of parent feed card metadata. Prefer it when the
+            # feed's inherited storeUuid belongs to an enclosing card.
+            canonical_url_id = canonical_store_uuid(
+                discovered_store["store_uuid"], discovered_store["store_url"])
+            key = canonical_url_id
+            if not key:
+                raise ValueError("Feed store has no stable UUID or URL identity")
+            if canonical_url_id and reported != canonical_url_id:
+                identity_mismatches.append({
+                    "reported": reported, "canonical_from_url": canonical_url_id,
+                })
+            unique.setdefault(key, {**discovered_store, "store_uuid": key})
+        print("FOODRADAR_STORE_IDENTITY_AUDIT=" + json.dumps({
+            "feed_occurrences": len(discovered),
+            "canonical_unique_stores": len(unique),
+            "same_store_occurrences_deduplicated": len(discovered) - len(unique),
+            "uuid_url_mismatch_count": len(identity_mismatches),
+            "uuid_url_mismatch_sample": identity_mismatches[:5],
+        }, ensure_ascii=False), flush=True)
         # Report completed stores incrementally, without changing archive order
         # or treating partial captures as successful.
         items = list(unique.values())
