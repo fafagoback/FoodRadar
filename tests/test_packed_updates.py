@@ -284,9 +284,6 @@ class PackedUpdateTests(unittest.TestCase):
                     (sid, pid)).fetchone()[0])), 2)
             build_web_db(root / 'serving.db', root / 'packed.db')
             with sqlite3.connect(root / 'packed.db') as packed:
-                self.assertEqual(packed.execute(
-                    "SELECT json_extract(value,'$.source_counts.events') FROM metadata WHERE key='metadata'"
-                ).fetchone() if False else None, None)
                 from prototype_pack_db import unpack_blob
                 import zstandard
                 seen_observations = 0
