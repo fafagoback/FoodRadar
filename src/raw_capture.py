@@ -120,10 +120,25 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
 
 
 def archive_and_upload(root: Path, config: dict, batch: str,
-                       stores: list[dict], pages: int, complete: bool) -> dict:
+                       stores: list[dict], pages: int, complete: bool,
+                       partial_replayable: bool = False) -> dict:
     """Commit unmodified response bodies. Manifest is separate capture metadata."""
     from huggingface_hub import CommitOperationAdd, HfApi
 
+    successful = [s for s in stores if s.get("success") is True]
+    failed = [s for s in stores if s.get("success") is not True]
+    if partial_replayable:
+        if complete or not successful or not failed or not pages:
+            raise ValueError("Invalid partially verified Raw snapshot")
+        if len({s.get("store_uuid") for s in stores}) != len(stores):
+            raise ValueError("Duplicate Raw store UUID in partial capture")
+        # Never bless general network/API/parser errors as independently
+        # verified partial observations. Only deterministic deep catalog 500s
+        # and native subgroup coverage gaps are eligible.
+        if not all(("native code 500" in str(s.get("error") or "")
+                    or "previously seen native parent SKUs" in str(s.get("error") or ""))
+                   for s in failed):
+            raise ValueError("Unclassified Raw failure cannot publish partial snapshot")
     folder = config["hf_folder"].strip("/")
     if config["hf_repo_id"] != "hub-google/FoodRadar" or folder != "Raw":
         raise ValueError("Raw must go to independent hub-google/FoodRadar dataset /Raw")
@@ -136,6 +151,10 @@ def archive_and_upload(root: Path, config: dict, batch: str,
         "format": "foodradar-immutable-http-body-v1",
         "batch_id": batch,
         "complete": bool(complete),
+        "partial_replayable": bool(partial_replayable),
+        "successful_store_count": len(successful),
+        "failed_store_count": len(failed),
+        "failed_store_uuids": [s["store_uuid"] for s in failed],
         "feed_pages": pages,
         "stores": stores,
         "responses": {
@@ -161,6 +180,11 @@ def archive_and_upload(root: Path, config: dict, batch: str,
     if complete:
         operations.append(CommitOperationAdd(
             path_in_repo=f"{folder}/latest.json", path_or_fileobj=payload))
+    elif partial_replayable:
+        # Keep the last *complete* pointer intact. A separate partial pointer
+        # advertises exactly which stores were not freshly verified.
+        operations.append(CommitOperationAdd(
+            path_in_repo=f"{folder}/latest-partial.json", path_or_fileobj=payload))
     api = HfApi(token=os.environ["HF_TOKEN"])
     api.create_commit(
         repo_id=config["hf_repo_id"], repo_type="dataset", operations=operations,
@@ -182,7 +206,10 @@ def archive_and_upload(root: Path, config: dict, batch: str,
             if hashlib.sha256(archive.extractfile(members[name]).read()).hexdigest() != expected:
                 raise ValueError(f"Uploaded HF response body changed: {name}")
     print("HF_IMMUTABLE_RAW_UPLOADED=" + json.dumps({
-        "batch": batch, "complete": bool(complete), "responses": len(names),
+        "batch": batch, "complete": bool(complete),
+        "partial_replayable": bool(partial_replayable),
+        "verified_stores": len(successful), "failed_stores": len(failed),
+        "responses": len(names),
         "archive": record["archive_path"],
     }, ensure_ascii=False), flush=True)
     return record
@@ -200,11 +227,29 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
     for name, digest in expected.items():
         if hashlib.sha256(archive.extractfile(members[name]).read()).hexdigest() != digest:
             raise ValueError("HF Raw member checksum mismatch")
-    if not manifest.get("complete"):
-        raise ValueError("Incomplete original capture cannot be released to DB")
+    verified_partial = manifest.get("complete") is False and (
+        manifest.get("partial_replayable") is True)
+    if manifest.get("complete") is not True and not verified_partial:
+        raise ValueError("Unverified incomplete Raw cannot be released to DB")
+    all_stores = manifest["stores"]
+    if verified_partial:
+        successful = [s for s in all_stores if s.get("success") is True]
+        failed = [s for s in all_stores if s.get("success") is not True]
+        if (not successful or not failed
+                or manifest.get("successful_store_count") != len(successful)
+                or manifest.get("failed_store_count") != len(failed)
+                or manifest.get("failed_store_uuids") !=
+                    [s.get("store_uuid") for s in failed]):
+            raise ValueError("Partially verified Raw store counts/identity mismatch")
+        if not all(("native code 500" in str(s.get("error") or "")
+                    or "previously seen native parent SKUs" in str(s.get("error") or ""))
+                   for s in failed):
+            raise ValueError("Unclassified failed store in partially verified Raw")
+    else:
+        successful = all_stores
     batch = manifest["batch_id"]
     documents = []
-    for store in manifest["stores"]:
+    for store in successful:
         if not store.get("success"):
             raise ValueError("Cannot publish an incomplete store capture")
         raw = store["response_path"]
@@ -237,6 +282,6 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
         )
         validate_document(doc)
         documents.append(doc)
-    if len(documents) != len(manifest["stores"]):
-        raise ValueError("HF Raw decoded store count mismatch")
+    if len(documents) != len(successful):
+        raise ValueError("HF Raw decoded verified-store count mismatch")
     return documents
