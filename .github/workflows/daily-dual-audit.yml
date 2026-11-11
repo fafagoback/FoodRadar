@@ -1,14 +1,6 @@
 name: FoodRadar 04 | Daily Dual Audit (read-only)
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/daily_triple_audit.py'
-      - 'scripts/audit_full_catalog.py'
-      - '.github/workflows/daily-dual-audit.yml'
-  schedule:
-    # 04:00 Asia/Taipei = previous day 20:00 UTC, before 06:30 main crawl
-    - cron: '0 20 * * *'
+  # Run this audit only when explicitly dispatched by the repository owner.
   workflow_dispatch:
 permissions:
   contents: write
