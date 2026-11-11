@@ -102,11 +102,38 @@ def crawl(config, upload_raw=False):
     except Exception as exc:
         error = str(exc)
     complete = bool(not error and pages and stores)
+    failures = [s for s in stores if not s.get("success")]
+    successes = [s for s in stores if s.get("success")]
+    # Verified native deep-offset 500 is deterministic on large stores.
+    # A small, explicitly audited subset can remain stale while all other
+    # fully captured stores receive current observations. This is NOT a
+    # complete capture and must never replace Raw/latest.json.
+    partial_replayable = bool(
+        upload_raw and error and pages and len(stores) >= 50
+        and len(successes) >= 50
+        and 0 < len(failures) <= max(1, int(len(stores) * 0.05))
+        and all(
+            "native code 500" in str(s.get("error") or "")
+            or "previously seen native parent SKUs" in str(s.get("error") or "")
+            for s in failures
+        )
+    )
     if upload_raw and any(raw.rglob("*.body")):
-        archive_and_upload(raw, config, batch, stores, pages, complete)
+        archive_and_upload(raw, config, batch, stores, pages, complete,
+                           partial_replayable=partial_replayable)
     # Keep final API pacing evidence even when a batch cannot be published.
     print("RAW_CAPTURE_API_METRICS=" + json.dumps(
         global_limiter.snapshot(), ensure_ascii=False), flush=True)
+    if partial_replayable:
+        print("RAW_CAPTURE_PARTIAL_VERIFIED=" + json.dumps({
+            "batch": batch, "feed_pages": pages,
+            "verified_stores": len(successes),
+            "failed_stores": len(failures),
+            "failed_store_uuids": [s["store_uuid"] for s in failures],
+            "complete": False,
+            "disposition": "retain_previous_store_state_and_prices",
+        }, ensure_ascii=False), flush=True)
+        return output
     if error:
         raise RuntimeError(error)
     if not complete:
