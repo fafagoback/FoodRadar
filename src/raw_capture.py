@@ -217,7 +217,8 @@ def archive_and_upload(root: Path, config: dict, batch: str,
 
 def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
     """ETL adapter: only for DB construction; never writes to HF Raw."""
-    from menu_core import convert_api_data_to_schema, create_inactive_store_schema
+    from menu_core import convert_api_data_to_schema, create_inactive_store_schema, normalize_store_uuid
+    from uuid import UUID
     from snapshot_validation import validate_document
 
     members = {m.name: m for m in archive.getmembers() if m.isfile()}
@@ -249,9 +250,24 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
         successful = all_stores
     batch = manifest["batch_id"]
     documents = []
+    canonical_ids = set()
+    repaired_url_id_mismatches = 0
     for store in successful:
         if not store.get("success"):
             raise ValueError("Cannot publish an incomplete store capture")
+        reported_id = normalize_store_uuid(store["store_uuid"], store["store_url"])
+        link_id = normalize_store_uuid("", store["store_url"])
+        try:
+            canonical_id = str(UUID(link_id))
+        except (ValueError, TypeError, AttributeError):
+            canonical_id = reported_id
+        if not canonical_id:
+            raise ValueError("Raw store has no stable UUID or URL identity")
+        if canonical_id in canonical_ids:
+            raise ValueError(f"Multiple Raw stores resolve to the same canonical Uber ID: {canonical_id}")
+        canonical_ids.add(canonical_id)
+        if reported_id != canonical_id:
+            repaired_url_id_mismatches += 1
         raw = store["response_path"]
         if store.get("catalog_responses") and store.get("catalog_complete") is not True:
             raise ValueError("Refusing to replay incomplete catalog capture")
@@ -275,7 +291,7 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
                 ])
             doc = convert_api_data_to_schema(native, store["store_url"])
         doc.update(
-            store_uuid=store["store_uuid"],
+            store_uuid=canonical_id,
             store_id=hashlib.md5(store["store_url"].encode()).hexdigest(),
             captured_at=store["captured_at"],
             batch_id=batch,
@@ -284,4 +300,8 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
         documents.append(doc)
     if len(documents) != len(successful):
         raise ValueError("HF Raw decoded verified-store count mismatch")
+    if repaired_url_id_mismatches:
+        print("FOODRADAR_RAW_CANONICAL_UUID_REPAIRS=" + json.dumps({
+            "batch": batch, "count": repaired_url_id_mismatches,
+        }), flush=True)
     return documents
