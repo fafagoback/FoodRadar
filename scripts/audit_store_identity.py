@@ -11,7 +11,7 @@ from menu_core import canonical_store_uuid
 
 
 def _normalized(value):
-    return re.sub(r"\\s+", "", unicodedata.normalize("NFKC", str(value or "")).casefold())
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")).casefold())
 
 
 def _url_identity(url):
