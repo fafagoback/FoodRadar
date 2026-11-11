@@ -101,6 +101,7 @@ jobs:
         run: |
           python scripts/probe_catalog_recovery.py
           python scripts/probe_pxmart_subsections.py
+          python scripts/live_failed_stores_retest.py
       - name: 單獨比對北投好市多（相同外送定位；API vs WebKit 全分類）
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(beitou):') }}
         run: |
