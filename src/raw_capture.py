@@ -249,8 +249,9 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
         successful = all_stores
     batch = manifest["batch_id"]
     documents = []
-    canonical_ids = set()
+    canonical_ids = {}
     repaired_url_id_mismatches = 0
+    duplicate_canonical_stores = 0
     for store in successful:
         if not store.get("success"):
             raise ValueError("Cannot publish an incomplete store capture")
@@ -258,9 +259,6 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
         canonical_id = canonical_store_uuid(store["store_uuid"], store["store_url"])
         if not canonical_id:
             raise ValueError("Raw store has no stable UUID or URL identity")
-        if canonical_id in canonical_ids:
-            raise ValueError(f"Multiple Raw stores resolve to the same canonical Uber ID: {canonical_id}")
-        canonical_ids.add(canonical_id)
         if reported_id != canonical_id:
             repaired_url_id_mismatches += 1
         raw = store["response_path"]
@@ -292,9 +290,22 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
             batch_id=batch,
         )
         validate_document(doc)
-        documents.append(doc)
-    if len(documents) != len(successful):
-        raise ValueError("HF Raw decoded verified-store count mismatch")
+        if canonical_id in canonical_ids:
+            # Same storefront may be surfaced by multiple feed cards. Keep
+            # exactly one complete verified capture, preferring the latest.
+            duplicate_canonical_stores += 1
+            index = canonical_ids[canonical_id]
+            if str(doc["captured_at"]) >= str(documents[index]["captured_at"]):
+                documents[index] = doc
+        else:
+            canonical_ids[canonical_id] = len(documents)
+            documents.append(doc)
+    if len(documents) != len(canonical_ids):
+        raise ValueError("Raw canonical storefront deduplication failed")
+    if duplicate_canonical_stores:
+        print("FOODRADAR_RAW_DUPLICATE_STORES_MERGED=" + json.dumps({
+            "batch": batch, "deduplicated": duplicate_canonical_stores,
+        }), flush=True)
     if repaired_url_id_mismatches:
         print("FOODRADAR_RAW_CANONICAL_UUID_REPAIRS=" + json.dumps({
             "batch": batch, "count": repaired_url_id_mismatches,
