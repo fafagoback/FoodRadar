@@ -46,13 +46,32 @@ def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> b
     batch = str(meta.get("batch_id") or "")
     if not (len(batch) == 14 and batch.isdigit()):
         raise ValueError(f"Invalid immutable Raw batch ID: {manifest_path}")
-    if meta.get("complete") is False:
+    is_complete = meta.get("complete") is True
+    is_partial = (meta.get("complete") is False
+                  and meta.get("partial_replayable") is True)
+    if meta.get("complete") is False and not is_partial:
         return False
-    if meta.get("complete") is not True:
+    if not (is_complete or is_partial):
         raise ValueError(f"Invalid immutable Raw completeness marker: {manifest_path}")
     if (meta.get("format") != "foodradar-immutable-http-body-v1"
             or not str(meta.get("archive_path") or "").startswith(f"{folder}/{batch}/")):
         raise ValueError(f"Invalid immutable Raw source path: {manifest_path}")
+    if is_partial:
+        stores = meta.get("stores")
+        if not isinstance(stores, list):
+            raise ValueError("Missing per-store Raw records for partial replay")
+        passed = [s for s in stores if s.get("success") is True]
+        failed = [s for s in stores if s.get("success") is not True]
+        if (not passed or not failed or meta.get("feed_pages", 0) < 1
+                or meta.get("successful_store_count") != len(passed)
+                or meta.get("failed_store_count") != len(failed)
+                or meta.get("failed_store_uuids") !=
+                    [s.get("store_uuid") for s in failed]):
+            raise ValueError("Partially verified Raw manifest store count mismatch")
+        if not all(("native code 500" in str(s.get("error") or "")
+                    or "previously seen native parent SKUs" in str(s.get("error") or ""))
+                   for s in failed):
+            raise ValueError("Unclassified failure in partially verified Raw manifest")
     return True
 
 
@@ -117,15 +136,34 @@ def restore_history(config, rebuild_all=False):
                 raise ValueError('HF immutable Raw archive SHA-256 mismatch')
             with tarfile.open(downloaded, 'r:gz') as raw_archive:
                 docs = documents_from_hf_raw(raw_archive, meta)
-            if len(docs) != len(meta['stores']):
-                raise ValueError('HF original store count mismatch')
-            apply_snapshot(conn, docs, current_batch)
+            is_partial = meta.get('complete') is False
+            failed_store_uuids = (
+                [s['store_uuid'] for s in meta['stores'] if not s.get('success')]
+                if is_partial else []
+            )
+            expected = (meta['successful_store_count']
+                        if is_partial else len(meta['stores']))
+            if len(docs) != expected:
+                raise ValueError('HF verified store count mismatch')
+            apply_snapshot(conn, docs, current_batch,
+                           excluded_store_uuids=failed_store_uuids)
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                ('latest_raw_completeness',
+                 'partial_verified' if is_partial else 'complete'))
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                ('latest_unverified_store_uuids',
+                 json.dumps(failed_store_uuids, ensure_ascii=False)))
             replayed.append(manifest_path + ':' + digest)
             batch = current_batch
             print('HF_RAW_TO_DB='+json.dumps({
                 'batch':batch,
-                'stores':len(docs),
-                'replay_complete':True,
+                'verified_stores':len(docs),
+                'failed_stores_retaining_previous_data':len(failed_store_uuids),
+                'failed_store_uuids':failed_store_uuids,
+                'replay_complete':not is_partial,
+                'replay_partial_verified':is_partial,
                 'legacy_batches':0,
             },ensure_ascii=False),flush=True)
         if not replayed:
