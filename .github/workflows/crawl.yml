@@ -4,9 +4,6 @@ on:
   schedule:
     # 台灣時間每日 06:30、18:30（UTC 22:30、10:30）。不再額外排 07:30/19:30 補抓。
     - cron: '30 10,22 * * *'
-  # Temporary, strictly gated one-time manual trigger via an owner-created issue.
-  issues:
-    types: [opened]
   workflow_dispatch:
     inputs:
       mode:
@@ -26,7 +23,6 @@ permissions:
   contents: read
 jobs:
   ingest:
-    if: ${{ github.event_name != 'issues' || (github.event.issue.title == 'FoodRadar crawl once 2026-11-11 1653' && github.event.issue.body == 'foodradar-once-20261111-1653-8d6db2e411a74c0ca34f47b3b5852c81') }}
     name: HF 原始資料 → V2 價格 → Turso
     runs-on: ubuntu-latest
     # A full store/catalog crawl with upstream 429 cooldowns can exceed 90 minutes.
@@ -62,7 +58,7 @@ jobs:
           fi
 
       - name: 封存 Feed / Store / Catalog 完整原始 HTTP 回應至獨立 HF Dataset /Raw
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || github.event_name == 'issues' }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/crawl.py --upload
