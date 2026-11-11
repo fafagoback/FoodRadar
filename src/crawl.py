@@ -6,6 +6,7 @@ The separate HF -> DB workflow owns all interpretation.
 import argparse
 import json
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import monotonic
 from datetime import datetime, timedelta, timezone
@@ -133,6 +134,15 @@ def crawl(config, upload_raw=False):
             "complete": False,
             "disposition": "retain_previous_store_state_and_prices",
         }, ensure_ascii=False), flush=True)
+        summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_file:
+            with open(summary_file, "a", encoding="utf-8") as summary:
+                summary.write(
+                    "### FoodRadar 本次 Raw 擷取：部分驗證（不是完整成功）\\n"
+                    f"已驗證店家：{len(successes)}；"
+                    f"未完成店家：{len(failures)}；"
+                    "未完成店家保留先前資料，不形成新的價格觀測。\\n"
+                )
         return output
     if error:
         raise RuntimeError(error)
