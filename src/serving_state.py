@@ -347,7 +347,8 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                    missing_threshold: int = DEFAULT_MISSING_THRESHOLD, baseline: bool | None = None,
                    event_retention_days: int | None = None,
                    refresh_search: bool = True,
-                   state_cache: ServingStateCache | None = None) -> dict[str, int]:
+                   state_cache: ServingStateCache | None = None,
+                   excluded_store_uuids: Iterable[str] | None = None) -> dict[str, int]:
     ensure_schema_and_migrations(conn)
     now = datetime.strptime(batch_id, "%Y%m%d%H%M%S").replace(tzinfo=TW).isoformat()
     latest = conn.execute("SELECT value FROM metadata WHERE key='latest_batch'").fetchone()
@@ -816,6 +817,23 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                         changed_product_rows.append(key)
 
     flush_snapshot_batches()
+
+    # A store with a proven incomplete native catalog cannot provide a fresh
+    # item disappearance observation. Preserve its previously verified state
+    # rather than incrementing its missing streak or retiring old products.
+    # Inserting with is_open=0 excludes it from missing-product queries too.
+    excluded = set(excluded_store_uuids or ())
+    if excluded & seen_stores:
+        raise ValueError("A verified store cannot also be excluded as incomplete")
+    if excluded:
+        conn.executemany(
+            "INSERT OR IGNORE INTO snapshot_seen_stores(store_uuid,is_open) VALUES(?,0)",
+            ((sid,) for sid in sorted(excluded)),
+        )
+        print("UNVERIFIED_STORES_RETAINED=" + json_dumps({
+            "store_count": len(excluded), "uuids": sorted(excluded),
+            "reason": "native_catalog_incomplete",
+        }), flush=True)
 
     missing_products_batch: list[tuple] = []
     missing_products = conn.execute("""
