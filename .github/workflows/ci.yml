@@ -35,6 +35,20 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 指定唯讀稽核 FoodRadar 既有 UUID 與店家位置
+        if: github.event_name == 'pull_request' && github.head_ref == 'audit/foodradar-uuid-origin-20261111'
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: python scripts/audit_live_turso_uuid_origin.py
+      - name: 保存指定稽核的完整店家資料清單
+        if: always() && github.event_name == 'pull_request' && github.head_ref == 'audit/foodradar-uuid-origin-20261111'
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-readonly-uuid-origin-20261111
+          path: audit-results/foodradar-live-uuid-origin-20261111.json
+          if-no-files-found: warn
+          retention-days: 2
       - name: 一次性查核 11月3日 Costco 實際營業標記
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
