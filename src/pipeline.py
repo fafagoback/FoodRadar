@@ -87,6 +87,7 @@ def restore_history(config, rebuild_all=False):
     import sqlite3
     from serving_state import apply_snapshot
     from raw_capture import documents_from_hf_raw
+    from menu_core import canonical_store_uuid
     from verified_weekly import update_verified_weekly
 
     folder = config['hf_folder'].strip('/')
@@ -138,7 +139,8 @@ def restore_history(config, rebuild_all=False):
                 docs = documents_from_hf_raw(raw_archive, meta)
             is_partial = meta.get('complete') is False
             failed_store_uuids = (
-                [s['store_uuid'] for s in meta['stores'] if not s.get('success')]
+                [canonical_store_uuid(s['store_uuid'], s['store_url'])
+                 for s in meta['stores'] if not s.get('success')]
                 if is_partial else []
             )
             expected = (meta['successful_store_count']
