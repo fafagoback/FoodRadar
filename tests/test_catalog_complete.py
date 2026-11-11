@@ -296,6 +296,52 @@ class CatalogCompleteness(unittest.TestCase):
             self.assertEqual(_item_ids(merge_catalog_pages(base,pages)),
                              {"old","new"})
 
+    def test_subsection_only_filter_recovers_native_parent_skus(self):
+        """Real 2026-11-11 API: parent+child may return an empty catalog.
+
+        Child-only (sectionUuids=null) is the verified productive request.
+        Never mark an empty combined-filter response as a complete menu.
+        """
+        base = {
+            "aisles": {"store": [{"catalogSectionUUID": "parent"}]},
+            "sections": [{"uuid": "parent", "subsectionUuids": ["child-a"]}],
+            "catalogSectionsMap": {},
+        }
+        class FilterSensitiveSession:
+            def __init__(self):
+                self.filters = []
+            def post(self, url, json, headers, timeout):
+                filt = json["storeFilters"]
+                self.filters.append((filt["sectionUuids"], filt["subsectionUuids"],
+                                     json["pagingInfo"]["offset"]))
+                if filt["subsectionUuids"]:
+                    items = ([sample_item("already-seen", "Retained", 9000),
+                              sample_item("new-native", "Recovered", 11000)]
+                             if filt["sectionUuids"] is None else [])
+                    return Response({"status": "success", "data": {
+                        "catalog": [{"payload": {"standardItemsPayload": {
+                            "catalogItems": items}}}],
+                        "pagingInfo": {"hasMore": False}}})
+                if json["pagingInfo"]["offset"] >= 1020:
+                    return Response({"status": "failure",
+                                     "data": {"code": 500, "message": "status code error"}})
+                return Response({"status": "success", "data": {
+                    "catalog": [{"payload": {"standardItemsPayload": {
+                        "catalogItems": [sample_item("already-seen", "Seen", 9000)]}}}],
+                    "pagingInfo": {"hasMore": True, "offset": 1020}}})
+        session = FilterSensitiveSession()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def save(directory, name, response):
+                p = directory / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(response.content)
+            out = capture_catalog(session, "store", base, root, {}, save)
+            self.assertTrue(out["catalog_complete"])
+            self.assertEqual(out["catalog_item_occurrences"], 2)
+            self.assertIn((None, ["child-a"], 0), session.filters)
+            self.assertNotIn((["parent"], ["child-a"], 0), session.filters)
+
     def test_deep_offset_fails_closed_without_subcategories(self):
         base={"aisles":{"store":[{"catalogSectionUUID":"parent"}]}}
         class FakeSession:
