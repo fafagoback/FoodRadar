@@ -68,7 +68,79 @@ def discover(config: dict, raw: Path, index: int):
     return unique, pages
 
 
-def capture_shard(config: dict, index: int, count: int, root: Path = ROOT):
+
+def save_shared_discovery(config: dict, root: Path = ROOT):
+    """Discover once at the configured coordinate; all 15 workers share this file."""
+    folder = root / "data" / "discovery"
+    if folder.exists():
+        raise FileExistsError(f"Refusing to overwrite existing discovery: {folder}")
+    raw = folder / "raw"
+    raw.mkdir(parents=True)
+    stores, pages = discover(config, raw, index=0)
+    bodies = {
+        p.relative_to(raw).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(raw.rglob("*.body"))
+    }
+    manifest = {
+        "format": "foodradar-shared-feed-v1",
+        "run_id": os.getenv("GITHUB_RUN_ID", "local"),
+        "source_sha": os.getenv("GITHUB_SHA", "local"),
+        "latitude": config["latitude"], "longitude": config["longitude"],
+        "feed_pages": pages, "stores": [stores[sid] for sid in sorted(stores)],
+        "raw_checksums": bodies,
+    }
+    path = folder / "discovery.json"
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf8")
+    print("FOODRADAR_SHARED_FEED=" + json.dumps({
+        "shops": len(stores), "feed_pages": pages, "raw_bodies": len(bodies),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }, ensure_ascii=False), flush=True)
+    return manifest
+
+
+def load_shared_discovery(path: Path, config: dict, raw: Path, shard: int):
+    """Validate identical, checksum-verified original feed data in each worker."""
+    manifest_bytes = path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    if (manifest.get("format") != "foodradar-shared-feed-v1"
+            or manifest.get("run_id") != os.getenv("GITHUB_RUN_ID", "local")
+            or manifest.get("source_sha") != os.getenv("GITHUB_SHA", "local")
+            or manifest.get("latitude") != config["latitude"]
+            or manifest.get("longitude") != config["longitude"]
+            or not isinstance(manifest.get("stores"), list)
+            or not manifest["stores"]
+            or not isinstance(manifest.get("feed_pages"), int)
+            or manifest["feed_pages"] < 1):
+        raise ValueError("Shared feed manifest missing, incomplete or from another run")
+    feed_root = path.parent / "raw"
+    checksums = manifest.get("raw_checksums")
+    existing = {
+        p.relative_to(feed_root).as_posix()
+        for p in feed_root.rglob("*.body")
+    }
+    if not isinstance(checksums, dict) or not checksums or set(checksums) != existing:
+        raise ValueError("Shared feed HTTP body paths do not match manifest")
+    for name, checksum in checksums.items():
+        p = feed_root / name
+        if (len(checksum) != 64
+                or hashlib.sha256(p.read_bytes()).hexdigest() != checksum):
+            raise ValueError(f"Shared feed HTTP body checksum mismatch: {name}")
+    stores = {}
+    for store in manifest["stores"]:
+        sid = canonical_store_uuid(store["store_uuid"], store["store_url"])
+        if sid in stores or store["store_uuid"] != sid:
+            raise ValueError("Duplicated or invalid canonical store in shared feed")
+        stores[sid] = store
+    if shard == 0:
+        destination = raw / "feed"
+        if destination.exists():
+            raise FileExistsError("Discovery HTTP Raw already exists in shard zero")
+        shutil.copytree(feed_root / "feed", destination)
+    return stores, manifest["feed_pages"], hashlib.sha256(manifest_bytes).hexdigest()
+
+
+def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
+                  discovery_file: Path | None = None):
     if count != 15 or not 0 <= index < count:
         raise ValueError("Expected 15 shards with indices 0..14")
     if not 0 <= config["max_pages"] <= 100:
@@ -83,7 +155,12 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT):
         "shard": index, "count": count, "public_ip": ip,
         "github_run_id": os.getenv("GITHUB_RUN_ID", "local"),
     }), flush=True)
-    discovered, pages = discover(config, raw, index)
+    if discovery_file is None:
+        discovered, pages = discover(config, raw, index)
+        discovery_digest = None
+    else:
+        discovered, pages, discovery_digest = load_shared_discovery(
+            discovery_file, config, raw, index)
     assigned = sorted(
         store_uuid for store_uuid in discovered
         if shard_for_uuid(store_uuid, count) == index)
@@ -116,6 +193,7 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT):
         "shard_count": count,
         "public_ip": ip,
         "feed_pages": pages,
+        "shared_discovery_digest": discovery_digest,
         "discovered_store_uuids": sorted(discovered),
         "assigned_store_uuids": assigned,
         "stores": captured,
@@ -232,6 +310,8 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
     run_ids, source_shas = set(), set()
     shard_paths = []
     total_responses = 0
+    shared_digests = set()
+    shared_rosters = []
     for index in range(count):
         folder = input_dir / f"foodradar-raw-shard-{index}"
         manifest_path = folder / "shard.json"
@@ -245,6 +325,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             raise ValueError(f"Invalid shard {index} metadata")
         run_ids.add(m.get("run_id"))
         source_shas.add(m.get("source_sha"))
+        shared_digests.add(m.get("shared_discovery_digest"))
         if len(run_ids) != 1 or len(source_shas) != 1:
             raise ValueError("Shards belong to different runs or code revisions")
         found = m.get("discovered_store_uuids")
@@ -255,6 +336,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
                 or not isinstance(stores, list) or not isinstance(checksums, dict)
                 or len(set(found)) != len(found) or len(set(assigned)) != len(assigned)):
             raise ValueError(f"Corrupt shard {index} assignment manifest")
+        shared_rosters.append(found)
         expected = sorted(s for s in found if shard_for_uuid(s, count) == index)
         if expected != assigned:
             raise ValueError(f"Shard {index} did not follow deterministic store ownership")
@@ -283,6 +365,10 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         metadata.append(m)
         shard_paths.append((shard_raw, sorted(actual_paths)))
         total_responses += len(actual_paths)
+    if any(x is not None for x in shared_digests):
+        if (len(shared_digests) != 1
+                or any(x != shared_rosters[0] for x in shared_rosters)):
+            raise ValueError("15 workers used different discovery lists or checksums")
     owner_missing = sorted(all_discovered - set(all_captured))
     unexpected = sorted(set(all_captured) - all_discovered)
     recovered = {}
@@ -367,6 +453,8 @@ def main():
     worker = sub.add_parser("shard")
     worker.add_argument("--index", type=int, required=True)
     worker.add_argument("--count", type=int, default=15)
+    worker.add_argument("--discovery-file", type=Path, default=None)
+    sub.add_parser("discover")
     merge = sub.add_parser("merge")
     merge.add_argument("--input-dir", type=Path, default=ROOT / "data" / "parts")
     merge.add_argument("--count", type=int, default=15)
@@ -374,8 +462,10 @@ def main():
     merge.add_argument("--repair-missing", action="store_true")
     args = parser.parse_args()
     cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
-    if args.command == "shard":
-        capture_shard(cfg, args.index, args.count)
+    if args.command == "discover":
+        save_shared_discovery(cfg)
+    elif args.command == "shard":
+        capture_shard(cfg, args.index, args.count, discovery_file=args.discovery_file)
     else:
         merge_shards(cfg, args.input_dir, args.count, upload_raw=args.upload,
                      repair_missing=args.repair_missing)

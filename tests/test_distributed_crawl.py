@@ -49,6 +49,30 @@ class DistributionTests(unittest.TestCase):
             (part / "shard.json").write_text(json.dumps(meta), encoding="utf-8")
         return parts
 
+    def test_shared_feed_fails_if_original_http_body_was_changed(self):
+        from distributed_crawl import load_shared_discovery
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp)
+            path=folder/"discovery"
+            (path/"raw"/"feed").mkdir(parents=True)
+            body=path/"raw"/"feed"/"page-0001.body"
+            body.write_bytes(b"ORIGINAL HTTP")
+            sid="11111111-1111-4111-8111-111111111111"
+            meta={
+                "format":"foodradar-shared-feed-v1",
+                "run_id":"local","source_sha":"local",
+                "latitude":25.12,"longitude":121.53,
+                "feed_pages":1,
+                "stores":[{"store_uuid":sid,"store_url":"https://invalid.example/test"}],
+                "raw_checksums":{"feed/page-0001.body":
+                                  hashlib.sha256(body.read_bytes()).hexdigest()}}
+            doc=path/"discovery.json"
+            doc.write_text(json.dumps(meta))
+            body.write_bytes(b"CHANGED HTTP")
+            with self.assertRaisesRegex(ValueError,"checksum mismatch"):
+                load_shared_discovery(doc,{"latitude":25.12,"longitude":121.53},
+                                      folder/"output",0)
+
     def test_missing_shard_fails_before_hf(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

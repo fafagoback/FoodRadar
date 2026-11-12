@@ -22,8 +22,30 @@ concurrency:
   group: foodradar-crawl-pipeline
   cancel-in-progress: false
 jobs:
+  discover_once:
+    name: 統一掃描單一座標，產出 15 台共用店家清單
+    if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 單次 Feed 掃描與儲存原始 HTTP
+        run: python src/distributed_crawl.py discover
+      - name: 上傳全機器共用店家清單
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-shared-feed
+          path: data/discovery/
+          if-no-files-found: error
+          retention-days: 3
+
   crawl_shard:
     name: "抓取工作機 ${{ matrix.shard }} / 14"
+    needs: discover_once
     if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -38,8 +60,13 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: 只抓自己負責的店家並保存原始 Feed / Store / Catalog
-        run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count 15
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed
+          path: data/discovery
+      - name: 依 UUID 分工抓取該台負責店家
+        run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count 15 --discovery-file data/discovery/discovery.json
       - name: 上傳分工原始資料給第 16 台（不寫 HF / DB）
         if: always()
         uses: actions/upload-artifact@v4
