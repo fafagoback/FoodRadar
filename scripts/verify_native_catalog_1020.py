@@ -6,6 +6,7 @@ selected categories, preserves original bodies and never requests offset >=1000.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from collections import defaultdict
@@ -23,6 +24,13 @@ CASES = [
     ("DaShu Wenlin", "2a2613cb-f67c-5774-935d-bb47511095d0",
      "https://www.ubereats.com/tw/store/%E5%A4%A7%E6%A8%B9%E8%97%A5%E5%B1%80-%E5%A3%AB%E6%9E%97%E6%96%87%E6%9E%97%E5%BA%97/KiYTy_Z8V3STXbtHURCV0A"),
 ]
+if os.environ.get("FOODRADAR_LIVE_1020_PAIR") == "pets":
+    CASES = [
+        ("Pet Park Tianmu", "56b04e05-29cf-406f-9aaa-f5dfb23386a5",
+         "https://www.ubereats.com/tw/store/%E5%AF%B5%E7%89%A9%E5%85%AC%E5%9C%92-%E5%A4%A9%E6%AF%8D%E5%BA%97/VrBOBSnPQG-aqvXfsjOGpQ"),
+        ("Jinji Pet Tianmu", "0941d15a-f620-5970-b04a-b9edf626cc7f",
+         "https://www.ubereats.com/tw/store/%E9%87%91%E5%90%89%E5%88%A9%E5%AF%B5%E7%89%A9%E7%B2%BE%E5%93%81%E5%A4%A9%E6%AF%8D%E5%BA%97/CUHRWvYgWXCwSrnt9ibMfw"),
+    ]
 
 def main():
     original = raw_capture.capture_catalog
