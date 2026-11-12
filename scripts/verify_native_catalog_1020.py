@@ -31,6 +31,11 @@ if os.environ.get("FOODRADAR_LIVE_1020_PAIR") == "pets":
         ("Jinji Pet Tianmu", "0941d15a-f620-5970-b04a-b9edf626cc7f",
          "https://www.ubereats.com/tw/store/%E9%87%91%E5%90%89%E5%88%A9%E5%AF%B5%E7%89%A9%E7%B2%BE%E5%93%81%E5%A4%A9%E6%AF%8D%E5%BA%97/CUHRWvYgWXCwSrnt9ibMfw"),
     ]
+elif os.environ.get("FOODRADAR_LIVE_1020_PAIR") == "jinji":
+    CASES = [
+        ("Jinji Pet Tianmu", "0941d15a-f620-5970-b04a-b9edf626cc7f",
+         "https://www.ubereats.com/tw/store/%E9%87%91%E5%90%89%E5%88%A9%E5%AF%B5%E7%89%A9%E7%B2%BE%E5%93%81%E5%A4%A9%E6%AF%8D%E5%BA%97/CUHRWvYgWXCwSrnt9ibMfw"),
+    ]
 
 def main():
     original = raw_capture.capture_catalog
@@ -108,6 +113,15 @@ def main():
               "hf_write": False, "db_write": False}
     print("FOODRADAR_LIVE_1020_SUMMARY=" +
           json.dumps(report, ensure_ascii=False), flush=True)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write("### FoodRadar 原生商品 API 單店實測\\n")
+            f.write(f"整體結果：{'PASS' if passed else 'FAIL'}；測試店家：{len(summary)}\\n")
+            for item in summary:
+                f.write(f"- {item['store_name']}：商品 {item['unique_skus']} 件、有效分頁 {item['catalog_pages']}、"
+                        f"分類 {item['sections_finished']}/{item['sections_total']}、"
+                        f"最大 offset {item['max_requested_offset']}、"
+                        f"成功 {item['success']}\\n")
     if not passed:
         raise SystemExit("Live store catalog not complete: inspect per-store errors")
     print("Both live stores complete without requesting offset 1020", flush=True)

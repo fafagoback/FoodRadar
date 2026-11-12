@@ -45,9 +45,9 @@ jobs:
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(probe1020):') }}
         run: python scripts/probe_1020_filters.py
       - name: 只實測 2 家先前失敗的大型店（不寫 HF / Turso）
-        if: ${{ github.event_name == 'push' && (startsWith(github.event.head_commit.message, 'test(live1020):') || startsWith(github.event.head_commit.message, 'test(live1020-pets):')) }}
+        if: ${{ github.event_name == 'push' && (startsWith(github.event.head_commit.message, 'test(live1020):') || startsWith(github.event.head_commit.message, 'test(live1020-pets):') || startsWith(github.event.head_commit.message, 'test(live1020-jinji):')) }}
         env:
-          FOODRADAR_LIVE_1020_PAIR: ${{ startsWith(github.event.head_commit.message, 'test(live1020-pets):') && 'pets' || 'primary' }}
+          FOODRADAR_LIVE_1020_PAIR: ${{ startsWith(github.event.head_commit.message, 'test(live1020-jinji):') && 'jinji' || (startsWith(github.event.head_commit.message, 'test(live1020-pets):') && 'pets' || 'primary') }}
         run: python scripts/verify_native_catalog_1020.py
       - name: 一次性查核 11月3日 Costco 實際營業標記
         env:
