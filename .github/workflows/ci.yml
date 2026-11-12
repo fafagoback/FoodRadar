@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 原生 API 分類篩選探查兩家失敗店家（不寫 HF / Turso）
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(probe1020):') }}
+        run: python scripts/probe_1020_filters.py
       - name: 只實測 2 家先前失敗的大型店（不寫 HF / Turso）
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(live1020):') }}
         run: python scripts/verify_native_catalog_1020.py

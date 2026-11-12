@@ -1,12 +1,6 @@
 name: FoodRadar 05 | Four-store independent SKU crosscheck
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/catalog_complete.py'
-      - 'scripts/live_webkit_dom.py'
-      - 'scripts/crosscheck_four_stores.py'
-      - '.github/workflows/costco-beitou-audit.yml'
+  # 手動執行此費時的四店交叉稽核，避免每次修改程式碼就自動執行。
   workflow_dispatch:
 permissions:
   contents: read
