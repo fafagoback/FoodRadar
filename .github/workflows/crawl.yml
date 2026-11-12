@@ -1,10 +1,6 @@
 name: FoodRadar 02｜爬蟲與資料庫
 on:
-  # 只有本次指定 commit 會由 push 啟動一次；隨後移除 push 觸發。
-  # 不恢復 schedule。
-  push:
-    branches: [main]
-    paths: ['.github/workflows/crawl.yml']
+  # 正式抓取僅接受明確手動執行，沒有 schedule 或 push。
   workflow_dispatch:
     inputs:
       mode:
@@ -28,7 +24,7 @@ concurrency:
 jobs:
   crawl_shard:
     name: "抓取工作機 ${{ matrix.shard }} / 14"
-    if: "${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'run(crawl-once-20261112):')) }}"
+    if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -89,7 +85,7 @@ jobs:
           fi
 
       - name: 下載 15 台工作機的原始檔案
-        if: "${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'run(crawl-once-20261112):')) }}"
+        if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
         uses: actions/download-artifact@v4
         with:
           pattern: foodradar-raw-shard-*
@@ -97,7 +93,7 @@ jobs:
           merge-multiple: false
 
       - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
-        if: "${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'run(crawl-once-20261112):')) }}"
+        if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
         env:
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
         run: python src/distributed_crawl.py merge --count 15 --input-dir data/parts --upload
