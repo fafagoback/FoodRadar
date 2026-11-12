@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 金吉利已知 1020 分類的原生子分類完整分頁驗證
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(native1020):') }}
+        run: python scripts/verify_jinji_native_children.py
       - name: 金吉利商品分頁原生子分類 UUID 檢查
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(items1020):') }}
         run: python scripts/probe_jinji_item_subsections.py
