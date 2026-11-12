@@ -221,7 +221,7 @@ jobs:
             jobs=$(gh api "$API" --jq '[.jobs[] | select(.name | startswith("抓取工作機"))] | length')
             good=$(gh api "$API" --jq '[.jobs[] | select(.name | startswith("抓取工作機")) | select(.conclusion == "success")] | length')
             fail=$(gh api "$API" --jq '[.jobs[] | select(.name | startswith("抓取工作機")) | select(.conclusion == "failure" or .conclusion == "cancelled")] | length')
-            echo "FOODRADAR_SOURCE_SHARDS total=$jobs success=$good failed=$fail"
+            echo "FOODRADAR_SOURCE_SHARDS trial=$trial total=$jobs success=$good failed=$fail"
             if [ "$fail" -gt 0 ]; then
               echo "原始工作機失敗，停止入庫，不能使用不完整分工" >&2
               exit 1
