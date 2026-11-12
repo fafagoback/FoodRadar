@@ -72,6 +72,23 @@ class DistributionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "coverage mismatch"):
                 merge_shards({}, parts, root=root, upload_raw=False)
 
+    def test_missing_owner_without_original_feed_identity_never_fabricated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            a="11111111-1111-4111-8111-111111111111"
+            b="22222222-2222-4222-8222-222222222222"
+            parts=self.make_parts(root,[a,b])
+            owner=shard_for_uuid(b,15)
+            path=parts/f"foodradar-raw-shard-{owner}"/"shard.json"
+            meta=json.loads(path.read_text())
+            meta["discovered_store_uuids"].remove(b)
+            meta["assigned_store_uuids"].remove(b)
+            meta["stores"]=[s for s in meta["stores"] if s["store_uuid"]!=b]
+            path.write_text(json.dumps(meta))
+            with self.assertRaisesRegex(RuntimeError,"Missing 1 store identities"):
+                merge_shards({"latitude":25.12,"longitude":121.53},parts,
+                             root=root,upload_raw=False,repair_missing=True)
+
     def test_tampered_http_body_fails_before_hf(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

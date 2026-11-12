@@ -20,7 +20,7 @@ from pathlib import Path
 
 import requests
 
-from feed_core import scan_single_point
+from feed_core import scan_single_point, extract_stores_from_feed
 from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
 from catalog_complete import is_recoverable_catalog_failure
@@ -155,8 +155,75 @@ def _validate_references(store: dict, paths: set[str]):
         raise ValueError(f"Missing catalog section for {store.get('store_uuid')}")
 
 
+
+def _recover_missing_store_captures(missing, shard_paths, config, root, run_id):
+    """Recover verified feed-discovery ownership gaps with real HTTP snapshots.
+
+    Uber's getFeedV1 often gives different lists to concurrent workers.
+    Load those immutable feed response bodies (not a guessed store list),
+    find UUIDs discovered by another worker, and request their real menus.
+    """
+    wanted = set(missing)
+    items = {}
+    for raw_root, paths in shard_paths:
+        for rel in paths:
+            if not rel.startswith("feed/") or not rel.endswith(".body"):
+                continue
+            try:
+                envelope = json.loads((raw_root / rel).read_bytes())
+                native = envelope.get("data") if isinstance(envelope, dict) else None
+                feed = native.get("feedItems") if isinstance(native, dict) else None
+                if not isinstance(feed, list):
+                    continue  # Earlier error attempt: use successful feed page.
+                for store in extract_stores_from_feed(feed):
+                    sid = canonical_store_uuid(
+                        store.get("store_uuid", ""), store.get("store_url", ""))
+                    if sid in wanted and sid not in items:
+                        items[sid] = {
+                            **store, "store_uuid": sid,
+                            "discovered_points": [{
+                                "point_id": "foodradar",
+                                "lat": config["latitude"],
+                                "lon": config["longitude"],
+                                "county": "台北市",
+                            }],
+                        }
+            except (ValueError, TypeError, KeyError, OSError) as exc:
+                raise ValueError(f"Unparseable original feed HTTP body: {rel}") from exc
+    unverified = wanted - set(items)
+    if unverified:
+        raise RuntimeError(
+            f"Missing {len(unverified)} store identities in original feed Raw: "
+            f"{sorted(unverified)[:12]}; refusing synthetic recovery")
+    raw = root / "data" / f"owner-gap-{run_id}" / "raw"
+    if raw.exists():
+        raise FileExistsError(f"Refusing to overwrite owner gap capture {raw}")
+    raw.mkdir(parents=True)
+    results = {}
+    for index, sid in enumerate(sorted(items), 1):
+        item = items[sid]
+        try:
+            result = fetch_store_raw(item, raw)
+        except Exception as exc:
+            result = {"store_uuid": sid, "store_url": item["store_url"],
+                      "success": False, "error": f"{type(exc).__name__}: {exc}"}
+        results[sid] = result
+        if index % 10 == 0 or index == len(items):
+            print("FOODRADAR_OWNER_GAP_PROGRESS=" + json.dumps({
+                "processed": index, "total": len(items),
+                "successful": sum(r.get("success") is True for r in results.values()),
+                "failed": sum(r.get("success") is not True for r in results.values()),
+            }, ensure_ascii=False), flush=True)
+    paths = sorted(p.relative_to(raw).as_posix() for p in raw.rglob("*.body"))
+    available = set(paths)
+    for result in results.values():
+        _validate_references(result, available)
+    return results, (raw, paths)
+
+
 def merge_shards(config: dict, input_dir: Path, count: int = 15,
-                 root: Path = ROOT, upload_raw: bool = True):
+                 root: Path = ROOT, upload_raw: bool = True,
+                 repair_missing: bool = False):
     if count != 15:
         raise ValueError("Expected exactly 15 independent capture artifacts")
     metadata = []
@@ -216,9 +283,21 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         metadata.append(m)
         shard_paths.append((shard_raw, sorted(actual_paths)))
         total_responses += len(actual_paths)
+    owner_missing = sorted(all_discovered - set(all_captured))
+    unexpected = sorted(set(all_captured) - all_discovered)
+    recovered = {}
+    if repair_missing and owner_missing and not unexpected:
+        print("FOODRADAR_OWNER_GAP_PLAN=" + json.dumps({
+            "missing": len(owner_missing),
+            "evidence": "original_getFeedV1_saved_bodies",
+        }), flush=True)
+        recovered, extra_raw = _recover_missing_store_captures(
+            owner_missing, shard_paths, config, root, next(iter(run_ids)))
+        all_captured.update(recovered)
+        shard_paths.append(extra_raw)
+        total_responses += len(extra_raw[1])
     if not all_discovered or set(all_captured) != all_discovered:
         missing = sorted(all_discovered - set(all_captured))
-        unexpected = sorted(set(all_captured) - all_discovered)
         raise RuntimeError(
             f"Cross-runner feed coverage mismatch; missing={missing[:20]}, "
             f"unexpected={unexpected[:20]}; HF/DB unchanged")
@@ -253,6 +332,9 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
     report = {
         "batch": batch, "runners": count, "feed_union": len(all_discovered),
         "captured_stores": len(stores), "verified_stores": len(successes),
+        "owner_discovery_gap": len(owner_missing),
+        "owner_gap_recaptured": len(recovered),
+        "owner_gap_successful": sum(s.get("success") is True for s in recovered.values()),
         "failed_stores": len(failures), "raw_responses": total_responses,
         "runner_public_ips": ip_list, "unique_public_ips": ip_unique,
         "complete": complete, "partial_replayable": partial_replayable,
@@ -289,12 +371,14 @@ def main():
     merge.add_argument("--input-dir", type=Path, default=ROOT / "data" / "parts")
     merge.add_argument("--count", type=int, default=15)
     merge.add_argument("--upload", action="store_true")
+    merge.add_argument("--repair-missing", action="store_true")
     args = parser.parse_args()
     cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     if args.command == "shard":
         capture_shard(cfg, args.index, args.count)
     else:
-        merge_shards(cfg, args.input_dir, args.count, upload_raw=args.upload)
+        merge_shards(cfg, args.input_dir, args.count, upload_raw=args.upload,
+                     repair_missing=args.repair_missing)
 
 
 if __name__ == "__main__":
