@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 金吉利 1020 問題之原生子分類穩定性檢查
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(meta1020):') }}
+        run: python scripts/probe_jinji_metadata.py
       - name: 交叉比對兩家店完整原生分類的商品覆蓋率
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(cross1020):') }}
         run: python scripts/cross_category_1020.py
