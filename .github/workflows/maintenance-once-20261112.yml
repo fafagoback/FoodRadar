@@ -32,6 +32,7 @@ jobs:
             echo "Canceling the unauthorized rescue instead of waiting for DB publication."
             gh api -X POST "$path/cancel" >/dev/null || true
             for attempt in $(seq 1 20); do
+              echo "CANCEL_POLL=$attempt"
               state=$(gh api "$path" --jq '.status')
               if [ "$state" = "completed" ]; then break; fi
               sleep 3
@@ -39,6 +40,7 @@ jobs:
             if [ "$state" != "completed" ]; then
               gh api -X POST "$path/force-cancel" >/dev/null || true
               for attempt in $(seq 1 25); do
+                echo "FORCE_CANCEL_POLL=$attempt"
                 state=$(gh api "$path" --jq '.status')
                 if [ "$state" = "completed" ]; then break; fi
                 sleep 3
@@ -63,6 +65,7 @@ jobs:
           echo "FRESH_CRAWL_DISPATCHED=true"
           run_id=""
           for attempt in $(seq 1 30); do
+            echo "DISPATCH_DISCOVERY_POLL=$attempt"
             run_id=$(gh api "$path/runs?event=workflow_dispatch&per_page=30" \
               --jq ".workflow_runs[] | select(.head_sha == \"$GITHUB_SHA\") | .id" | head -n 1)
             if [ -n "$run_id" ]; then break; fi
