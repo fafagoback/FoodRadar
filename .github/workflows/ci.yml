@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 檢查原生店家商品預載與分頁筆數（兩家；不寫 HF / Turso）
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(page1020):') }}
+        run: python scripts/probe_1020_page_size.py
       - name: 原生 API 分類篩選探查兩家失敗店家（不寫 HF / Turso）
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(probe1020):') }}
         run: python scripts/probe_1020_filters.py
