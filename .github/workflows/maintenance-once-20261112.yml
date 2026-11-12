@@ -1,0 +1,134 @@
+name: FoodRadar｜單次取消補救、重新完整抓取及清理歷史 Actions
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/maintenance-once-20261112.yml'
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: foodradar-20261112-one-time-operations
+  cancel-in-progress: false
+jobs:
+  cutover:
+    name: 先取消舊補救，再手動派發全新完整正式爬蟲
+    if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ops(cancel-rescue-fresh-crawl):') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      crawl_run_id: ${{ steps.dispatch.outputs.crawl_run_id }}
+    steps:
+      - name: 立即取消不再授權的補救 #43167514708
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          target="43167514708"
+          path="/repos/$GITHUB_REPOSITORY/actions/runs/$target"
+          state=$(gh api "$path" --jq '.status')
+          echo "PRIOR_RESCUE_INITIAL_STATUS=$state"
+          if [ "$state" != "completed" ]; then
+            echo "Canceling the unauthorized rescue instead of waiting for DB publication."
+            gh api -X POST "$path/cancel" >/dev/null || true
+            for attempt in $(seq 1 20); do
+              state=$(gh api "$path" --jq '.status')
+              if [ "$state" = "completed" ]; then break; fi
+              sleep 3
+            done
+            if [ "$state" != "completed" ]; then
+              gh api -X POST "$path/force-cancel" >/dev/null || true
+              for attempt in $(seq 1 25); do
+                state=$(gh api "$path" --jq '.status')
+                if [ "$state" = "completed" ]; then break; fi
+                sleep 3
+              done
+            fi
+          fi
+          state=$(gh api "$path" --jq '.status')
+          conclusion=$(gh api "$path" --jq '.conclusion')
+          echo "PRIOR_RESCUE_TERMINAL status=$state conclusion=$conclusion"
+          if [ "$state" != "completed" ]; then
+            echo "Cannot safely dispatch a new database-writing crawl while rescue is running." >&2
+            exit 1
+          fi
+      - name: 啟動「單一店家清單 → 15 台 → 第 16 台入庫」完整流程
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          path="/repos/$GITHUB_REPOSITORY/actions/workflows/crawl.yml"
+          gh api -X POST "$path/dispatches" -f ref=main -f 'inputs[mode]=crawl' >/dev/null
+          echo "FRESH_CRAWL_DISPATCHED=true"
+          run_id=""
+          for attempt in $(seq 1 30); do
+            run_id=$(gh api "$path/runs?event=workflow_dispatch&per_page=30" \
+              --jq ".workflow_runs[] | select(.head_sha == \"$GITHUB_SHA\") | .id" | head -n 1)
+            if [ -n "$run_id" ]; then break; fi
+            sleep 3
+          done
+          if [ -z "$run_id" ]; then
+            echo "Workflow dispatch request accepted, but run ID cannot yet be confirmed" >&2
+            exit 1
+          fi
+          echo "crawl_run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "FRESH_CRAWL_RUN_ID=$run_id"
+          echo "FRESH_CRAWL_URL=https://github.com/$GITHUB_REPOSITORY/actions/runs/$run_id"
+          echo "### 完整正式爬蟲已啟動" >> "$GITHUB_STEP_SUMMARY"
+          echo "新執行紀錄：https://github.com/$GITHUB_REPOSITORY/actions/runs/$run_id" >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup_completed:
+    name: 刪除已完成的 Actions 執行紀錄（保留最新完整爬蟲）
+    needs: cutover
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      KEEP_FRESH_RUN_ID: ${{ needs.cutover.outputs.crawl_run_id }}
+    steps:
+      - name: 清空已完成成功、失敗及取消的歷史執行紀錄
+        run: |
+          set -euo pipefail
+          deleted=0
+          failed=0
+          for batch in $(seq 1 35); do
+            # The first page shrinks after each batch: do not advance page cursor.
+            ids=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+              --jq '[.workflow_runs[] | select(.status=="completed") | .id] | join(" ")')
+            if [ -z "$ids" ]; then break; fi
+            for id in $ids; do
+              if [ "$id" = "$KEEP_FRESH_RUN_ID" ] || [ "$id" = "$GITHUB_RUN_ID" ]; then
+                continue
+              fi
+              if gh api -X DELETE "/repos/$GITHUB_REPOSITORY/actions/runs/$id" >/dev/null 2>&1; then
+                deleted=$((deleted + 1))
+              else
+                failed=$((failed + 1))
+                echo "DELETE_WORKFLOW_RUN_FAILED=$id" >&2
+              fi
+            done
+            echo "FOODRADAR_COMPLETED_RUN_CLEANUP deleted=$deleted failed=$failed batch=$batch"
+            # GitHub GITHUB_TOKEN has a per-repository REST hourly budget.
+            # Wait for its reset if needed instead of silently leaving runs.
+            remaining=$(gh api rate_limit --jq '.resources.core.remaining' || echo 200)
+            if [ "$remaining" -lt 20 ]; then
+              reset=$(gh api rate_limit --jq '.resources.core.reset' || date +%s)
+              now=$(date +%s)
+              delay=$((reset - now + 4))
+              if [ "$delay" -gt 0 ] && [ "$delay" -le 3800 ]; then
+                echo "RATE_LIMIT_COOLDOWN_SECONDS=$delay"
+                sleep "$delay"
+              fi
+            fi
+            if [ "$failed" -gt 20 ]; then
+              echo "Too many GitHub deletion errors; refusing to report a clean slate." >&2
+              exit 1
+            fi
+          done
+          remaining_completed=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+             --jq "[.workflow_runs[] | select(.status == \"completed\" and .id != $KEEP_FRESH_RUN_ID) | .id] | length")
+          echo "FOODRADAR_COMPLETED_RUN_CLEANUP_FINAL deleted=$deleted failed=$failed remaining_on_first_page=$remaining_completed"
+          echo "### 歷史執行紀錄清理" >> "$GITHUB_STEP_SUMMARY"
+          echo "已刪除 $deleted 筆；刪除失敗 $failed 筆；保留新完整爬蟲 #$KEEP_FRESH_RUN_ID。" >> "$GITHUB_STEP_SUMMARY"
+          test "$failed" -eq 0
