@@ -351,7 +351,18 @@ if __name__ == '__main__':
     args = parser.parse_args()
     remote = Remote(os.environ['TURSO_DATABASE_URL'], os.environ['TURSO_AUTH_TOKEN'])
     try:
+        from time import perf_counter
+        began=perf_counter()
         report = publish(args.database, remote, args.apply, args.verified_rebuild_manifest, args.reset_all)
+        seconds=round(perf_counter()-began,2)
+        print('FOODRADAR_TURSO_PUBLISH_TIMING='+json.dumps({
+            'seconds':seconds,'delta_bytes':report.get('delta_bytes',0),
+            'applied':report.get('applied',False),
+            'tables':report.get('tables',{})},ensure_ascii=False),flush=True)
+        summary=os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary:
+            with open(summary,'a',encoding='utf-8') as out:
+                out.write(f'\n### Turso 差異發布\n- 總耗時：{seconds} 秒\n- 本次異動資料量：{report.get("delta_bytes",0)} bytes\n')
         Path(args.report).write_text(json.dumps(report, indent=2), encoding='utf-8')
         print(json.dumps(report))
     finally:
