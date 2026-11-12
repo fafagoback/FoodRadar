@@ -1,9 +1,6 @@
 name: FoodRadar 02｜爬蟲與資料庫
 on:
-  # 只接受例行排程或使用者手動啟動；程式碼 push 不啟動爬蟲。
-  schedule:
-    # 台灣時間每日 06:30、18:30（UTC 22:30、10:30）。不再額外排 07:30/19:30 補抓。
-    - cron: '30 10,22 * * *'
+  # 依使用者先前要求停用自動排程；僅接受手動 workflow_dispatch。
   workflow_dispatch:
     inputs:
       mode:
@@ -21,25 +18,55 @@ on:
         type: string
 permissions:
   contents: read
+concurrency:
+  group: foodradar-crawl-pipeline
+  cancel-in-progress: false
 jobs:
-  ingest:
-    name: HF 原始資料 → V2 價格 → Turso
+  crawl_shard:
+    name: "抓取工作機 ${{ matrix.shard }} / 14"
+    if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
     runs-on: ubuntu-latest
-    # A full store/catalog crawl with upstream 429 cooldowns can exceed 90 minutes.
-    timeout-minutes: 240
-    concurrency:
-      group: foodradar-database-publisher
-      # 同一時間只能有一個 Turso 發布作業；新的執行排隊，不中斷已在執行的工作。
-      cancel-in-progress: false
-    environment:
-      name: github-pages
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      # 防止未受保護的 main 變更在排程中寫壞正式資料庫。
+      - name: 只抓自己負責的店家並保存原始 Feed / Store / Catalog
+        run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count 15
+      - name: 上傳分工原始資料給第 16 台（不寫 HF / DB）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-raw-shard-${{ matrix.shard }}
+          path: data/shard-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+
+  ingest:
+    name: 第 16 台｜彙整驗證 → HF Raw → Turso
+    needs: crawl_shard
+    if: "${{ always() && (needs.crawl_shard.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl' && needs.crawl_shard.result == 'skipped')) }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment:
+      name: github-pages
+    concurrency:
+      group: foodradar-database-publisher
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      # 任何手動資料庫更新前，都重新驗證核心程式。
       - name: 更新資料前再次執行核心程式回歸測試
         run: |
           python -m unittest discover -s tests -v
@@ -57,11 +84,19 @@ jobs:
             exit 1
           fi
 
-      - name: 封存 Feed / Store / Catalog 完整原始 HTTP 回應至獨立 HF Dataset /Raw
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') }}
+      - name: 下載 15 台工作機的原始檔案
+        if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
+        uses: actions/download-artifact@v4
+        with:
+          pattern: foodradar-raw-shard-*
+          path: data/parts
+          merge-multiple: false
+
+      - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
+        if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python src/crawl.py --upload
+          HF_TOKEN: "${{ secrets.HF_TOKEN }}"
+        run: python src/distributed_crawl.py merge --count 15 --input-dir data/parts --upload
 
       - name: 僅從獨立 HF Dataset 的 Raw/ 重建 DB（不讀舊倉庫）
         env:
@@ -129,5 +164,6 @@ jobs:
             data/**/store-identity-report.json
             packed-report.json
             delta-report.json
+            data/**/shard-reconciliation.json
           if-no-files-found: ignore
           retention-days: 5

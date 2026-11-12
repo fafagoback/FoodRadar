@@ -364,6 +364,40 @@ class CatalogCompleteness(unittest.TestCase):
                 capture_catalog(FakeSession(),"store",base,root,{},save)
 
 
+
+    def test_string_500_deep_offset_uses_native_subsections(self):
+        """Regression: 2026-11-12 run #397 failed at offset 1020 and never fell back."""
+        base = {"aisles": {"s": [{"catalogSectionUUID": "parent"}]},
+                "sections": [{"uuid": "parent", "subsectionUuids": ["child"]}]}
+        class Session:
+            def __init__(self):
+                self.calls = []
+            def post(self, url, json, headers, timeout):
+                child = (json["storeFilters"]["subsectionUuids"] or [None])[0]
+                offset = json["pagingInfo"]["offset"]
+                self.calls.append((child, offset))
+                if child is None and offset >= 1020:
+                    return Response({"status": "failure",
+                                     "data": {"code": "500", "message": "internal error"}})
+                return Response({"status": "success", "data": {
+                    "catalog": [{"payload": {"standardItemsPayload": {"catalogItems": [
+                        sample_item("sku", "Product", 9900)]}}}],
+                    "pagingInfo": {"hasMore": child is None,
+                                   "offset": 1020 if child is None else 0}}})
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            def save(directory, name, response):
+                file = directory / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(response.content)
+            session = Session()
+            meta = capture_catalog(session, "store", base, root, {}, save)
+            self.assertTrue(meta["catalog_complete"])
+            self.assertEqual(meta["catalog_section_reports"][0]["mode"],
+                             "subsections_after_deep_offset_error")
+            self.assertEqual(session.calls, [(None, 0), (None, 1020), ("child", 0)])
+
+
 def _item_ids(native):
     ids=set()
     for group in native.get("catalogSectionsMap",{}).values():

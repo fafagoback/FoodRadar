@@ -156,12 +156,24 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                     body = resp.json()
                     _check_rate_limit(resp, body, attempt)
                     failure = body.get("data") if isinstance(body, dict) else None
-                    if (offset > 1000 and isinstance(failure, dict)
+                    if (offset >= 1000 and isinstance(failure, dict)
                             and body.get("status") == "failure"
-                            and failure.get("code") == 500):
+                            and str(failure.get("code") or "") == "500"):
                         raise _DeepOffsetRejected(
                             f"Catalog {section_uuid}/{subsection_uuid} "
                             f"offset {offset}: native code 500")
+                    # Some native deep-offset failures provide no catalog and
+                    # encode 500 as a string. Preserve the response and try
+                    # verified native subsections instead of retrying a
+                    # deterministic malformed parent page multiple times.
+                    if (offset >= 1000 and isinstance(body, dict)
+                            and body.get("status") == "failure"
+                            and isinstance(failure, dict)
+                            and "catalog" not in failure
+                            and str(failure.get("code") or "") in ("500", "502", "503")):
+                        raise _DeepOffsetRejected(
+                            f"Catalog {section_uuid}/{subsection_uuid} "
+                            f"offset {offset}: native code 500 (deep-page failure)")
                     data, entries = _catalog_entries(body)
                     global_limiter.record_success()
                     n = _item_count(entries)
