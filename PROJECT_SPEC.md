@@ -2,6 +2,10 @@
 
 > 本文件為 FoodRadar 現行實作的定義與架構說明（2026-10-28 核對，亦見根目錄 `PRD.md`）。本專案不使用根目錄 README.md。以下「新」代表 FoodRadar 的觀測定義，不代表現實世界的開幕或實際新品上市日期。
 
+## 2026-11-12 增量資料處理
+
+日常從經驗證的 GitHub Actions Cache SQLite 快取增量還原，而 HF Raw 仍為唯一不可變更原始證據。當快取失效時回復全量 Raw。詳見 PRD 2026-11-12 節。
+
 ## 2026-11-09 完整商品與網站投影規格（高於下方歷史條款）
 
 - **原始資料與結構化資料分離**：HF `hub-google/FoodRadar/Raw/<batch>/capture.tar.gz` 僅封存 `getFeedV1`、`getStoreV1`、`getCatalogPresentationV2` 的未修改 `response.content` 和獨立 manifest 校驗資訊；禁止儲存已轉換 Schema.org、標價統計或 DB。

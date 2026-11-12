@@ -54,8 +54,11 @@ jobs:
               })
               with urlopen(request, timeout=25) as response:
                   jobs = json.load(response).get("jobs", [])
-              allowed = any(j.get("name") == "HF 原始資料 → V2 價格 → Turso"
-                            and j.get("conclusion") == "success" for j in jobs)
+              allowed = any(j.get("name", "").startswith("第 16 台｜彙整驗證")
+                            and j.get("conclusion") == "success"
+                            and any(s.get("name") == "以獨立唯讀連線驗證正式 Turso"
+                                    and s.get("conclusion") == "success"
+                                    for s in j.get("steps", [])) for j in jobs)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f'published={str(allowed).lower()}\n')
           print('VERIFIED_INGEST_DEPLOY_GATE=' + str(allowed))

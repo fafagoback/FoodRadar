@@ -76,20 +76,19 @@ def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> b
 
 
 def restore_history(config, rebuild_all=False):
-    """Build serving.db from immutable FoodRadar/Raw alone.
-
-    Intentionally never read legacy FoodRadar/snapshots, HF state/latest.json,
-    Parquet, or pre-reset SQLite state. A clean Turso reset must stay clean on
-    every subsequent scheduled crawl.
-    """
+    """Replay unprocessed HF Raw from a verified checkpoint or from zero."""
+    from concurrent.futures import ThreadPoolExecutor
+    from time import perf_counter
     from huggingface_hub import HfApi, hf_hub_download
     import tarfile
     import sqlite3
-    from serving_state import apply_snapshot
+    from serving_state import apply_snapshot, refresh_product_search
     from raw_capture import documents_from_hf_raw
     from menu_core import canonical_store_uuid
     from verified_weekly import update_verified_weekly
+    from state_checkpoint import restore as restore_checkpoint, contract_digest, manifest_digest
 
+    started = perf_counter()
     folder = config['hf_folder'].strip('/')
     api = HfApi(token=os.environ.get('HF_TOKEN'))
     files = api.list_repo_files(repo_id=config['hf_repo_id'], repo_type='dataset')
@@ -98,127 +97,165 @@ def restore_history(config, rebuild_all=False):
     if not manifests:
         raise RuntimeError(f'No immutable snapshots under {folder}/Raw; refusing DB update')
 
+    def fetch_manifest(path):
+        blob = Path(hf_hub_download(
+            config['hf_repo_id'], path, repo_type='dataset',
+            token=os.environ.get('HF_TOKEN'))).read_bytes()
+        return path, json.loads(blob), hashlib.sha256(blob).hexdigest()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        records = list(executor.map(fetch_manifest, manifests))
+    index_seconds = round(perf_counter() - started, 2)
+    print('FOODRADAR_MANIFEST_INDEX=' + json.dumps({
+        'count': len(records), 'seconds': index_seconds}), flush=True)
+
     previous = ROOT/'data/latest.txt'
     previous.parent.mkdir(parents=True, exist_ok=True)
     temporary_db = ROOT/'data/raw-only-reconstructed.db'
-    if temporary_db.exists():
-        temporary_db.unlink()
+    temporary_db.unlink(missing_ok=True)
+    checkpoint = None if rebuild_all else restore_checkpoint(temporary_db, records, config)
+    batch, prefix_count = checkpoint if checkpoint else ('', 0)
     conn = sqlite3.connect(temporary_db)
     conn.row_factory = sqlite3.Row
-    replayed = []
-    skipped_incomplete = []
-    batch = ''
+    replayed, skipped_incomplete = [], []
+    processed = 0
+    totals = {'download_seconds': 0.0, 'decode_seconds': 0.0,
+              'sqlite_apply_seconds': 0.0}
     try:
         print('FOODRADAR_RAW_ONLY_REPLAY_START='+json.dumps({
-            'raw_manifests':len(manifests),
-            'legacy_snapshots_read':0,
-            'legacy_checkpoints_read':0,
-            'path': f'{folder}/',
-        },ensure_ascii=False),flush=True)
-        for manifest_path in manifests:
-            meta = json.loads(Path(hf_hub_download(
-                config['hf_repo_id'], manifest_path, repo_type='dataset'
-            )).read_text(encoding='utf-8'))
+            'raw_manifests': len(records), 'checkpoint': bool(checkpoint),
+            'checkpoint_prefix_count': prefix_count, 'legacy_batches': 0
+        }), flush=True)
+        previous_batch = ''
+        for index, (manifest_path, meta, _sha) in enumerate(records):
             current_batch = str(meta.get('batch_id') or '')
             if not raw_manifest_should_replay(meta, manifest_path, folder):
                 skipped_incomplete.append(manifest_path)
-                print('HF_RAW_INCOMPLETE_SKIPPED=' + json.dumps({
-                    'batch': current_batch, 'manifest': manifest_path,
-                    'reason': 'partial crawl is not a publishable observation'
-                }, ensure_ascii=False), flush=True)
                 continue
-            if batch and current_batch <= batch:
+            if previous_batch and current_batch <= previous_batch:
                 raise ValueError(f'Nonmonotonic immutable Raw batch: {manifest_path}')
+            previous_batch = current_batch
+            if index < prefix_count:
+                replayed.append(manifest_path + ':' + str(meta['archive_sha256']))
+                continue
+            if current_batch <= batch:
+                raise ValueError('New Raw precedes checkpoint; refusing incremental replay')
+            t = perf_counter()
             downloaded = Path(hf_hub_download(
-                config['hf_repo_id'], meta['archive_path'], repo_type='dataset'
-            ))
+                config['hf_repo_id'], meta['archive_path'], repo_type='dataset',
+                token=os.environ.get('HF_TOKEN')))
             digest = hashlib.sha256(downloaded.read_bytes()).hexdigest()
             if digest != meta.get('archive_sha256'):
                 raise ValueError('HF immutable Raw archive SHA-256 mismatch')
-            with tarfile.open(downloaded, 'r:gz') as raw_archive:
-                docs = documents_from_hf_raw(raw_archive, meta)
+            dl = perf_counter()-t
+            totals['download_seconds'] += dl
+            t = perf_counter()
+            with tarfile.open(downloaded,'r:gz') as archive:
+                docs = documents_from_hf_raw(archive, meta)
+            decode = perf_counter()-t
+            totals['decode_seconds'] += decode
             is_partial = meta.get('complete') is False
             failed_store_uuids = (
                 [canonical_store_uuid(s['store_uuid'], s['store_url'])
                  for s in meta['stores'] if not s.get('success')]
-                if is_partial else []
-            )
+                if is_partial else [])
             expected_raw = (meta['successful_store_count']
                             if is_partial else len(meta['stores']))
             successful_records = [r for r in meta['stores'] if r.get('success')]
-            expected = len({canonical_store_uuid(r['store_uuid'], r['store_url'])
+            expected = len({canonical_store_uuid(r['store_uuid'],r['store_url'])
                             for r in successful_records})
             if len(successful_records) != expected_raw or len(docs) != expected:
                 raise ValueError('HF verified store count or canonical UUID mismatch')
+            t = perf_counter()
             apply_snapshot(conn, docs, current_batch,
-                           excluded_store_uuids=failed_store_uuids)
-            conn.execute(
-                "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-                ('latest_raw_completeness',
-                 'partial_verified' if is_partial else 'complete'))
-            conn.execute(
-                "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-                ('latest_unverified_store_uuids',
-                 json.dumps(failed_store_uuids, ensure_ascii=False)))
-            replayed.append(manifest_path + ':' + digest)
+                           excluded_store_uuids=failed_store_uuids,
+                           refresh_search=False)
+            conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                         ('latest_raw_completeness',
+                          'partial_verified' if is_partial else 'complete'))
+            conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                         ('latest_unverified_store_uuids',
+                          json.dumps(failed_store_uuids,ensure_ascii=False)))
+            applied = perf_counter()-t
+            totals['sqlite_apply_seconds'] += applied
+            replayed.append(manifest_path+':'+digest)
+            processed += 1
             batch = current_batch
-            print('HF_RAW_TO_DB='+json.dumps({
-                'batch':batch,
-                'verified_stores':len(docs),
+            print('HF_RAW_TO_DB=' + json.dumps({
+                'batch':batch, 'verified_stores':len(docs),
                 'failed_stores_retaining_previous_data':len(failed_store_uuids),
-                'failed_store_uuids':failed_store_uuids,
                 'replay_complete':not is_partial,
                 'replay_partial_verified':is_partial,
-                'legacy_batches':0,
-            },ensure_ascii=False),flush=True)
+                'download_seconds':round(dl,2),'decode_seconds':round(decode,2),
+                'sqlite_apply_seconds':round(applied,2)
+            }, ensure_ascii=False),flush=True)
         if not replayed:
-            raise RuntimeError("No complete immutable HF Raw batches to build serving DB")
-        # Weekly discount projection depends exclusively on the final snapshot
-        # and immutable historical numeric observations. Applying it after
-        # every historical batch repeatedly scans the same growing history.
-        # Derive it ONCE after all raw snapshots have been applied.
-        audit = update_verified_weekly(conn, batch)
-        print('HF_RAW_FINAL_VERIFIED_WEEKLY=' + json.dumps({
-            'batch':batch, **audit,
+            raise RuntimeError('No complete immutable HF Raw batches to build serving DB')
+        if checkpoint and len([1 for p,m,_ in records[:prefix_count]
+                               if raw_manifest_should_replay(m,p,folder)]) != (
+                conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0]-processed):
+            raise ValueError('Checkpoint verified batch count mismatches Raw history')
+        t=perf_counter()
+        if processed or not checkpoint:
+            refresh_product_search(conn)
+            audit=update_verified_weekly(conn,batch)
+        else:
+            audit={'qualified_comparisons':'unchanged',
+                   'deals':conn.execute('SELECT COUNT(*) FROM products WHERE seven_day_is_price_deal=1').fetchone()[0]}
+        price_seconds=perf_counter()-t
+        print('HF_RAW_FINAL_VERIFIED_WEEKLY='+json.dumps({
+            'batch':batch,**audit,'seconds':round(price_seconds,2)
         },ensure_ascii=False),flush=True)
-        conn.execute(
-            "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-            ('raw_source', f'{folder}/'))
-        conn.execute(
-            "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-            ('raw_snapshot_count', str(len(replayed))))
+        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                     ('raw_source',f'{folder}/'))
+        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                     ('raw_snapshot_count',str(len(replayed))))
         conn.commit()
-        destination = ROOT/'data'/batch
+        destination=ROOT/'data'/batch
         destination.mkdir(parents=True,exist_ok=True)
-        published_copy = sqlite3.connect(destination/'serving.db')
-        try:
-            conn.backup(published_copy)
-        finally:
-            published_copy.close()
-        evidence = {
-            'format':'foodradar-immutable-raw-only-rebuild-v1',
-            'batch_id':batch,
-            'raw_manifest_count':len(replayed),
+        with sqlite3.connect(destination/'serving.db') as copy:
+            conn.backup(copy)
+        evidence={
+            'format': ('foodradar-raw-verified-incremental-v1' if checkpoint
+                       else 'foodradar-immutable-raw-only-rebuild-v1'),
+            'batch_id':batch,'raw_manifest_count':len(replayed),
             'verified_manifest_count':len(replayed),
             'skipped_incomplete_raw_count':len(skipped_incomplete),
-            'manifest_digest':hashlib.sha256(
-                '\n'.join(replayed).encode('utf-8')).hexdigest(),
-            'source_prefix':f'{folder}/',
-            'legacy_snapshot_count':0,
+            'manifest_digest':hashlib.sha256('\n'.join(replayed).encode()).hexdigest(),
+            'source_prefix':f'{folder}/','legacy_snapshot_count':0,
             'source_counts':{
                 'stores':conn.execute('SELECT COUNT(*) FROM stores').fetchone()[0],
                 'products':conn.execute('SELECT COUNT(*) FROM products').fetchone()[0],
-                'crawl_batches':conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0],
-            },
+                'crawl_batches':conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0]
+            }
         }
         (destination/'verified-rebuild.json').write_text(
             json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
-        previous.write_text(batch, encoding='utf-8')
-        print('FOODRADAR_RAW_ONLY_REBUILT='+json.dumps(
-            evidence,ensure_ascii=False),flush=True)
+        raw_index={
+            'repo_id':config['hf_repo_id'],'folder':folder,'batch_id':batch,
+            'manifest_count':len(records),'verified_batches':len(replayed),
+            'manifest_digest':manifest_digest(records),
+            'contract_digest':contract_digest()
+        }
+        (destination/'raw-manifest-index.json').write_text(
+            json.dumps(raw_index,ensure_ascii=False,indent=2),encoding='utf-8')
+        previous.write_text(batch,encoding='utf-8')
+        print('FOODRADAR_RAW_ONLY_REBUILT='+json.dumps(evidence,ensure_ascii=False),flush=True)
+        timings={'manifest_index_seconds':index_seconds,
+                 'checkpoint_restored':bool(checkpoint),
+                 'raw_batches_processed':processed,
+                 **{k:round(v,2) for k,v in totals.items()},
+                 'price_and_search_seconds':round(price_seconds,2),
+                 'total_seconds':round(perf_counter()-started,2)}
+        print('FOODRADAR_ETL_TIMING='+json.dumps(timings),flush=True)
+        summary=os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary:
+            with open(summary,'a',encoding='utf-8') as out:
+                out.write('\n### HF Raw → SQLite 執行效能\n| 階段 | 結果 |\n|---|---:|\n')
+                for key,value in timings.items():
+                    out.write(f'| {key} | {value} |\n')
     finally:
         conn.close()
-
 
 
 def build_snapshot(output, config):

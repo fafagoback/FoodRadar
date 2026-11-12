@@ -128,7 +128,15 @@ jobs:
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
         run: python src/distributed_crawl.py merge --count 15 --input-dir data/parts --upload
 
-      - name: 僅從獨立 HF Dataset 的 Raw/ 重建 DB（不讀舊倉庫）
+      - name: 恢復經驗證的 SQLite 加速快取（不影響 HF Raw）
+        if: ${{ inputs.mode != 'full-rebuild' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            foodradar-state-v1-
+      - name: 增量處理 HF Raw，無有效快取才全量重建 DB
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
@@ -183,6 +191,14 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/audit_live_turso.py
+
+      - name: 正式 Turso 唯讀驗證後才保存 SQLite 加速快取
+        if: ${{ success() && inputs.mode != 'full-rebuild' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: 保存驗證報告
         if: always()
