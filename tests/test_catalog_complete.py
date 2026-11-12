@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from catalog_complete import capture_catalog, merge_catalog_pages
+from catalog_complete import capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure
 from menu_core import convert_api_data_to_schema
 from verified_prices import quote_from_native_item
 
@@ -52,6 +52,20 @@ class Session:
 
 
 class CatalogCompleteness(unittest.TestCase):
+    def test_partial_raw_only_allows_deterministic_catalog_gaps(self):
+        for error in (
+            "RuntimeError: native code 500",
+            "Subsections for abc omitted 2 previously seen native parent SKUs",
+            "Catalog abc reached deep-offset boundary; native subsection UUIDs unavailable, refusing partial menu",
+        ):
+            self.assertTrue(is_recoverable_catalog_failure(error), error)
+        for error in (
+            "HTTP 403 forbidden", "getStoreV1 timed out", "HTTP 429",
+            "Missing delivery coordinate", "Catalog native subsection cycle",
+            "invalid JSON", None, "",
+        ):
+            self.assertFalse(is_recoverable_catalog_failure(error), error)
+
     def test_collect_two_pages_and_merge(self):
         sid = "d2e50ee1-69da-5eff-95f0-eb0dbaeb9e42"
         data = {"title":"北投店","catalogSectionsMap":{}, "aisles":{sid:[

@@ -12,6 +12,21 @@ MAX_CATALOG_PAGES = 250
 DEEP_OFFSET_BOUNDARY = 1000
 
 
+def is_recoverable_catalog_failure(error):
+    """Known catalog partition failures eligible for an *explicitly marked*
+    partial Raw snapshot. A failed store is never published as freshly
+    verified and its prior data stays unchanged. Do not whitelist general
+    network/timeouts, 403, invalid HTTP or unknown parsing failures.
+    """
+    message = str(error or "")
+    return any(marker in message for marker in (
+        "native code 500",
+        "previously seen native parent SKUs",
+        "native subsection UUIDs unavailable",
+    ))
+
+
+
 def _section_ids(data):
     ids = []
     seen = set()

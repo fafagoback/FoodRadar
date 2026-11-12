@@ -19,7 +19,7 @@ from pathlib import Path
 import requests
 
 from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter
-from catalog_complete import capture_catalog, merge_catalog_pages
+from catalog_complete import capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure
 
 TW = timezone(timedelta(hours=8))
 
@@ -135,8 +135,7 @@ def archive_and_upload(root: Path, config: dict, batch: str,
         # Never bless general network/API/parser errors as independently
         # verified partial observations. Only deterministic deep catalog 500s
         # and native subgroup coverage gaps are eligible.
-        if not all(("native code 500" in str(s.get("error") or "")
-                    or "previously seen native parent SKUs" in str(s.get("error") or ""))
+        if not all(is_recoverable_catalog_failure(s.get("error"))
                    for s in failed):
             raise ValueError("Unclassified Raw failure cannot publish partial snapshot")
     folder = config["hf_folder"].strip("/")
@@ -241,8 +240,7 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
                 or manifest.get("failed_store_uuids") !=
                     [s.get("store_uuid") for s in failed]):
             raise ValueError("Partially verified Raw store counts/identity mismatch")
-        if not all(("native code 500" in str(s.get("error") or "")
-                    or "previously seen native parent SKUs" in str(s.get("error") or ""))
+        if not all(is_recoverable_catalog_failure(s.get("error"))
                    for s in failed):
             raise ValueError("Unclassified failed store in partially verified Raw")
     else:

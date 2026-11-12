@@ -23,6 +23,7 @@ import requests
 from feed_core import scan_single_point
 from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
+from catalog_complete import is_recoverable_catalog_failure
 
 ROOT = Path(__file__).resolve().parents[1]
 TW = timezone(timedelta(hours=8))
@@ -246,8 +247,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
     partial_replayable = bool(
         failures and len(stores) >= 50 and len(successes) >= 50
         and len(failures) <= max(1, int(len(stores) * 0.05))
-        and all("native code 500" in str(s.get("error") or "")
-                or "previously seen native parent SKUs" in str(s.get("error") or "")
+        and all(is_recoverable_catalog_failure(s.get("error"))
                 for s in failures))
     complete = not failures
     report = {

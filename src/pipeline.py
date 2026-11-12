@@ -57,6 +57,7 @@ def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> b
             or not str(meta.get("archive_path") or "").startswith(f"{folder}/{batch}/")):
         raise ValueError(f"Invalid immutable Raw source path: {manifest_path}")
     if is_partial:
+        from catalog_complete import is_recoverable_catalog_failure
         stores = meta.get("stores")
         if not isinstance(stores, list):
             raise ValueError("Missing per-store Raw records for partial replay")
@@ -68,8 +69,7 @@ def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> b
                 or meta.get("failed_store_uuids") !=
                     [s.get("store_uuid") for s in failed]):
             raise ValueError("Partially verified Raw manifest store count mismatch")
-        if not all(("native code 500" in str(s.get("error") or "")
-                    or "previously seen native parent SKUs" in str(s.get("error") or ""))
+        if not all(is_recoverable_catalog_failure(s.get("error"))
                    for s in failed):
             raise ValueError("Unclassified failure in partially verified Raw manifest")
     return True
