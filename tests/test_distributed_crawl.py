@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,9 +70,13 @@ class DistributionTests(unittest.TestCase):
             doc=path/"discovery.json"
             doc.write_text(json.dumps(meta))
             body.write_bytes(b"CHANGED HTTP")
-            with self.assertRaisesRegex(ValueError,"checksum mismatch"):
-                load_shared_discovery(doc,{"latitude":25.12,"longitude":121.53},
-                                      folder/"output",0)
+            # CI injects the real GITHUB_RUN_ID/GITHUB_SHA; fixture uses "local".
+            # Make that environment explicit so this test reaches checksum logic.
+            with patch.dict("os.environ", {"GITHUB_RUN_ID":"local",
+                                          "GITHUB_SHA":"local"}):
+                with self.assertRaisesRegex(ValueError,"checksum mismatch"):
+                    load_shared_discovery(doc,{"latitude":25.12,"longitude":121.53},
+                                          folder/"output",0)
 
     def test_missing_shard_fails_before_hf(self):
         with tempfile.TemporaryDirectory() as temp:
