@@ -5,7 +5,7 @@
 ## 2026-11-12 已驗證快取與增量 Raw 還原
 
 - HF hub-google/FoodRadar 的 Raw/ 仍只保存不可變更原始 HTTP、manifest；不混入 SQLite 或衍生資料。
-- GitHub Actions Cache 保存可丟棄的已驗證 SQLite 加速快取。只在正式 Turso 唯讀驗證成功之後寫入快取。快取過期、損毀、來源不同或歷史 manifest 修改時，回到從 Raw 全量重建。
+- GitHub Actions Cache 保存可丟棄的已驗證 SQLite 加速快取。程式先備妥快取，但只有在正式 Turso 唯讀驗證成功之後才上傳，完整重建完成也能產生下一輪快取。快取建立失敗不得阻擋正式資料發布。快取過期、損毀、來源不同或歷史 manifest 修改時，回到從 Raw 全量重建。
 - 使用快取時嚴格比對全部舊 manifest SHA-256 索引、ETL 程式碼契約、資料庫 latest_batch、SQLite quick_check 及檔案雜湊。不能跳過新批次 Raw 的完整性與來源驗證。
 - 仍永久保留店家／商品 UUID、首見日期、上下架及重新上架時間、歷史價格觀測與事件；七天低價繼續使用過去七天有效原生單價。
 - 批次套用時暫緩商品搜尋索引重建，最後只建一次；七日價格也只正式計算一次。失敗不修改正式 Turso。

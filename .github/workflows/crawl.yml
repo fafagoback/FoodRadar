@@ -195,7 +195,7 @@ jobs:
         run: python scripts/audit_live_turso.py
 
       - name: 正式 Turso 唯讀驗證後才保存 SQLite 加速快取
-        if: ${{ success() && inputs.mode != 'full-rebuild' }}
+        if: ${{ success() }}
         continue-on-error: true
         uses: actions/cache/save@v4
         with:

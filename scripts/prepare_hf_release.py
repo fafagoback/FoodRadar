@@ -29,5 +29,11 @@ build_web_db(ROOT/'data'/batch/'serving.db',ROOT/'data'/batch/'packed-serving.db
 
 print('FOODRADAR_WEB_PACK_AND_AUDIT_SECONDS='+str(round(perf_counter()-started,2)),flush=True)
 # Prepared now; workflow saves to cache only AFTER Turso live audit succeeds.
-if os.environ.get('FOODRADAR_REBUILD_VALID_PRICE_HISTORY') != '1':
-    save_checkpoint(ROOT/'data'/batch/'serving.db',ROOT/'data'/batch/'raw-manifest-index.json')
+try:
+    save_checkpoint(ROOT/'data'/batch/'serving.db',
+                    ROOT/'data'/batch/'raw-manifest-index.json')
+except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+    # Acceleration is optional; never prevent an otherwise verified publication.
+    import shutil
+    shutil.rmtree(ROOT/'data'/'state-checkpoint', ignore_errors=True)
+    print('FOODRADAR_CHECKPOINT_PREPARE_WARNING=' + str(exc)[:200], flush=True)
