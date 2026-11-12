@@ -118,10 +118,15 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                 "catalog_section_count": 0, "catalog_sections_finished": 0,
                 "catalog_section_reports": [], "catalog_item_occurrences": 0}
 
-    def collect(section_index, section_uuid, subsection_uuid=None):
+    def collect(section_index, section_uuid, subsection_uuid=None, stop_before_offset=None):
         records, bodies, seen_offsets = [], [], set()
         offset, page, use_collection_type = 0, 0, False
         while page < MAX_CATALOG_PAGES:
+            # Never ask the upstream API for the known deep-offset boundary.
+            # An unfinished partition is NOT complete until native children are
+            # fetched to terminal pagination and audited against parent SKUs.
+            if stop_before_offset is not None and offset >= stop_before_offset:
+                return records, bodies, False
             if offset in seen_offsets:
                 raise ValueError(f"Catalog loop at {section_uuid}/{subsection_uuid} {offset}")
             seen_offsets.add(offset)
@@ -234,7 +239,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             paging = data["pagingInfo"]
             page += 1
             if paging["hasMore"] is False:
-                return records, bodies
+                return records, bodies, True
             nxt = paging.get("offset")
             if not isinstance(nxt, int) or nxt <= offset:
                 raise ValueError(
@@ -243,61 +248,59 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         raise ValueError(
             f"Catalog {section_uuid}/{subsection_uuid} exceeded {MAX_CATALOG_PAGES} pages")
 
+    def verified_partition(section_index, parent_uuid, subsection_uuid=None, visited=None):
+        """Get all native pages without ever requesting offset >= 1000.
+
+        Parent pages up to the boundary provide independent SKU coverage
+        evidence. When the parent would cross the boundary, continue through
+        *actual* native child UUIDs to terminal pages, preserving the parent
+        preview as a validation set rather than substituting a partial menu.
+        """
+        visited = frozenset() if visited is None else visited
+        current_uuid = subsection_uuid or parent_uuid
+        if current_uuid in visited or len(visited) >= 8:
+            raise RuntimeError(f"Catalog native subsection cycle at {current_uuid}")
+        records, bodies, terminal = collect(
+            section_index, parent_uuid, subsection_uuid,
+            stop_before_offset=1000)
+        if terminal:
+            return records, bodies, "section" if subsection_uuid is None else "subsection", 0
+        children = _subsections_for(base_data, current_uuid)
+        if not children:
+            raise RuntimeError(
+                f"Catalog {current_uuid} reached deep-offset boundary; "
+                "native subsection UUIDs unavailable, refusing partial menu")
+        parent_skus = _catalog_skus(bodies)
+        child_records, child_bodies = [], []
+        for child in children:
+            cr, cb, _, _ = verified_partition(
+                section_index, parent_uuid, child, visited | {current_uuid})
+            child_records.extend(cr)
+            child_bodies.extend(cb)
+        child_skus = _catalog_skus(child_bodies)
+        missing = parent_skus - child_skus
+        if missing:
+            raise RuntimeError(
+                f"Subsections for {current_uuid} omitted {len(missing)} "
+                f"previously seen native parent SKUs; refusing partial menu")
+        if not child_records:
+            raise RuntimeError(f"Catalog {current_uuid} has no verified child pages")
+        print("CATALOG_SUBSECTION_RECOVERY=" + json.dumps({
+            "store_uuid": store_uuid, "section_uuid": current_uuid,
+            "subsections": len(children),
+            "child_pages": len(child_records),
+            "child_unique_skus": len(child_skus),
+            "parent_observed_skus": len(parent_skus),
+            "parent_missing_from_children": len(missing),
+            "avoided_offset": 1020,
+            "mode": "native_children_before_deep_offset",
+        }), flush=True)
+        return child_records, child_bodies, "native_children_before_deep_offset", len(children)
+
     responses, section_reports = [], []
     for section_index, section_uuid in enumerate(section_uuids):
-        try:
-            records, bodies = collect(section_index, section_uuid)
-            mode = "section"
-            children_count = 0
-        except _DeepOffsetRejected as exc:
-            # Read-only proven fallback. All 7 PX Mart native subsection IDs
-            # were accepted by the API at offset=0 in live diagnostic.
-            children = _subsections_for(base_data, section_uuid)
-            if not children:
-                raise RuntimeError(
-                    f"{exc}; native subsection UUIDs unavailable, refusing partial menu") from exc
-            # Preserve the already captured parent pages for consistency validation.
-            # Raw HTTP files remain immutable on disk even if omitted from manifest.
-            parent_bodies = []
-            prefix = (f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-"
-                      f"section-{section_index:03d}-{section_uuid}-sub-none-")
-            for raw_path in root.rglob("*.body"):
-                if str(raw_path.relative_to(root)).startswith(prefix):
-                    try:
-                        raw = json.loads(raw_path.read_bytes())
-                        _catalog_entries(raw)
-                        parent_bodies.append(raw)
-                    except (ValueError, json.JSONDecodeError):
-                        pass
-            parent_skus = _catalog_skus(parent_bodies)
-            records, bodies = [], []
-            print("CATALOG_SUBSECTION_PROBE=" + json.dumps({
-                "store_uuid": store_uuid,
-                "section_uuid": section_uuid,
-                "subsection_count": len(children),
-                "parent_observed_unique_skus": len(parent_skus),
-                "filter_mode": "subsection_uuid_only",
-            }), flush=True)
-            for child in children:
-                child_records, child_bodies = collect(section_index, section_uuid, child)
-                records.extend(child_records)
-                bodies.extend(child_bodies)
-            child_skus = _catalog_skus(bodies)
-            missing = parent_skus - child_skus
-            if missing:
-                raise RuntimeError(
-                    f"Subsections for {section_uuid} omitted {len(missing)} "
-                    f"previously seen native parent SKUs; refusing partial menu")
-            mode = "subsections_after_deep_offset_error"
-            children_count = len(children)
-            print("CATALOG_SUBSECTION_RECOVERY=" + json.dumps({
-                "section_uuid": section_uuid,
-                "subsections": children_count,
-                "pages": len(records),
-                "child_unique_skus": len(child_skus),
-                "parent_observed_skus": len(parent_skus),
-                "parent_missing_from_children": len(missing),
-            }), flush=True)
+        records, bodies, mode, children_count = verified_partition(
+            section_index, section_uuid)
         responses.extend(records)
         section_reports.append({
             "section_uuid": section_uuid,

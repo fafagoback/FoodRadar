@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 只實測 2 家先前失敗的大型店（不寫 HF / Turso）
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(live1020):') }}
+        run: python scripts/verify_native_catalog_1020.py
       - name: 一次性查核 11月3日 Costco 實際營業標記
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}

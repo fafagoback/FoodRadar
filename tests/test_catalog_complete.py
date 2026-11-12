@@ -284,13 +284,13 @@ class CatalogCompleteness(unittest.TestCase):
             out=capture_catalog(session,"store",base,root,{},save)
             self.assertTrue(out["catalog_complete"])
             self.assertEqual(out["catalog_section_reports"][0]["mode"],
-                             "subsections_after_deep_offset_error")
+                             "native_children_before_deep_offset")
             self.assertEqual([x["subsection_uuid"]
                               for x in out["catalog_responses"]],
                              ["child-a","child-b"])
             self.assertEqual(session.calls,[
-                (None,0),(None,1020),("child-a",0),("child-b",0)])
-            self.assertEqual(len(list(root.rglob("*.body"))),4)
+                (None,0),("child-a",0),("child-b",0)])
+            self.assertEqual(len(list(root.rglob("*.body"))),3)
             pages=[json.loads((root/x["path"]).read_bytes())
                    for x in out["catalog_responses"]]
             self.assertEqual(_item_ids(merge_catalog_pages(base,pages)),
@@ -394,9 +394,61 @@ class CatalogCompleteness(unittest.TestCase):
             meta = capture_catalog(session, "store", base, root, {}, save)
             self.assertTrue(meta["catalog_complete"])
             self.assertEqual(meta["catalog_section_reports"][0]["mode"],
-                             "subsections_after_deep_offset_error")
-            self.assertEqual(session.calls, [(None, 0), (None, 1020), ("child", 0)])
+                             "native_children_before_deep_offset")
+            self.assertEqual(session.calls, [(None, 0), ("child", 0)])
 
+
+
+    def test_missing_child_skus_must_fail_closed_without_offset_1020(self):
+        base = {"aisles": {"s": [{"catalogSectionUUID": "parent"}]},
+                "sections": [{"uuid": "parent", "subsectionUuids": ["child"]}]}
+        class Session:
+            def __init__(self):
+                self.calls = []
+            def post(self, url, json, headers, timeout):
+                child = (json["storeFilters"]["subsectionUuids"] or [None])[0]
+                offset = json["pagingInfo"]["offset"]
+                self.calls.append((child, offset))
+                if offset >= 1000:
+                    raise AssertionError("Should never request offset >= 1000")
+                item = sample_item("parent-only" if child is None else "child-only",
+                                   "Verified item", 1000)
+                return Response({"data": {"catalog": [{
+                    "payload": {"standardItemsPayload": {"catalogItems": [item]}}}],
+                    "pagingInfo": {"hasMore": child is None,
+                                   "offset": 1020 if child is None else 0}}})
+        session = Session()
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "omitted 1"):
+                capture_catalog(session, "store", base, Path(tmp), {},
+                                lambda root, path, resp: None)
+        self.assertEqual(session.calls, [(None, 0), ("child", 0)])
+
+    def test_nested_native_children_avoid_deep_offsets(self):
+        base = {"aisles": {"s": [{"catalogSectionUUID": "parent"}]},
+                "sections": [{"uuid": "parent", "subsectionUuids": ["child"]},
+                             {"uuid": "child", "subsectionUuids": ["grandchild"]}]}
+        class Session:
+            def __init__(self):
+                self.calls = []
+            def post(self, url, json, headers, timeout):
+                part = (json["storeFilters"]["subsectionUuids"] or ["parent"])[0]
+                offset = json["pagingInfo"]["offset"]
+                self.calls.append((part, offset))
+                if offset >= 1000:
+                    raise AssertionError("Should never request >= 1000")
+                return Response({"data": {"catalog": [{
+                    "payload": {"standardItemsPayload": {"catalogItems": [
+                        sample_item("common", "Common", 1000)]}}}],
+                    "pagingInfo": {"hasMore": part != "grandchild",
+                                   "offset": 1020 if part != "grandchild" else 0}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session()
+            out = capture_catalog(session, "store", base, Path(tmp), {},
+                                  lambda root, path, resp: None)
+        self.assertTrue(out["catalog_complete"])
+        self.assertEqual(session.calls,
+                         [("parent", 0), ("child", 0), ("grandchild", 0)])
 
 def _item_ids(native):
     ids=set()
