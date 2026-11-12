@@ -1,6 +1,9 @@
 name: FoodRadar 02｜爬蟲與資料庫
 on:
-  # 正式抓取僅接受明確手動執行，沒有 schedule 或 push。
+  # 每天台灣時間 06:30、18:30 自動更新（UTC 前一天 22:30、當天 10:30）。
+  # 只保留每日排程與手動操作；程式碼 push 不啟動爬蟲。
+  schedule:
+    - cron: '30 10,22 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -24,7 +27,7 @@ concurrency:
 jobs:
   discover_once:
     name: 統一掃描單一座標，產出 15 台共用店家清單
-    if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
+    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -46,7 +49,7 @@ jobs:
   crawl_shard:
     name: "抓取工作機 ${{ matrix.shard }} / 14"
     needs: discover_once
-    if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
+    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -112,7 +115,7 @@ jobs:
           fi
 
       - name: 下載 15 台工作機的原始檔案
-        if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
+        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
         uses: actions/download-artifact@v4
         with:
           pattern: foodradar-raw-shard-*
@@ -120,7 +123,7 @@ jobs:
           merge-multiple: false
 
       - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
-        if: "${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}"
+        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
         env:
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
         run: python src/distributed_crawl.py merge --count 15 --input-dir data/parts --upload
