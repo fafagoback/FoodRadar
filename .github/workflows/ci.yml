@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 即時驗證家樂福與全聯目前確實超過 offset 1020 並完整抓取
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(bigstore1020):') }}
+        run: python scripts/verify_live_bigstore_1020.py
       - name: 金吉利已知 1020 分類的原生子分類完整分頁驗證
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(native1020):') }}
         run: python scripts/verify_jinji_native_children.py
