@@ -36,6 +36,57 @@ def shard_for_uuid(store_uuid: str, count: int) -> int:
     return int.from_bytes(digest[:8], "big") % count
 
 
+def weighted_owners(store_ids, count, historical_weights):
+    """Deterministic LPT scheduling from previous native catalog page counts.
+
+    Each UUID has exactly one owner. Without reliable history the existing
+    SHA-256 ownership is preserved; no guesses based on names or categories.
+    """
+    ids = sorted(store_ids)
+    if not historical_weights:
+        return {sid: shard_for_uuid(sid, count) for sid in ids}
+    loads = [0] * count
+    owners = {}
+    for sid in sorted(ids, key=lambda x: (-historical_weights.get(x, 1), x)):
+        owner = min(range(count), key=lambda index: (loads[index], index))
+        owners[sid] = owner
+        loads[owner] += historical_weights.get(sid, 1)
+    return owners
+
+
+def latest_raw_workload_weights(config):
+    """Read ONLY last batch's small manifest, not Raw archives or live stores."""
+    if not os.environ.get("HF_TOKEN"):
+        return {}
+    try:
+        from huggingface_hub import hf_hub_download
+        latest = Path(hf_hub_download(
+            config["hf_repo_id"], config["hf_folder"].strip("/") + "/latest.json",
+            repo_type="dataset", token=os.environ["HF_TOKEN"]))
+        manifest = json.loads(latest.read_text(encoding="utf-8"))
+        if manifest.get("format") != "foodradar-immutable-http-body-v1":
+            raise ValueError("unknown Raw manifest version")
+        weights = {}
+        for store in manifest.get("stores", []):
+            if store.get("success") is not True:
+                continue
+            sid = canonical_store_uuid(store["store_uuid"], store["store_url"])
+            pages = store.get("catalog_responses") or []
+            sections = int(store.get("catalog_section_count") or 0)
+            # Native catalog pages drive API requests and response volume.
+            weights[sid] = max(1, 1 + len(pages) * 4 + sections // 2)
+        print("FOODRADAR_PREVIOUS_LOAD_WEIGHTS=" + json.dumps({
+            "stores": len(weights), "source_batch": manifest.get("batch_id"),
+        }), flush=True)
+        return weights
+    except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+        print("FOODRADAR_LOAD_WEIGHTS_FALLBACK=" + json.dumps({
+            "reason": str(exc)[:200], "method": "stable_sha256",
+        }), flush=True)
+        return {}
+
+
+
 def public_ip() -> str | None:
     """Diagnostic only: GitHub does not guarantee unique egress IPs."""
     try:
@@ -81,7 +132,17 @@ def save_shared_discovery(config: dict, root: Path = ROOT):
         p.relative_to(raw).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(raw.rglob("*.body"))
     }
+    weights = latest_raw_workload_weights(config)
+    ownership = weighted_owners(stores, 15, weights)
+    loads = [0] * 15
+    for sid, owner in ownership.items():
+        loads[owner] += weights.get(sid, 1)
+    print("FOODRADAR_WEIGHTED_SHARDS=" + json.dumps({
+        "method": "historical_catalog_lpt" if weights else "sha256_fallback",
+        "estimated_loads": loads, "stores": len(stores),
+    }), flush=True)
     manifest = {
+        "ownership": ownership, "owner_count": 15,
         "format": "foodradar-shared-feed-v1",
         "run_id": os.getenv("GITHUB_RUN_ID", "local"),
         "source_sha": os.getenv("GITHUB_SHA", "local"),
@@ -131,12 +192,20 @@ def load_shared_discovery(path: Path, config: dict, raw: Path, shard: int):
         if sid in stores or store["store_uuid"] != sid:
             raise ValueError("Duplicated or invalid canonical store in shared feed")
         stores[sid] = store
+    ownership = manifest.get("ownership")
+    if ownership is not None and (
+            not isinstance(ownership, dict)
+            or manifest.get("owner_count") != 15
+            or set(ownership) != set(stores)
+            or any(type(index) is not int or not 0 <= index < 15
+                   for index in ownership.values())):
+        raise ValueError("Shared feed ownership map is missing or invalid")
     if shard == 0:
         destination = raw / "feed"
         if destination.exists():
             raise FileExistsError("Discovery HTTP Raw already exists in shard zero")
         shutil.copytree(feed_root / "feed", destination)
-    return stores, manifest["feed_pages"], hashlib.sha256(manifest_bytes).hexdigest()
+    return stores, manifest["feed_pages"], hashlib.sha256(manifest_bytes).hexdigest(), ownership
 
 
 def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
@@ -157,13 +226,13 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
     }), flush=True)
     if discovery_file is None:
         discovered, pages = discover(config, raw, index)
-        discovery_digest = None
+        discovery_digest, owners = None, None
     else:
-        discovered, pages, discovery_digest = load_shared_discovery(
+        discovered, pages, discovery_digest, owners = load_shared_discovery(
             discovery_file, config, raw, index)
     assigned = sorted(
-        store_uuid for store_uuid in discovered
-        if shard_for_uuid(store_uuid, count) == index)
+        sid for sid in discovered
+        if (owners[sid] if owners is not None else shard_for_uuid(sid, count)) == index)
     captured = []
     for completed, store_uuid in enumerate(assigned, 1):
         item = discovered[store_uuid]
@@ -194,6 +263,7 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
         "public_ip": ip,
         "feed_pages": pages,
         "shared_discovery_digest": discovery_digest,
+        "shared_owners": owners,
         "discovered_store_uuids": sorted(discovered),
         "assigned_store_uuids": assigned,
         "stores": captured,
@@ -312,6 +382,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
     total_responses = 0
     shared_digests = set()
     shared_rosters = []
+    shared_ownership_maps = []
     for index in range(count):
         folder = input_dir / f"foodradar-raw-shard-{index}"
         manifest_path = folder / "shard.json"
@@ -337,7 +408,16 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
                 or len(set(found)) != len(found) or len(set(assigned)) != len(assigned)):
             raise ValueError(f"Corrupt shard {index} assignment manifest")
         shared_rosters.append(found)
-        expected = sorted(s for s in found if shard_for_uuid(s, count) == index)
+        owners = m.get("shared_owners")
+        shared_ownership_maps.append(owners)
+        if owners is not None and (not isinstance(owners, dict)
+                or set(owners) != set(found)
+                or any(type(v) is not int or not 0 <= v < count
+                       for v in owners.values())):
+            raise ValueError(f"Shard {index} invalid shared ownership map")
+        expected = sorted(s for s in found
+                          if (owners[s] if owners is not None
+                              else shard_for_uuid(s, count)) == index)
         if expected != assigned:
             raise ValueError(f"Shard {index} did not follow deterministic store ownership")
         if (len(stores) != len(assigned) or
@@ -358,7 +438,8 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         for store in stores:
             _validate_references(store, actual_paths)
             sid = store["store_uuid"]
-            if sid in all_captured or shard_for_uuid(sid, count) != index:
+            if sid in all_captured or (owners[sid] if owners is not None
+                                       else shard_for_uuid(sid, count)) != index:
                 raise ValueError(f"Duplicate or misrouted store: {sid}")
             all_captured[sid] = store
         all_discovered.update(found)
@@ -367,7 +448,8 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         total_responses += len(actual_paths)
     if any(x is not None for x in shared_digests):
         if (len(shared_digests) != 1
-                or any(x != shared_rosters[0] for x in shared_rosters)):
+                or any(x != shared_rosters[0] for x in shared_rosters)
+                or any(x != shared_ownership_maps[0] for x in shared_ownership_maps)):
             raise ValueError("15 workers used different discovery lists or checksums")
     owner_missing = sorted(all_discovered - set(all_captured))
     unexpected = sorted(set(all_captured) - all_discovered)

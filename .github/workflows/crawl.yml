@@ -37,6 +37,8 @@ jobs:
           python-version: '3.11'
       - run: pip install -r requirements.txt
       - name: 單次 Feed 掃描與儲存原始 HTTP
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/distributed_crawl.py discover
       - name: 上傳全機器共用店家清單
         uses: actions/upload-artifact@v4

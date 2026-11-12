@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from distributed_crawl import shard_for_uuid, merge_shards
+from distributed_crawl import shard_for_uuid, merge_shards, weighted_owners
 
 
 class DistributionTests(unittest.TestCase):
@@ -22,6 +22,23 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(sum(map(len, assignments)), len(stores))
         self.assertEqual(shard_for_uuid(stores[0], 15),
                          shard_for_uuid(stores[0], 15))
+
+    def test_weighted_owners_exactly_once_and_balanced(self):
+        stores=[f"{n:08x}-0000-4000-8000-000000000000" for n in range(150)]
+        weights={sid:1 for sid in stores}
+        weights[stores[0]]=200
+        weights[stores[1]]=160
+        owners=weighted_owners(stores,15,weights)
+        self.assertEqual(set(owners),set(stores))
+        self.assertEqual(owners,weighted_owners(list(reversed(stores)),15,weights))
+        self.assertNotEqual(owners[stores[0]],owners[stores[1]])
+        loads=[sum(weights[s] for s in stores if owners[s]==i) for i in range(15)]
+        self.assertLess(max(loads),240)
+
+    def test_fallback_preserves_original_sha_assignment(self):
+        stores=[f"{n:08x}-0000-4000-8000-000000000000" for n in range(15)]
+        owners=weighted_owners(stores,15,{})
+        self.assertTrue(all(owners[s]==shard_for_uuid(s,15) for s in stores))
 
     def make_parts(self, root, stores):
         parts = root / "parts"
