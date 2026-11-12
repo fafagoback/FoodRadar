@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 import raw_capture
-from catalog_complete import _catalog_skus
+from catalog_complete import _catalog_skus, _native_subsections_from_catalog
 
 CASES = [
     ("Watsons Tianbei", "0fd40e62-4a52-49a5-8620-0706906896e1",
@@ -59,6 +59,10 @@ def main():
                     return saved_post(api_url, **kwargs)
                 session.post = monitored_post
                 try:
+                    if os.environ.get("FOODRADAR_FORCE_MISSING_SECTION_METADATA") == "1":
+                        # Simulate the real getStoreV1 omission observed on
+                        # 2026-11-12. Raw HTTP bodies remain untouched.
+                        base_data = {**base_data, "sections": []}
                     return original(session, store_uuid, base_data, folder,
                                     headers, capture_response, store_attempt)
                 finally:
@@ -69,8 +73,11 @@ def main():
                                            "lon": 121.52951826298867,
                                            "county": "台北市"}]}
             with patch.object(raw_capture, "capture_catalog",
-                              side_effect=tracked_catalog):
+                              side_effect=tracked_catalog), \
+                 patch("catalog_complete._native_subsections_from_catalog",
+                       wraps=_native_subsections_from_catalog) as native_fallback:
                 captured = raw_capture.fetch_store_raw(item, store_root, max_retries=1)
+                native_fallback_calls = native_fallback.call_count
             page_refs = captured.get("catalog_responses") or []
             verified_pages = []
             terminal_by_partition = defaultdict(list)
@@ -96,7 +103,10 @@ def main():
                       "catalog_calls": len(offsets),
                       "max_requested_offset": max(offsets, default=None),
                       "offset_1020_requested": 1020 in offsets,
-                      "error": captured.get("error")}
+                      "error": captured.get("error"),
+                      "missing_section_metadata_simulated":
+                          os.environ.get("FOODRADAR_FORCE_MISSING_SECTION_METADATA") == "1",
+                      "native_item_fallback_calls": native_fallback_calls}
             print("FOODRADAR_LIVE_1020_STORE=" +
                   json.dumps(record, ensure_ascii=False), flush=True)
             summary.append(record)
@@ -107,6 +117,8 @@ def main():
         and r["sections_finished"] == r["sections_total"]
         and (r["max_requested_offset"] is not None and
              r["max_requested_offset"] < 1000)
+        and (not r["missing_section_metadata_simulated"]
+             or r["native_item_fallback_calls"] > 0)
         for r in summary
     )
     report = {"passed": passed, "tested": len(summary), "stores": summary,
