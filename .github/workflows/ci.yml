@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 交叉比對兩家店完整原生分類的商品覆蓋率
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(cross1020):') }}
+        run: python scripts/cross_category_1020.py
       - name: 檢查原生店家商品預載與分頁筆數（兩家；不寫 HF / Turso）
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(page1020):') }}
         run: python scripts/probe_1020_page_size.py
