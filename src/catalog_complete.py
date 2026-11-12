@@ -83,6 +83,35 @@ def _subsections_for(base_data, section_uuid):
     return []
 
 
+def _native_subsections_from_catalog(raw_bodies, parent_uuid):
+    """Read real native subsection UUIDs from already captured parent HTTP bodies.
+
+    getStoreV1.sections can omit late categories even while aisles exposes them.
+    In that case, getCatalogPresentationV2's actual product groups and items
+    carry their native subsection UUIDs. Never invent or cache identifiers.
+    Do not treat the parent UUID itself as a leaf: Uber can return an empty
+    response for subsectionUuids=[parent] despite parent items existing.
+    """
+    ids = []
+    seen = set()
+    for body in raw_bodies:
+        _, groups = _catalog_entries(body)
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            standard = ((group.get("payload") or {}).get("standardItemsPayload") or {})
+            items = standard.get("catalogItems") or []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                native_id = item.get("subsectionUuid") or group.get("catalogSectionUUID")
+                if (isinstance(native_id, str) and native_id
+                        and native_id != parent_uuid and native_id not in seen):
+                    ids.append(native_id)
+                    seen.add(native_id)
+    return ids
+
+
 def _catalog_skus(raw_bodies):
     skus = set()
     for body in raw_bodies:
@@ -266,11 +295,23 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         if terminal:
             return records, bodies, "section" if subsection_uuid is None else "subsection", 0
         children = _subsections_for(base_data, current_uuid)
+        source = "getStoreV1_sections"
+        if not children:
+            # An API response can expose only a subset of the store's section
+            # descriptors. Real child UUIDs may still be available in items.
+            children = _native_subsections_from_catalog(bodies, current_uuid)
+            source = "catalog_native_item_subsections"
         if not children:
             raise RuntimeError(
                 f"Catalog {current_uuid} reached deep-offset boundary; "
                 "native subsection UUIDs unavailable, refusing partial menu")
         parent_skus = _catalog_skus(bodies)
+        print("CATALOG_NATIVE_SUBSECTIONS=" + json.dumps({
+            "store_uuid": store_uuid, "section_uuid": current_uuid,
+            "source": source, "children": len(children),
+            "known_parent_skus": len(parent_skus),
+            "offset_1020_requested": False,
+        }), flush=True)
         child_records, child_bodies = [], []
         for child in children:
             cr, cb, _, _ = verified_partition(

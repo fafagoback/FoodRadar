@@ -450,6 +450,78 @@ class CatalogCompleteness(unittest.TestCase):
         self.assertEqual(session.calls,
                          [("parent", 0), ("child", 0), ("grandchild", 0)])
 
+
+    def test_native_item_subsections_when_store_sections_omit_parent(self):
+        """Real Jinji #431347: aisles has section, getStoreV1.sections omits it."""
+        parent = "parent"
+        child = "native-child"
+        base = {"aisles": {"store": [{"catalogSectionUUID": parent}]},
+                "sections": [], "catalogSectionsMap": {}}
+        class ItemSourcedSession:
+            def __init__(self):
+                self.calls = []
+            def post(self, url, json, headers, timeout):
+                section = (json["storeFilters"]["sectionUuids"] or [None])[0]
+                subsection = (json["storeFilters"]["subsectionUuids"] or [None])[0]
+                offset = json["pagingInfo"]["offset"]
+                self.calls.append((section, subsection, offset))
+                if offset >= 1000:
+                    raise AssertionError("Forbidden deep offset request")
+                if subsection == child:
+                    ids, more = [("seen", child), ("new", child)], False
+                else:
+                    ids, more = [("seen", child)], True
+                entries = [{
+                    "catalogSectionUUID": child,
+                    "payload": {"standardItemsPayload": {"catalogItems": [
+                        {**sample_item(sid, sid, 10000), "subsectionUuid": sub}
+                        for sid, sub in ids]}}}]
+                return Response({"data": {
+                    "catalog": entries,
+                    "pagingInfo": {"hasMore": more, "offset": 1020 if more else 0}}})
+        session = ItemSourcedSession()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def save(directory, name, response):
+                file = directory / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(response.content)
+            meta = capture_catalog(session, "store", base, root, {}, save)
+            self.assertTrue(meta["catalog_complete"])
+            self.assertEqual(meta["catalog_section_reports"][0]["mode"],
+                             "native_children_before_deep_offset")
+            self.assertEqual(session.calls,
+                             [("parent", None, 0), (None, child, 0)])
+            raw = [json.loads((root/p["path"]).read_bytes())
+                   for p in meta["catalog_responses"]]
+            self.assertEqual(_item_ids(merge_catalog_pages(base, raw)),
+                             {"seen", "new"})
+
+    def test_item_sourced_children_missing_parent_skus_still_rejected(self):
+        """A real native child UUID does not justify hiding missing parent SKUs."""
+        parent = "parent"
+        child = "native-child"
+        base = {"aisles": {"store": [{"catalogSectionUUID": parent}]},
+                "sections": []}
+        class BadPartition:
+            def post(self, url, json, headers, timeout):
+                subsection = (json["storeFilters"]["subsectionUuids"] or [None])[0]
+                if subsection == child:
+                    ids, more = ["other"], False
+                else:
+                    ids, more = ["parent-only"], True
+                items = [{**sample_item(sid, sid, 10000),
+                          "subsectionUuid": child} for sid in ids]
+                return Response({"data": {
+                    "catalog": [{
+                        "catalogSectionUUID": child,
+                        "payload": {"standardItemsPayload": {"catalogItems": items}}}],
+                    "pagingInfo": {"hasMore": more, "offset": 1020 if more else 0}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "omitted 1"):
+                capture_catalog(BadPartition(), "store", base, Path(tmp), {},
+                                lambda directory, name, response: None)
+
 def _item_ids(native):
     ids=set()
     for group in native.get("catalogSectionsMap",{}).values():
