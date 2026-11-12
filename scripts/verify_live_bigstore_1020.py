@@ -197,7 +197,9 @@ def capture(store, qualifying_sections, root):
 def main():
     qualifying = []
     rejected = []
-    for store in STORES:
+    # User-requested repeat test of a single CURRENTLY over-1020 grocery store.
+    selected = STORES[:1]
+    for store in selected:
         try:
             sections = live_qualify(store)
             if sections:

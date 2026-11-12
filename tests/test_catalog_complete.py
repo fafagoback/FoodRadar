@@ -522,6 +522,52 @@ class CatalogCompleteness(unittest.TestCase):
                 capture_catalog(BadPartition(), "store", base, Path(tmp), {},
                                 lambda directory, name, response: None)
 
+
+    def test_incomplete_store_child_list_recovers_extra_real_item_subsection(self):
+        """A truncated getStoreV1 child list must not discard legitimate SKU groups."""
+        base = {"aisles": {"store": [{"catalogSectionUUID": "parent"}]},
+                "sections": [{"uuid": "parent", "subsectionUuids": ["child-a"]}],
+                "catalogSectionsMap": {}}
+        class SessionWithOmittedChild:
+            def __init__(self):
+                self.calls = []
+            def post(self, url, json, headers, timeout):
+                child = (json["storeFilters"]["subsectionUuids"] or [None])[0]
+                off = json["pagingInfo"]["offset"]
+                self.calls.append((child,off))
+                if off >= 1000:
+                    raise AssertionError("No deep page may be requested")
+                if child == "child-a":
+                    values, more = [("a", "child-a")], False
+                elif child == "child-b":
+                    values, more = [("b", "child-b")], False
+                else:
+                    values, more = [("a", "child-a"), ("b", "child-b")], True
+                groups = [{"catalogSectionUUID": subsection, "payload": {
+                    "standardItemsPayload": {"catalogItems": [
+                        {**sample_item(sku, sku, 10000),
+                         "subsectionUuid": subsection}]}}}
+                    for sku, subsection in values]
+                return Response({"status": "success", "data": {
+                    "catalog": groups,
+                    "pagingInfo": {"hasMore": more, "offset": 1020 if more else 0}}})
+        session = SessionWithOmittedChild()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def save(directory, filename, response):
+                target = directory / filename
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(response.content)
+            result = capture_catalog(session, "store", base, root, {}, save)
+            self.assertTrue(result["catalog_complete"])
+            self.assertEqual(session.calls,
+                             [(None, 0), ("child-a", 0), ("child-b", 0)])
+            self.assertEqual(result["catalog_section_reports"][0]["subsections"], 2)
+            raw = [json.loads((root / x["path"]).read_bytes())
+                   for x in result["catalog_responses"]]
+            self.assertEqual(_item_ids(merge_catalog_pages(base, raw)), {"a", "b"})
+
+
 def _item_ids(native):
     ids=set()
     for group in native.get("catalogSectionsMap",{}).values():

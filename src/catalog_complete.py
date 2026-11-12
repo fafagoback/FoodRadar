@@ -9,6 +9,7 @@ from menu_core import global_limiter
 
 CATALOG_API = "https://www.ubereats.com/api/getCatalogPresentationV2"
 MAX_CATALOG_PAGES = 250
+DEEP_OFFSET_BOUNDARY = 1000
 
 
 def _section_ids(data):
@@ -154,7 +155,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             # Never ask the upstream API for the known deep-offset boundary.
             # An unfinished partition is NOT complete until native children are
             # fetched to terminal pagination and audited against parent SKUs.
-            if stop_before_offset is not None and offset >= stop_before_offset:
+            if offset >= DEEP_OFFSET_BOUNDARY or (stop_before_offset is not None and offset >= stop_before_offset):
                 return records, bodies, False
             if offset in seen_offsets:
                 raise ValueError(f"Catalog loop at {section_uuid}/{subsection_uuid} {offset}")
@@ -320,6 +321,32 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             child_bodies.extend(cb)
         child_skus = _catalog_skus(child_bodies)
         missing = parent_skus - child_skus
+        # getStoreV1 may list only a subset of real native children. If that
+        # list fails to cover already observed parent SKUs, extract *additional*
+        # actual UUIDs from the parent HTTP item payload. These are evidence,
+        # not guessed or fabricated partition IDs.
+        if missing and source == "getStoreV1_sections":
+            extra = [
+                uuid for uuid in _native_subsections_from_catalog(bodies, current_uuid)
+                if uuid not in children and uuid not in visited and uuid != current_uuid
+            ]
+            if extra:
+                print("CATALOG_NATIVE_CHILD_GAP_RECOVERY=" + json.dumps({
+                    "store_uuid": store_uuid,
+                    "section_uuid": current_uuid,
+                    "metadata_child_count": len(children),
+                    "item_native_extra_child_count": len(extra),
+                    "missing_parent_skus_before": len(missing),
+                }), flush=True)
+                for child in extra:
+                    cr, cb, _, _ = verified_partition(
+                        section_index, parent_uuid, child, visited | {current_uuid})
+                    child_records.extend(cr)
+                    child_bodies.extend(cb)
+                child_skus = _catalog_skus(child_bodies)
+                missing = parent_skus - child_skus
+                children = children + extra
+                source = "getStoreV1_plus_catalog_native_item_subsections"
         if missing:
             raise RuntimeError(
                 f"Subsections for {current_uuid} omitted {len(missing)} "
@@ -335,6 +362,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             "parent_missing_from_children": len(missing),
             "avoided_offset": 1020,
             "mode": "native_children_before_deep_offset",
+            "child_uuid_source": source,
         }), flush=True)
         return child_records, child_bodies, "native_children_before_deep_offset", len(children)
 

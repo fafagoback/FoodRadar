@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 補強後測試全聯當下需 offset 1020 的真實分類與完整抓取
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(gapfix1020):') }}
+        run: python scripts/verify_live_bigstore_1020.py
       - name: 直接請求全聯北投明德店 offset 1020，記錄原始 API 回應
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(direct1020):') }}
         run: python scripts/probe_live_direct_1020.py
