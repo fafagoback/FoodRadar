@@ -69,12 +69,12 @@ def main():
         if summary:
             with open(summary, "a", encoding="utf-8") as out:
                 out.write(
-                    "\\n### 正式 Turso 唯讀驗證（已核對批次）\\n"
-                    "| 項目 | 正式資料庫結果 |\\n|---|---:|\\n"
-                    f"| 已發布批次 | {expected_batch} |\\n"
-                    f"| 店家索引筆數 | {observed['store_directory']} |\\n"
-                    f"| 商品筆數 | {observed['web_products']} |\\n"
-                    f"| 最新商品來源數 | {values.get('active_products', 'N/A')} |\\n")
+                    "\n### 正式 Turso 唯讀驗證（已核對批次）\n"
+                    "| 項目 | 正式資料庫結果 |\n|---|---:|\n"
+                    f"| 已發布批次 | {expected_batch} |\n"
+                    f"| 店家索引筆數 | {observed['store_directory']} |\n"
+                    f"| 商品筆數 | {observed['web_products']} |\n"
+                    f"| 最新商品來源數 | {values.get('active_products', 'N/A')} |\n")
     finally:
         remote.close()
 
