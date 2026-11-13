@@ -75,6 +75,30 @@ def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> b
     return True
 
 
+def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarantined):
+    """Require exact per-store accounting before preserving any invalid menu."""
+    from menu_core import canonical_store_uuid
+
+    expected_ids = {canonical_store_uuid(r['store_uuid'], r['store_url'])
+                    for r in successful_records}
+    verified_ids = {doc['store_uuid'] for doc in docs}
+    quarantined_ids = set(quarantined)
+    if (len(successful_records) != expected_raw or not docs
+            or len(docs) != len(verified_ids)
+            or len(quarantined) != len(quarantined_ids)
+            or verified_ids & quarantined_ids
+            or verified_ids | quarantined_ids != expected_ids):
+        raise ValueError('HF verified store coverage or quarantine UUID mismatch')
+    # If many apparently successful stores suddenly have no menu, treat the
+    # entire batch as suspicious (Uber outage/contract drift), not as a new
+    # observation. Historical Raw and live Turso must remain untouched.
+    if len(quarantined_ids) > max(1, len(expected_ids) // 20):
+        raise ValueError(
+            f'Excess empty-menu quarantine: {len(quarantined_ids)}/'
+            f'{len(expected_ids)} stores; refusing widespread catalog failure')
+    return quarantined_ids
+
+
 def restore_history(config, rebuild_all=False):
     """Replay unprocessed HF Raw from a verified checkpoint or from zero."""
     from concurrent.futures import ThreadPoolExecutor
@@ -166,23 +190,8 @@ def restore_history(config, rebuild_all=False):
             expected_raw = (meta['successful_store_count']
                             if raw_partial else len(meta['stores']))
             successful_records = [r for r in meta['stores'] if r.get('success')]
-            expected_ids = {canonical_store_uuid(r['store_uuid'],r['store_url'])
-                            for r in successful_records}
-            verified_ids = {doc['store_uuid'] for doc in docs}
-            quarantined_ids = set(quarantined)
-            # Reconcile exactly the same originally reported stores. A single
-            # verified empty native catalog may be isolated, but missing or
-            # duplicated identities and widespread failures still fail closed.
-            if (len(successful_records) != expected_raw or not docs
-                    or len(docs) != len(verified_ids)
-                    or verified_ids & quarantined_ids
-                    or verified_ids | quarantined_ids != expected_ids):
-                raise ValueError('HF verified store coverage or quarantine UUID mismatch')
-            if len(quarantined_ids) > max(1, len(expected_ids) // 20):
-                raise ValueError(
-                    f'Excess empty-menu quarantine in {current_batch}: '
-                    f'{len(quarantined_ids)}/{len(expected_ids)} stores; '
-                    'refusing to publish a widespread catalog failure')
+            quarantined_ids = validate_raw_replay_coverage(
+                successful_records, expected_raw, docs, quarantined)
             failed_store_uuids = sorted(set(failed_store_uuids) | quarantined_ids)
             is_partial = raw_partial or bool(quarantined_ids)
             t = perf_counter()
