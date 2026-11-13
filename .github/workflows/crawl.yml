@@ -210,6 +210,7 @@ jobs:
           path: |
             data/**/report.json
             data/**/store-identity-report.json
+            data/**/quarantine-report.json
             packed-report.json
             delta-report.json
             data/**/shard-reconciliation.json
