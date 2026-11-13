@@ -19,7 +19,10 @@ from pathlib import Path
 import requests
 
 from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter
-from catalog_complete import capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure
+from catalog_complete import (
+    capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure,
+    EmptyCatalogPagesError,
+)
 
 TW = timezone(timedelta(hours=8))
 
@@ -214,7 +217,9 @@ def archive_and_upload(root: Path, config: dict, batch: str,
     return record
 
 
-def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
+def documents_from_hf_raw(archive, manifest: dict, *,
+                          quarantined_store_uuids: list[str] | None = None) -> list[dict]:
+    """Replay verified Raw; callers must explicitly handle known empty-menu stores."""
     """ETL adapter: only for DB construction; never writes to HF Raw."""
     from menu_core import convert_api_data_to_schema, create_inactive_store_schema, normalize_store_uuid, canonical_store_uuid
     from snapshot_validation import validate_document
@@ -250,6 +255,7 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
     canonical_ids = {}
     repaired_url_id_mismatches = 0
     duplicate_canonical_stores = 0
+    empty_catalog_ids = set()
     for store in successful:
         if not store.get("success"):
             raise ValueError("Cannot publish an incomplete store capture")
@@ -276,10 +282,16 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
                 raise ValueError(f"Missing native menu: {raw}")
             pages = store.get("catalog_responses") or []
             if pages:
-                native = merge_catalog_pages(native, [
-                    json.loads(archive.extractfile(members[p["path"]]).read())
-                    for p in pages
-                ])
+                try:
+                    native = merge_catalog_pages(native, [
+                        json.loads(archive.extractfile(members[p["path"]]).read())
+                        for p in pages
+                    ])
+                except EmptyCatalogPagesError:
+                    # All original HTTP bodies and their hashes were verified above.
+                    # Do not use an empty menu as a product-disappearance signal.
+                    empty_catalog_ids.add(canonical_id)
+                    continue
             doc = convert_api_data_to_schema(native, store["store_url"])
         doc.update(
             store_uuid=canonical_id,
@@ -300,6 +312,17 @@ def documents_from_hf_raw(archive, manifest: dict) -> list[dict]:
             documents.append(doc)
     if len(documents) != len(canonical_ids):
         raise ValueError("Raw canonical storefront deduplication failed")
+    # Multiple feed cards may point to the same canonical storefront: a valid
+    # capture supersedes an empty duplicate. Never exclude a verified store.
+    quarantined = sorted(empty_catalog_ids - set(canonical_ids))
+    if quarantined:
+        if quarantined_store_uuids is None:
+            raise ValueError("Empty Raw catalog requires explicit per-store quarantine")
+        quarantined_store_uuids.extend(quarantined)
+        print("FOODRADAR_RAW_EMPTY_CATALOG_QUARANTINED=" + json.dumps({
+            "batch": batch, "count": len(quarantined), "store_uuids": quarantined,
+            "reason": "verified_native_catalog_pages_have_no_products",
+        }, ensure_ascii=False), flush=True)
     if duplicate_canonical_stores:
         print("FOODRADAR_RAW_DUPLICATE_STORES_MERGED=" + json.dumps({
             "batch": batch, "deduplicated": duplicate_canonical_stores,
