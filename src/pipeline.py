@@ -249,6 +249,14 @@ def restore_history(config, rebuild_all=False):
         conn.commit()
         destination=ROOT/'data'/batch
         destination.mkdir(parents=True,exist_ok=True)
+        if checkpoint and not processed:
+            # A cache-only republish must report the actual retained shops from
+            # the verified checkpoint rather than claiming there were none.
+            previous_excluded = conn.execute(
+                "SELECT value FROM metadata "
+                "WHERE key='latest_unverified_store_uuids'").fetchone()
+            if previous_excluded:
+                latest_excluded_store_uuids = json.loads(previous_excluded[0])
         quarantine_report = {
             'latest_batch': batch,
             'quarantined_empty_catalog_store_observations': sum(
