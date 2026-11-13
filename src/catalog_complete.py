@@ -405,6 +405,10 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     }
 
 
+class EmptyCatalogPagesError(ValueError):
+    """Verified Raw pages contain no products; preserve the previous store menu."""
+
+
 def merge_catalog_pages(native, raw_bodies):
     """Create an in-memory normalized view from separately archived HTTP page bodies.
 
@@ -426,7 +430,7 @@ def merge_catalog_pages(native, raw_bodies):
                 continue
             groups.append(entry)
     if not groups:
-        raise ValueError("Catalog pages yielded no products; cannot erase a menu")
+        raise EmptyCatalogPagesError("Catalog pages yielded no products; cannot erase a menu")
     native = dict(native)
     original = native.get("catalogSectionsMap") or {}
     # Prefer the category API's complete, priced items. Keep original sections
