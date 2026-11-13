@@ -5,6 +5,7 @@ metadata/table counts; the independent HF RAW script audits SKU-level prices.
 """
 import json
 import os
+from pathlib import Path
 
 from publish_turso_delta import Remote
 
@@ -26,6 +27,13 @@ def main():
             if row["key"] in selected:
                 try:values[row["key"]] = json.loads(row["value"])
                 except (ValueError, TypeError):values[row["key"]] = row["value"]
+        # A successful query against a stale database is not a successful
+        # release. Cross-check the exact batch prepared from HF Raw.
+        expected_batch = Path("data/latest.txt").read_text(encoding="utf-8").strip()
+        if not expected_batch or str(values.get("latest_batch")) != expected_batch:
+            raise ValueError(
+                f"Turso published batch does not match HF release: "
+                f"expected {expected_batch}, observed {values.get('latest_batch')}")
         observed = {}
         for table in ("store_directory","store_bundles","search_buckets","metadata"):
             observed[table] = remote.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"]
@@ -57,6 +65,16 @@ def main():
         print("FOODRADAR_LIVE_TURSO_AUDIT="+json.dumps(
             {"metadata":values,"physical_table_counts":observed},
             ensure_ascii=False,sort_keys=True),flush=True)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a", encoding="utf-8") as out:
+                out.write(
+                    "\\n### 正式 Turso 唯讀驗證（已核對批次）\\n"
+                    "| 項目 | 正式資料庫結果 |\\n|---|---:|\\n"
+                    f"| 已發布批次 | {expected_batch} |\\n"
+                    f"| 店家索引筆數 | {observed['store_directory']} |\\n"
+                    f"| 商品筆數 | {observed['web_products']} |\\n"
+                    f"| 最新商品來源數 | {values.get('active_products', 'N/A')} |\\n")
     finally:
         remote.close()
 
