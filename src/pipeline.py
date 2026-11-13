@@ -118,6 +118,8 @@ def restore_history(config, rebuild_all=False):
     conn = sqlite3.connect(temporary_db)
     conn.row_factory = sqlite3.Row
     replayed, skipped_incomplete = [], []
+    quarantined_batches = []
+    latest_excluded_store_uuids = []
     processed = 0
     totals = {'download_seconds': 0.0, 'decode_seconds': 0.0,
               'sqlite_apply_seconds': 0.0}
@@ -150,22 +152,39 @@ def restore_history(config, rebuild_all=False):
             dl = perf_counter()-t
             totals['download_seconds'] += dl
             t = perf_counter()
+            quarantined = []
             with tarfile.open(downloaded,'r:gz') as archive:
-                docs = documents_from_hf_raw(archive, meta)
+                docs = documents_from_hf_raw(
+                    archive, meta, quarantined_store_uuids=quarantined)
             decode = perf_counter()-t
             totals['decode_seconds'] += decode
-            is_partial = meta.get('complete') is False
+            raw_partial = meta.get('complete') is False
             failed_store_uuids = (
                 [canonical_store_uuid(s['store_uuid'], s['store_url'])
                  for s in meta['stores'] if not s.get('success')]
-                if is_partial else [])
+                if raw_partial else [])
             expected_raw = (meta['successful_store_count']
-                            if is_partial else len(meta['stores']))
+                            if raw_partial else len(meta['stores']))
             successful_records = [r for r in meta['stores'] if r.get('success')]
-            expected = len({canonical_store_uuid(r['store_uuid'],r['store_url'])
-                            for r in successful_records})
-            if len(successful_records) != expected_raw or len(docs) != expected:
-                raise ValueError('HF verified store count or canonical UUID mismatch')
+            expected_ids = {canonical_store_uuid(r['store_uuid'],r['store_url'])
+                            for r in successful_records}
+            verified_ids = {doc['store_uuid'] for doc in docs}
+            quarantined_ids = set(quarantined)
+            # Reconcile exactly the same originally reported stores. A single
+            # verified empty native catalog may be isolated, but missing or
+            # duplicated identities and widespread failures still fail closed.
+            if (len(successful_records) != expected_raw or not docs
+                    or len(docs) != len(verified_ids)
+                    or verified_ids & quarantined_ids
+                    or verified_ids | quarantined_ids != expected_ids):
+                raise ValueError('HF verified store coverage or quarantine UUID mismatch')
+            if len(quarantined_ids) > max(1, len(expected_ids) // 20):
+                raise ValueError(
+                    f'Excess empty-menu quarantine in {current_batch}: '
+                    f'{len(quarantined_ids)}/{len(expected_ids)} stores; '
+                    'refusing to publish a widespread catalog failure')
+            failed_store_uuids = sorted(set(failed_store_uuids) | quarantined_ids)
+            is_partial = raw_partial or bool(quarantined_ids)
             t = perf_counter()
             apply_snapshot(conn, docs, current_batch,
                            excluded_store_uuids=failed_store_uuids,
@@ -181,9 +200,17 @@ def restore_history(config, rebuild_all=False):
             replayed.append(manifest_path+':'+digest)
             processed += 1
             batch = current_batch
+            latest_excluded_store_uuids = failed_store_uuids
+            if quarantined_ids:
+                quarantined_batches.append({
+                    'batch': current_batch, 'store_count': len(quarantined_ids),
+                    'store_uuids': sorted(quarantined_ids),
+                })
             print('HF_RAW_TO_DB=' + json.dumps({
                 'batch':batch, 'verified_stores':len(docs),
                 'failed_stores_retaining_previous_data':len(failed_store_uuids),
+                'quarantined_empty_catalog_stores':len(quarantined_ids),
+                'raw_declared_complete':not raw_partial,
                 'replay_complete':not is_partial,
                 'replay_partial_verified':is_partial,
                 'download_seconds':round(dl,2),'decode_seconds':round(decode,2),
@@ -213,6 +240,19 @@ def restore_history(config, rebuild_all=False):
         conn.commit()
         destination=ROOT/'data'/batch
         destination.mkdir(parents=True,exist_ok=True)
+        quarantine_report = {
+            'latest_batch': batch,
+            'quarantined_empty_catalog_store_observations': sum(
+                row['store_count'] for row in quarantined_batches),
+            'quarantined_batches': quarantined_batches,
+            'latest_retained_store_uuids': latest_excluded_store_uuids,
+            'policy': 'up to 5 percent per batch, minimum one; preserve prior store data',
+        }
+        (destination/'quarantine-report.json').write_text(
+            json.dumps(quarantine_report, ensure_ascii=False, indent=2),
+            encoding='utf-8')
+        print('FOODRADAR_RAW_QUARANTINE_SUMMARY=' +
+              json.dumps(quarantine_report, ensure_ascii=False), flush=True)
         with sqlite3.connect(destination/'serving.db') as copy:
             conn.backup(copy)
         evidence={
@@ -254,6 +294,11 @@ def restore_history(config, rebuild_all=False):
                 out.write('\n### HF Raw → SQLite 執行效能\n| 階段 | 結果 |\n|---|---:|\n')
                 for key,value in timings.items():
                     out.write(f'| {key} | {value} |\n')
+                out.write(
+                    f"| empty_catalog_quarantined_observations | "
+                    f"{quarantine_report['quarantined_empty_catalog_store_observations']} |\n"
+                    f"| latest_retained_stores | "
+                    f"{len(quarantine_report['latest_retained_store_uuids'])} |\n")
     finally:
         conn.close()
 
