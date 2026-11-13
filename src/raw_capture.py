@@ -219,8 +219,10 @@ def archive_and_upload(root: Path, config: dict, batch: str,
 
 def documents_from_hf_raw(archive, manifest: dict, *,
                           quarantined_store_uuids: list[str] | None = None) -> list[dict]:
-    """Replay verified Raw; callers must explicitly handle known empty-menu stores."""
-    """ETL adapter: only for DB construction; never writes to HF Raw."""
+    """Convert verified HF Raw to DB documents without mutating the archive.
+
+    Explicitly report empty-menu stores to the caller for safe exclusion.
+    """
     from menu_core import convert_api_data_to_schema, create_inactive_store_schema, normalize_store_uuid, canonical_store_uuid
     from snapshot_validation import validate_document
 
