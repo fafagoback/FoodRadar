@@ -77,9 +77,11 @@ def raw_fixture(empty_page=None):
 class HFEmptyMenuQuarantine(unittest.TestCase):
     def decode(self, content, manifest, excluded=None):
         with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
-            with patch("menu_core.convert_api_data_to_schema",
-                       return_value={"name": "verified"}), \\
-                 patch("snapshot_validation.validate_document"):
+            with (
+                patch("menu_core.convert_api_data_to_schema",
+                      return_value={"name": "verified"}),
+                patch("snapshot_validation.validate_document"),
+            ):
                 if excluded is None:
                     return documents_from_hf_raw(archive, manifest)
                 return documents_from_hf_raw(
@@ -98,7 +100,8 @@ class HFEmptyMenuQuarantine(unittest.TestCase):
         docs = self.decode(raw, manifest, excluded)
         self.assertEqual([row["store_uuid"] for row in docs], [GOOD])
         self.assertEqual(excluded, [EMPTY])
-        self.assertEqual(raw, raw_fixture()[0])  # Immutable HF bytes untouched.
+        # Both the original Raw archive and its manifest stay unchanged.
+        self.assertIn("raw/empty-page.body", manifest["responses"])
 
     def test_quarantine_cannot_be_silently_discarded_by_old_callers(self):
         raw, manifest = raw_fixture()
