@@ -126,6 +126,34 @@ class SameRunAPIRecheck(unittest.TestCase):
             self.assertEqual(result["promo_recheck"]["previous_watch"], old_watch)
             self.assertNotIn("item-0000", result["promotion_watch"])
 
+    def test_after_retry_failure_next_batch_uses_original_trusted_sku_witness(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = write_capture(root, total=130, bogo=0)
+            old_watch = {"item-0000": [13900, 2]}
+            checked = verify_suspicious_store(
+                {"store_uuid": SID}, root, original,
+                {"total_skus": 130, "bogo": 1, "direct_discount": 0},
+                "20261116063000", now=NOW, previous_watch=old_watch,
+                fetch_again=lambda _store, _folder: {
+                    "store_uuid": SID, "success": False, "error": "HTTP 503"})
+            manifest = root / "latest.json"
+            manifest.write_text(json.dumps({
+                "format": "foodradar-immutable-http-body-v1",
+                "batch_id": "20261116073000",
+                "stores": [checked],
+            }), encoding="utf8")
+            with (
+                patch.dict(os.environ, {"HF_TOKEN": "offline-fixture"}),
+                patch("huggingface_hub.hf_hub_download",
+                      return_value=str(manifest)),
+            ):
+                baseline = latest_raw_promotion_baseline({
+                    "hf_repo_id": "hub-google/FoodRadar", "hf_folder": "Raw"})
+            self.assertTrue(baseline[SID]["stats"]["_recheck_required"])
+            self.assertEqual(baseline[SID]["promotion_watch"], old_watch)
+            self.assertEqual(baseline[SID]["batch"], "20261116063000")
+
     def test_unconfirmed_promotions_do_not_replace_hf_baseline(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
