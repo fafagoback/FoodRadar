@@ -24,6 +24,7 @@ from feed_core import scan_single_point, extract_stores_from_feed
 from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
 from catalog_complete import is_recoverable_catalog_failure
+from promo_api_recheck import verify_suspicious_store
 
 ROOT = Path(__file__).resolve().parents[1]
 TW = timezone(timedelta(hours=8))
@@ -87,6 +88,51 @@ def latest_raw_workload_weights(config):
 
 
 
+def latest_raw_promotion_baseline(config):
+    """Load tiny per-store promotion counts from the last immutable HF manifests.
+
+    Never fetch full raw archives or a live shop just to obtain a baseline.
+    Missing HF data disables historic comparison, not the whole crawler.
+    """
+    if not os.environ.get("HF_TOKEN"):
+        return {}
+    try:
+        from huggingface_hub import hf_hub_download
+        repo = config["hf_repo_id"]
+        folder = config["hf_folder"].strip("/")
+        candidates = []
+        for pointer in ("latest.json", "latest-partial.json"):
+            try:
+                blob = Path(hf_hub_download(
+                    repo, f"{folder}/{pointer}", repo_type="dataset",
+                    token=os.environ["HF_TOKEN"]))
+                manifest = json.loads(blob.read_text(encoding="utf8"))
+                if manifest.get("format") == "foodradar-immutable-http-body-v1":
+                    candidates.append(manifest)
+            except (OSError, ValueError):
+                continue
+        baseline = {}
+        for manifest in sorted(candidates, key=lambda m: str(m.get("batch_id") or ""), reverse=True):
+            batch = str(manifest.get("batch_id") or "")
+            for store in manifest.get("stores") or []:
+                if store.get("success") is not True:
+                    continue
+                stats = store.get("promotion_stats")
+                if not isinstance(stats, dict) or "total_skus" not in stats:
+                    continue
+                sid = canonical_store_uuid(store["store_uuid"], store["store_url"])
+                baseline.setdefault(sid, {"batch": batch, "stats": stats})
+        print("FOODRADAR_PREVIOUS_PROMOTION_BASELINE=" + json.dumps({
+            "stores": len(baseline), "manifests": len(candidates)
+        }), flush=True)
+        return baseline
+    except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+        print("FOODRADAR_PROMOTION_BASELINE_UNAVAILABLE=" + json.dumps({
+            "reason": str(exc)[:160]
+        }), flush=True)
+        return {}
+
+
 def public_ip() -> str | None:
     """Diagnostic only: GitHub does not guarantee unique egress IPs."""
     try:
@@ -133,6 +179,7 @@ def save_shared_discovery(config: dict, root: Path = ROOT):
         for p in sorted(raw.rglob("*.body"))
     }
     weights = latest_raw_workload_weights(config)
+    previous_promotions = latest_raw_promotion_baseline(config)
     ownership = weighted_owners(stores, 15, weights)
     loads = [0] * 15
     for sid, owner in ownership.items():
@@ -148,6 +195,7 @@ def save_shared_discovery(config: dict, root: Path = ROOT):
         "source_sha": os.getenv("GITHUB_SHA", "local"),
         "latitude": config["latitude"], "longitude": config["longitude"],
         "feed_pages": pages, "stores": [stores[sid] for sid in sorted(stores)],
+        "previous_promotion_stats": previous_promotions,
         "raw_checksums": bodies,
     }
     path = folder / "discovery.json"
@@ -233,6 +281,12 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
     assigned = sorted(
         sid for sid in discovered
         if (owners[sid] if owners is not None else shard_for_uuid(sid, count)) == index)
+    baseline = {}
+    if discovery_file is not None:
+        baseline = json.loads(discovery_file.read_text(encoding="utf8")).get(
+            "previous_promotion_stats") or {}
+        if not isinstance(baseline, dict):
+            raise ValueError("Invalid previous promotion baseline in shared discovery")
     captured = []
     for completed, store_uuid in enumerate(assigned, 1):
         item = discovered[store_uuid]
@@ -243,6 +297,18 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
                 "store_uuid": store_uuid, "store_url": item["store_url"],
                 "success": False, "error": f"{type(exc).__name__}: {exc}",
             }
+        if result.get("success") is True and not result.get("inactive"):
+            prior = baseline.get(store_uuid) or {}
+            try:
+                result = verify_suspicious_store(
+                    item, raw, result, prior.get("stats"), prior.get("batch", ""))
+            except Exception as exc:
+                # A new diagnostic must never rewrite a successfully captured
+                # HTTP observation into a claim that the crawler failed.
+                result["promotion_stats_error"] = type(exc).__name__ + ": " + str(exc)[:180]
+                print("FOODRADAR_PROMO_DIAGNOSTIC_UNAVAILABLE=" + json.dumps({
+                    "store_uuid": store_uuid, "reason": result["promotion_stats_error"]
+                }), flush=True)
         captured.append(result)
         if completed % 10 == 0 or completed == len(assigned):
             print("FOODRADAR_SHARD_PROGRESS=" + json.dumps({
@@ -510,6 +576,10 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             {"uuid": s["store_uuid"], "error": s.get("error")} for s in failures],
         "sum_api_requests": sum(m.get("api", {}).get("requests", 0) for m in metadata),
         "sum_429_events": sum(m.get("api", {}).get("rate_limit_events", 0) for m in metadata),
+        "promo_api_rechecks": {
+            state: sum((s.get("promo_recheck") or {}).get("status") == state for s in stores)
+            for state in ("MATCHED", "CONFLICT", "UNAVAILABLE")
+        },
     }
     (output / "shard-reconciliation.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
