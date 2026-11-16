@@ -280,6 +280,16 @@ def documents_from_hf_raw(archive, manifest: dict, *,
                 secondary = recheck.get("second_response_path")
                 if not isinstance(secondary, str) or secondary not in members:
                     raise ValueError("Missing immutable second API capture")
+                second_pages = recheck.get("second_catalog_response_paths")
+                if second_pages is not None:
+                    if (not isinstance(second_pages, list)
+                            or len(second_pages) != recheck.get("second_catalog_pages")
+                            or len(second_pages) != len(set(second_pages))
+                            or any(not isinstance(name, str)
+                                   or name not in members
+                                   or not name.startswith(recheck.get("raw_prefix", "#missing#"))
+                                   for name in second_pages)):
+                        raise ValueError("Missing or inconsistent independent API catalog evidence")
             if recheck.get("status") in QUARANTINE_STATUSES:
                 # Inconclusive is NOT a claim that the first API response was
                 # wrong. Keep both HTTP captures; retain prior DB prices until
