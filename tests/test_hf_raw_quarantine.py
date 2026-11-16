@@ -150,6 +150,33 @@ class ReplayCoverageGuard(unittest.TestCase):
                 self.records, 100,
                 [{"store_uuid": uid} for uid in ids[6:]], ids[:6])
 
+    def test_many_failed_second_api_checks_do_not_masquerade_as_empty_catalogs(self):
+        ids = self.ids
+        # The independent API is sometimes temporarily unavailable.  These
+        # stores keep their older prices, while unrelated shops update normally.
+        # This must NOT trigger the separate 5% "empty grocery menu" guard.
+        result = validate_raw_replay_coverage(
+            self.records, 100,
+            [{"store_uuid": uid} for uid in ids[8:]], ids[:8],
+            promo_quarantined=ids[:8])
+        self.assertEqual(result, set(ids[:8]))
+
+    def test_api_recheck_exclusion_must_be_accounted_in_raw_quarantine(self):
+        ids = self.ids
+        with self.assertRaisesRegex(ValueError, "absent from excluded"):
+            validate_raw_replay_coverage(
+                self.records, 100,
+                [{"store_uuid": uid} for uid in ids[1:]], [ids[0]],
+                promo_quarantined=[ids[1]])
+
+    def test_empty_catalog_guard_still_applies_with_api_recheck_exclusions(self):
+        ids = self.ids
+        with self.assertRaisesRegex(ValueError, "Excess empty-menu quarantine"):
+            validate_raw_replay_coverage(
+                self.records, 100,
+                [{"store_uuid": uid} for uid in ids[10:]], ids[:10],
+                promo_quarantined=ids[:4])
+
     def test_unknown_id_overlap_and_zero_verified_stores_fail_closed(self):
         ids = self.ids
         with self.assertRaisesRegex(ValueError, "UUID mismatch"):
