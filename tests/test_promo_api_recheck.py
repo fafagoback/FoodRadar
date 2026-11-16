@@ -107,9 +107,11 @@ class SameRunAPIRecheck(unittest.TestCase):
                     },
                 }],
             }), encoding="utf8")
-            with patch.dict(os.environ, {"HF_TOKEN": "offline-fixture"}), \\
-                 patch("huggingface_hub.hf_hub_download",
-                       return_value=str(latest)):
+            with (
+                patch.dict(os.environ, {"HF_TOKEN": "offline-fixture"}),
+                patch("huggingface_hub.hf_hub_download",
+                      return_value=str(latest)),
+            ):
                 baseline = latest_raw_promotion_baseline({
                     "hf_repo_id": "hub-google/FoodRadar", "hf_folder": "Raw"})
             saved = baseline[SID]["stats"]
