@@ -122,11 +122,25 @@ def latest_raw_promotion_baseline(config):
             for store in manifest.get("stores") or []:
                 if store.get("success") is not True:
                     continue
+                sid = canonical_store_uuid(store["store_uuid"], store["store_url"])
+                if sid in baseline:
+                    continue
+                recheck = store.get("promo_recheck") or {}
+                if recheck.get("status") in ("CONFLICT", "UNAVAILABLE"):
+                    # This observation was not released as a valid price.
+                    # Never allow its counts to become the next trusted baseline.
+                    prior_stats = recheck.get("previous_stats")
+                    trusted = dict(prior_stats) if isinstance(prior_stats, dict) else {}
+                    trusted["_recheck_required"] = True
+                    baseline[sid] = {
+                        "batch": str(recheck.get("previous_batch") or batch),
+                        "stats": trusted,
+                    }
+                    continue
                 stats = store.get("promotion_stats")
                 if not isinstance(stats, dict) or "total_skus" not in stats:
                     continue
-                sid = canonical_store_uuid(store["store_uuid"], store["store_url"])
-                baseline.setdefault(sid, {"batch": batch, "stats": stats})
+                baseline[sid] = {"batch": batch, "stats": stats}
         print("FOODRADAR_PREVIOUS_PROMOTION_BASELINE=" + json.dumps({
             "stores": len(baseline), "manifests": len(candidates)
         }), flush=True)
