@@ -311,6 +311,12 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
                 # A new diagnostic must never rewrite a successfully captured
                 # HTTP observation into a claim that the crawler failed.
                 result["promotion_stats_error"] = type(exc).__name__ + ": " + str(exc)[:180]
+                # A broken verifier must NOT silently publish an unverified
+                # first observation as a confirmed historical price.
+                result["promo_recheck"] = {
+                    "status": "UNAVAILABLE", "trigger": "verifier_exception",
+                    "error": result["promotion_stats_error"],
+                }
                 print("FOODRADAR_PROMO_DIAGNOSTIC_UNAVAILABLE=" + json.dumps({
                     "store_uuid": store_uuid, "reason": result["promotion_stats_error"]
                 }), flush=True)
