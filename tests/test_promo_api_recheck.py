@@ -93,6 +93,8 @@ class SameRunAPIRecheck(unittest.TestCase):
             self.assertEqual(result["promo_recheck"]["status"], "MATCHED")
             evidence = result["promo_recheck"]["second_response_path"]
             self.assertTrue((root / evidence).is_file())
+            self.assertEqual(len(result["promo_recheck"]["second_catalog_response_paths"]), 1)
+            self.assertTrue((root / result["promo_recheck"]["second_catalog_response_paths"][0]).is_file())
             self.assertTrue(result["success"])
 
     def test_two_api_responses_disagree_is_not_silently_verified(self):
@@ -125,13 +127,48 @@ class SameRunAPIRecheck(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual(result["promotion_stats"]["total_skus"], 130)
 
+    def test_one_missing_sku_cannot_pass_as_verified(self):
+        first = {"items": {f"item-{i}": (100, "NONE", None, None)
+                           for i in range(120)}}
+        second = {"items": {f"item-{i}": (100, "NONE", None, None)
+                            for i in range(119)}}
+        result = compare_views(first, second)
+        self.assertEqual(result["status"], "UNAVAILABLE")
+        self.assertEqual(result["missing_in_second"], 1)
+        self.assertGreater(result["common_coverage_pct"], 99)
+
+    def test_unreadable_primary_api_is_not_silently_published(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = write_capture(root)
+            (root / source["response_path"]).write_text(
+                '{"data": null}', encoding="utf8")
+            result = verify_suspicious_store(
+                {"store_uuid": SID}, root, source, None, now=NOW)
+            self.assertEqual(result["promo_recheck"]["status"], "UNAVAILABLE")
+            self.assertEqual(result["promo_recheck"]["trigger"],
+                             "initial_native_parse_unavailable")
+
+    def test_recheck_different_store_id_cannot_be_matched(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = write_capture(root)
+            result = verify_suspicious_store(
+                {"store_uuid": SID}, root, original,
+                {"total_skus": 130, "bogo": 40, "direct_discount": 30},
+                "20261116063000",
+                fetch_again=lambda _item, folder: write_capture(folder, sid=GOOD),
+                now=NOW)
+            self.assertEqual(result["promo_recheck"]["status"], "UNAVAILABLE")
+            self.assertIn("different store UUID", result["promo_recheck"]["error"])
+
     def test_incomplete_second_catalog_is_not_counted_as_match(self):
         first = {"items": {f"item-{i}": (100, "NONE", None, None)
                            for i in range(120)}}
         second = {"items": {f"item-{i}": (100, "NONE", None, None)
                             for i in range(50)}}
         result = compare_views(first, second)
-        self.assertEqual(result["status"], "CONFLICT")
+        self.assertEqual(result["status"], "UNAVAILABLE")
         self.assertLess(result["common_coverage_pct"], 90)
 
 
