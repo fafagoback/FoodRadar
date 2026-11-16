@@ -51,6 +51,7 @@ def _signature(item):
     verified_status = (verified or {}).get("status", "UNVERIFIED")
     original_cents = (verified or {}).get("original_total_cents")
     payable_cents = (verified or {}).get("payable_total_cents")
+    received_qty = (verified or {}).get("received_quantity")
     validation_reason = (verified or {}).get("reason") if verified_status != "VERIFIED_MENU" else None
     if kind == "BOGO":
         rank = 3
@@ -65,6 +66,7 @@ def _signature(item):
     return sku, (
         price_cents, kind, buy, free,
         verified_status, original_cents, payable_cents, validation_reason,
+        received_qty,
     ), rank
 
 
@@ -124,11 +126,23 @@ def read_capture_view(raw_root: Path, store: dict) -> dict:
     counts["signature_sha256"] = hashlib.sha256(
         json.dumps(sorted(selected.items()), separators=(",", ":"), ensure_ascii=False).encode()
     ).hexdigest()
-    return {"stats": counts, "items": selected}
+    # Retain ONLY native-verified promoted SKUs. This compact historic witness
+    # lets the next run catch one vanished BOGO without requiring a full Raw
+    # archive download or changing the seven-day price formula.
+    watch = {}
+    for sku, evidence in selected.items():
+        _, kind, _, _, status, _, payable, _, received = evidence
+        if (kind in PROMOTIONS and status == "VERIFIED_MENU"
+                and type(payable) is int and payable > 0
+                and type(received) is int and received > 0):
+            watch[sku] = [payable, received]
+    return {"stats": counts, "items": selected, "promotion_watch": watch}
 
 
 def trigger_reason(previous: dict | None, current: dict,
-                   prior_batch: str = "", now: datetime | None = None) -> str | None:
+                   prior_batch: str = "", now: datetime | None = None,
+                   *, previous_watch: dict | None = None,
+                   current_items: dict | None = None) -> str | None:
     """Trigger only a repeat *check*, not an automatic error classification."""
     now = now or datetime.now(TW)
     if previous and previous.get("_recheck_required") is True:
@@ -139,6 +153,28 @@ def trigger_reason(previous: dict | None, current: dict,
         try:
             previous_at = datetime.strptime(prior_batch, "%Y%m%d%H%M%S").replace(tzinfo=TW)
             if timedelta(0) <= now - previous_at <= timedelta(hours=72):
+                # The store's overall deal count might barely change even
+                # while one previously promoted SKU suddenly doubles its
+                # effective unit price. Check that specific SKU first.
+                if isinstance(previous_watch, dict) and isinstance(current_items, dict):
+                    for sku, old in previous_watch.items():
+                        if sku not in current_items:
+                            continue  # Missing product is not a verified price increase.
+                        if (not isinstance(old, (list, tuple)) or len(old) != 2
+                                or type(old[0]) is not int or type(old[1]) is not int
+                                or old[0] <= 0 or old[1] <= 0):
+                            continue
+                        new = current_items[sku]
+                        if not isinstance(new, (list, tuple)) or len(new) < 9:
+                            return "previously_promoted_sku_incomplete"
+                        if new[4] != "VERIFIED_MENU":
+                            return "previously_promoted_sku_unverified"
+                        payable, qty = new[6], new[8]
+                        if (type(payable) is not int or type(qty) is not int
+                                or payable <= 0 or qty <= 0):
+                            return "previously_promoted_sku_invalid_price"
+                        if payable * old[1] > old[0] * qty:
+                            return "previously_promoted_sku_price_increase"
                 if current["total_skus"] >= 100:
                     for field in ("bogo", "direct_discount"):
                         before = int(previous.get(field) or 0)
@@ -187,7 +223,8 @@ def compare_views(first: dict, second: dict) -> dict:
 
 def verify_suspicious_store(store_item: dict, raw_root: Path, original: dict,
                             previous: dict | None, previous_batch: str = "",
-                            fetch_again=None, now: datetime | None = None) -> dict:
+                            fetch_again=None, now: datetime | None = None,
+                            *, previous_watch: dict | None = None) -> dict:
     """Capture again immediately, using fetch_store_raw's fresh HTTP Session.
 
     The second original HTTP record set is stored under raw/promo-recheck/...
@@ -206,11 +243,16 @@ def verify_suspicious_store(store_item: dict, raw_root: Path, original: dict,
         # valid price observation. Retain the prior DB state and original Raw.
         original["promo_recheck"] = {
             "status": "UNAVAILABLE", "trigger": "initial_native_parse_unavailable",
-            "error": reason,
+            "error": reason, "previous_stats": previous,
+            "previous_batch": previous_batch,
+            "previous_watch": previous_watch if isinstance(previous_watch, dict) else {},
         }
         return original
     original["promotion_stats"] = first["stats"]
-    reason = trigger_reason(previous, first["stats"], previous_batch, now)
+    original["promotion_watch"] = first["promotion_watch"]
+    reason = trigger_reason(
+        previous, first["stats"], previous_batch, now,
+        previous_watch=previous_watch, current_items=first["items"])
     if not reason:
         return original
     if fetch_again is None:
@@ -241,8 +283,18 @@ def verify_suspicious_store(store_item: dict, raw_root: Path, original: dict,
             retry_info["second_catalog_pages"] = len(retry_info["second_catalog_response_paths"])
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, json.JSONDecodeError) as exc:
         retry_info["error"] = type(exc).__name__ + ": " + str(exc)[:250]
+    if retry_info["status"] in QUARANTINE_STATUSES:
+        # Keep the last trusted watch for the next batch; the unconfirmed
+        # first capture cannot become tomorrow's baseline.
+        retry_info["previous_watch"] = (
+            previous_watch if isinstance(previous_watch, dict) else {})
     original["promo_recheck"] = retry_info
+    log_record = {
+        k: v for k, v in retry_info.items() if k != "previous_watch"
+    }
+    if "previous_watch" in retry_info:
+        log_record["previous_watch_count"] = len(retry_info["previous_watch"])
     print("FOODRADAR_PROMO_API_RECHECK=" + json.dumps({
-        "store_uuid": sid, **retry_info,
+        "store_uuid": sid, **log_record,
     }, ensure_ascii=False), flush=True)
     return original
