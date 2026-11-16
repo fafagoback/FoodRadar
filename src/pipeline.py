@@ -75,7 +75,7 @@ def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> b
     return True
 
 
-def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarantined):
+def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarantined, promo_quarantined=None):
     """Require exact per-store accounting before preserving any invalid menu."""
     from menu_core import canonical_store_uuid
 
@@ -83,6 +83,9 @@ def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarant
                     for r in successful_records}
     verified_ids = {doc['store_uuid'] for doc in docs}
     quarantined_ids = set(quarantined)
+    promo_ids = set(promo_quarantined or [])
+    if not promo_ids <= quarantined_ids:
+        raise ValueError('Promotion recheck quarantine is absent from excluded IDs')
     if (len(successful_records) != expected_raw or not docs
             or len(docs) != len(verified_ids)
             or len(quarantined) != len(quarantined_ids)
@@ -92,9 +95,10 @@ def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarant
     # If many apparently successful stores suddenly have no menu, treat the
     # entire batch as suspicious (Uber outage/contract drift), not as a new
     # observation. Historical Raw and live Turso must remain untouched.
-    if len(quarantined_ids) > max(1, len(expected_ids) // 20):
+    empty_catalog_ids = quarantined_ids - promo_ids
+    if len(empty_catalog_ids) > max(1, len(expected_ids) // 20):
         raise ValueError(
-            f'Excess empty-menu quarantine: {len(quarantined_ids)}/'
+            f'Excess empty-menu quarantine: {len(empty_catalog_ids)}/'
             f'{len(expected_ids)} stores; refusing widespread catalog failure')
     return quarantined_ids
 
@@ -190,14 +194,16 @@ def restore_history(config, rebuild_all=False):
             expected_raw = (meta['successful_store_count']
                             if raw_partial else len(meta['stores']))
             successful_records = [r for r in meta['stores'] if r.get('success')]
-            quarantined_ids = validate_raw_replay_coverage(
-                successful_records, expected_raw, docs, quarantined)
             promo_recheck_quarantined = {
                 canonical_store_uuid(s["store_uuid"], s["store_url"])
                 for s in meta["stores"]
-                if (s.get("promo_recheck") or {}).get("status")
+                if s.get("success") is True
+                and (s.get("promo_recheck") or {}).get("status")
                 in ("CONFLICT", "UNAVAILABLE")
-            } & quarantined_ids
+            }
+            quarantined_ids = validate_raw_replay_coverage(
+                successful_records, expected_raw, docs, quarantined,
+                promo_quarantined=promo_recheck_quarantined)
             empty_catalog_quarantined = quarantined_ids - promo_recheck_quarantined
             failed_store_uuids = sorted(set(failed_store_uuids) | quarantined_ids)
             is_partial = raw_partial or bool(quarantined_ids)
