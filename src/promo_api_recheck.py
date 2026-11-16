@@ -131,6 +131,10 @@ def trigger_reason(previous: dict | None, current: dict,
                    prior_batch: str = "", now: datetime | None = None) -> str | None:
     """Trigger only a repeat *check*, not an automatic error classification."""
     now = now or datetime.now(TW)
+    if previous and previous.get("_recheck_required") is True:
+        # Last run could not confirm the API result; do not allow a later
+        # run to silently treat that unconfirmed state as an accepted baseline.
+        return "previous_api_recheck_inconclusive"
     if previous:
         try:
             previous_at = datetime.strptime(prior_batch, "%Y%m%d%H%M%S").replace(tzinfo=TW)
