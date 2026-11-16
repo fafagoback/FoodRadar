@@ -192,6 +192,13 @@ def restore_history(config, rebuild_all=False):
             successful_records = [r for r in meta['stores'] if r.get('success')]
             quarantined_ids = validate_raw_replay_coverage(
                 successful_records, expected_raw, docs, quarantined)
+            promo_recheck_quarantined = {
+                canonical_store_uuid(s["store_uuid"], s["store_url"])
+                for s in meta["stores"]
+                if (s.get("promo_recheck") or {}).get("status")
+                in ("CONFLICT", "UNAVAILABLE")
+            } & quarantined_ids
+            empty_catalog_quarantined = quarantined_ids - promo_recheck_quarantined
             failed_store_uuids = sorted(set(failed_store_uuids) | quarantined_ids)
             is_partial = raw_partial or bool(quarantined_ids)
             t = perf_counter()
@@ -213,12 +220,15 @@ def restore_history(config, rebuild_all=False):
             if quarantined_ids:
                 quarantined_batches.append({
                     'batch': current_batch, 'store_count': len(quarantined_ids),
+                    'empty_catalog_store_count': len(empty_catalog_quarantined),
+                    'promo_api_recheck_store_count': len(promo_recheck_quarantined),
                     'store_uuids': sorted(quarantined_ids),
                 })
             print('HF_RAW_TO_DB=' + json.dumps({
                 'batch':batch, 'verified_stores':len(docs),
                 'failed_stores_retaining_previous_data':len(failed_store_uuids),
-                'quarantined_empty_catalog_stores':len(quarantined_ids),
+                'quarantined_empty_catalog_stores':len(empty_catalog_quarantined),
+                'quarantined_promo_api_rechecks':len(promo_recheck_quarantined),
                 'raw_declared_complete':not raw_partial,
                 'replay_complete':not is_partial,
                 'replay_partial_verified':is_partial,
@@ -260,7 +270,9 @@ def restore_history(config, rebuild_all=False):
         quarantine_report = {
             'latest_batch': batch,
             'quarantined_empty_catalog_store_observations': sum(
-                row['store_count'] for row in quarantined_batches),
+                row['empty_catalog_store_count'] for row in quarantined_batches),
+            'quarantined_promo_api_recheck_observations': sum(
+                row['promo_api_recheck_store_count'] for row in quarantined_batches),
             'quarantined_batches': quarantined_batches,
             'latest_retained_store_uuids': latest_excluded_store_uuids,
             'policy': 'up to 5 percent per batch, minimum one; preserve prior store data',
