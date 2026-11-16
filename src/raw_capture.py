@@ -19,6 +19,7 @@ from pathlib import Path
 import requests
 
 from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter
+from promo_api_recheck import QUARANTINE_STATUSES
 from catalog_complete import (
     capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure,
     EmptyCatalogPagesError,
@@ -258,6 +259,7 @@ def documents_from_hf_raw(archive, manifest: dict, *,
     repaired_url_id_mismatches = 0
     duplicate_canonical_stores = 0
     empty_catalog_ids = set()
+    unconfirmed_promotion_ids = set()
     for store in successful:
         if not store.get("success"):
             raise ValueError("Cannot publish an incomplete store capture")
@@ -270,6 +272,20 @@ def documents_from_hf_raw(archive, manifest: dict, *,
         raw = store["response_path"]
         if store.get("catalog_responses") and store.get("catalog_complete") is not True:
             raise ValueError("Refusing to replay incomplete catalog capture")
+        recheck = store.get("promo_recheck") or {}
+        if recheck:
+            if recheck.get("status") not in ("MATCHED", *QUARANTINE_STATUSES):
+                raise ValueError("Invalid historical promotion API recheck status")
+            if recheck.get("status") in ("MATCHED", "CONFLICT"):
+                secondary = recheck.get("second_response_path")
+                if not isinstance(secondary, str) or secondary not in members:
+                    raise ValueError("Missing immutable second API capture")
+            if recheck.get("status") in QUARANTINE_STATUSES:
+                # Inconclusive is NOT a claim that the first API response was
+                # wrong. Keep both HTTP captures; retain prior DB prices until
+                # a verified subsequent observation arrives.
+                unconfirmed_promotion_ids.add(canonical_id)
+                continue
         if store.get("inactive"):
             doc = create_inactive_store_schema(
                 {"name": "", "city": ""}, store["store_url"],
@@ -316,14 +332,24 @@ def documents_from_hf_raw(archive, manifest: dict, *,
         raise ValueError("Raw canonical storefront deduplication failed")
     # Multiple feed cards may point to the same canonical storefront: a valid
     # capture supersedes an empty duplicate. Never exclude a verified store.
-    quarantined = sorted(empty_catalog_ids - set(canonical_ids))
+    empty_quarantined = sorted(empty_catalog_ids - set(canonical_ids))
+    promotion_quarantined = sorted(unconfirmed_promotion_ids - set(canonical_ids))
+    quarantined = sorted(set(empty_quarantined) | set(promotion_quarantined))
     if quarantined:
         if quarantined_store_uuids is None:
-            raise ValueError("Empty Raw catalog requires explicit per-store quarantine")
+            raise ValueError("Unverified Raw store requires explicit per-store quarantine")
         quarantined_store_uuids.extend(quarantined)
+    if empty_quarantined:
         print("FOODRADAR_RAW_EMPTY_CATALOG_QUARANTINED=" + json.dumps({
-            "batch": batch, "count": len(quarantined), "store_uuids": quarantined,
+            "batch": batch, "count": len(empty_quarantined),
+            "store_uuids": empty_quarantined,
             "reason": "verified_native_catalog_pages_have_no_products",
+        }, ensure_ascii=False), flush=True)
+    if promotion_quarantined:
+        print("FOODRADAR_RAW_PROMO_API_RECHECK_UNVERIFIED=" + json.dumps({
+            "batch": batch, "count": len(promotion_quarantined),
+            "store_uuids": promotion_quarantined,
+            "reason": "independent_api_disagreed_or_retry_unavailable_not_proven_wrong",
         }, ensure_ascii=False), flush=True)
     if duplicate_canonical_stores:
         print("FOODRADAR_RAW_DUPLICATE_STORES_MERGED=" + json.dumps({
