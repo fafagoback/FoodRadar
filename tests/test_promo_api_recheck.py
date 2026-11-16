@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import os
 import sys
 import tarfile
 import tempfile
@@ -17,6 +18,7 @@ from promo_api_recheck import (
     read_capture_view, trigger_reason, compare_views, verify_suspicious_store, _signature
 )
 from raw_capture import documents_from_hf_raw
+from distributed_crawl import latest_raw_promotion_baseline
 
 SID = "11111111-1111-4111-8111-111111111111"
 GOOD = "22222222-2222-4222-8222-222222222222"
@@ -76,6 +78,44 @@ class SameRunAPIRecheck(unittest.TestCase):
             "20261116063000", NOW))
         self.assertIsNone(trigger_reason(None, {
             "total_skus": 130, "bogo": 0, "direct_discount": 0}, now=NOW))
+
+    def test_previous_inconclusive_api_forces_new_recheck(self):
+        self.assertEqual(trigger_reason(
+            {"_recheck_required": True, "total_skus": 130,
+             "bogo": 40, "direct_discount": 20},
+            {"total_skus": 130, "bogo": 40, "direct_discount": 20},
+            "20261113063000", NOW),
+            "previous_api_recheck_inconclusive")
+
+    def test_unconfirmed_promotions_do_not_replace_hf_baseline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            latest = root / "latest.json"
+            latest.write_text(json.dumps({
+                "format": "foodradar-immutable-http-body-v1",
+                "batch_id": "20261116073000",
+                "stores": [{
+                    "store_uuid": SID, "store_url": "https://example.org/store/test",
+                    "success": True,
+                    "promotion_stats": {
+                        "total_skus": 130, "bogo": 0, "direct_discount": 0},
+                    "promo_recheck": {
+                        "status": "UNAVAILABLE",
+                        "previous_stats": {
+                            "total_skus": 130, "bogo": 40, "direct_discount": 30},
+                        "previous_batch": "20261116063000",
+                    },
+                }],
+            }), encoding="utf8")
+            with patch.dict(os.environ, {"HF_TOKEN": "offline-fixture"}), \\
+                 patch("huggingface_hub.hf_hub_download",
+                       return_value=str(latest)):
+                baseline = latest_raw_promotion_baseline({
+                    "hf_repo_id": "hub-google/FoodRadar", "hf_folder": "Raw"})
+            saved = baseline[SID]["stats"]
+            self.assertEqual(saved["bogo"], 40)
+            self.assertTrue(saved["_recheck_required"])
+            self.assertNotEqual(saved["bogo"], 0)
 
     def test_same_run_second_api_confirms_even_if_promo_remains_absent(self):
         with tempfile.TemporaryDirectory() as temp:
