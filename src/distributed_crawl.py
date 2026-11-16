@@ -109,7 +109,12 @@ def latest_raw_promotion_baseline(config):
                 manifest = json.loads(blob.read_text(encoding="utf8"))
                 if manifest.get("format") == "foodradar-immutable-http-body-v1":
                     candidates.append(manifest)
-            except (OSError, ValueError):
+            except Exception as exc:
+                # A missing/corrupt optional pointer is not evidence of a
+                # wrong product price and must never abort normal crawling.
+                print('FOODRADAR_PROMO_BASELINE_POINTER_UNAVAILABLE=' + json.dumps({
+                    'pointer': pointer, 'error_type': type(exc).__name__,
+                }), flush=True)
                 continue
         baseline = {}
         for manifest in sorted(candidates, key=lambda m: str(m.get("batch_id") or ""), reverse=True):
@@ -126,7 +131,7 @@ def latest_raw_promotion_baseline(config):
             "stores": len(baseline), "manifests": len(candidates)
         }), flush=True)
         return baseline
-    except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+    except Exception as exc:
         print("FOODRADAR_PROMOTION_BASELINE_UNAVAILABLE=" + json.dumps({
             "reason": str(exc)[:160]
         }), flush=True)
