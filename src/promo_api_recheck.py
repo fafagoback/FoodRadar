@@ -142,13 +142,27 @@ def compare_views(first: dict, second: dict) -> dict:
     a, b = first["items"], second["items"]
     overlap = set(a) & set(b)
     mismatch = sorted(sku for sku in overlap if a[sku] != b[sku])
-    coverage = len(overlap) / max(len(a), len(b))
-    confirmed = coverage >= 0.90 and not mismatch
+    coverage = len(overlap) / max(len(a), len(b), 1)
+    # A partial API response is an unavailable/incomplete cross-check, not a
+    # contradiction proving the first capture was wrong. Never call 90% good
+    # enough: a missing 10% can contain the entire promoted category.
+    missing = sorted(set(a) - set(b))
+    added = sorted(set(b) - set(a))
+    if missing or added:
+        status = "UNAVAILABLE"
+    elif mismatch:
+        status = "CONFLICT"
+    else:
+        status = "MATCHED"
     return {
-        "status": "MATCHED" if confirmed else "CONFLICT",
+        "status": status,
         "first_skus": len(a), "second_skus": len(b),
         "common_skus": len(overlap),
         "common_coverage_pct": round(100 * coverage, 2),
+        "missing_in_second": len(missing),
+        "new_in_second": len(added),
+        "missing_uuid_samples": missing[:12],
+        "new_uuid_samples": added[:12],
         "price_or_promo_mismatches": len(mismatch),
         "mismatch_uuid_samples": mismatch[:12],
     }
@@ -169,7 +183,14 @@ def verify_suspicious_store(store_item: dict, raw_root: Path, original: dict,
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         # Never convert a locally unreadable first record into a claim that
         # the upstream API incorrectly priced the products.
-        original["promotion_stats_error"] = type(exc).__name__ + ": " + str(exc)[:180]
+        reason = type(exc).__name__ + ": " + str(exc)[:180]
+        original["promotion_stats_error"] = reason
+        # A successfully fetched but unreadable native menu is NOT a confirmed
+        # valid price observation. Retain the prior DB state and original Raw.
+        original["promo_recheck"] = {
+            "status": "UNAVAILABLE", "trigger": "initial_native_parse_unavailable",
+            "error": reason,
+        }
         return original
     original["promotion_stats"] = first["stats"]
     reason = trigger_reason(previous, first["stats"], previous_batch, now)
@@ -186,7 +207,9 @@ def verify_suspicious_store(store_item: dict, raw_root: Path, original: dict,
                   "raw_prefix": f"promo-recheck/{sid}/"}
     try:
         repeated = fetch_again(store_item, retry_root)
-        if repeated.get("success") is not True or repeated.get("inactive"):
+        if repeated.get("success") is True and repeated.get("store_uuid") != sid:
+            retry_info["error"] = "Recheck returned different store UUID"
+        elif repeated.get("success") is not True or repeated.get("inactive"):
             retry_info["error"] = str(repeated.get("error") or "API retry returned no valid store")[:250]
         else:
             second = read_capture_view(retry_root, repeated)
@@ -194,7 +217,11 @@ def verify_suspicious_store(store_item: dict, raw_root: Path, original: dict,
             retry_info["comparison"] = compare_views(first, second)
             retry_info["status"] = retry_info["comparison"]["status"]
             retry_info["second_response_path"] = retry_info["raw_prefix"] + repeated["response_path"]
-            retry_info["second_catalog_pages"] = len(repeated.get("catalog_responses") or [])
+            retry_info["second_catalog_response_paths"] = [
+                retry_info["raw_prefix"] + page["path"]
+                for page in repeated.get("catalog_responses") or []
+            ]
+            retry_info["second_catalog_pages"] = len(retry_info["second_catalog_response_paths"])
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, json.JSONDecodeError) as exc:
         retry_info["error"] = type(exc).__name__ + ": " + str(exc)[:250]
     original["promo_recheck"] = retry_info
