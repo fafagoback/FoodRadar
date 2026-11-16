@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from promo_api_recheck import (
-    read_capture_view, trigger_reason, compare_views, verify_suspicious_store
+    read_capture_view, trigger_reason, compare_views, verify_suspicious_store, _signature
 )
 from raw_capture import documents_from_hf_raw
 
@@ -126,6 +126,23 @@ class SameRunAPIRecheck(unittest.TestCase):
             self.assertIn("HTTP 503", result["promo_recheck"]["error"])
             self.assertTrue(result["success"])
             self.assertEqual(result["promotion_stats"]["total_skus"], 130)
+
+    def test_changed_strikethrough_reference_price_cannot_match(self):
+        def label(amount, strike):
+            return {"payload": {"labelPayload": {"label": {
+                "richTextElements": [{"text": {"text": {
+                    "text": f"NT${amount}",
+                    "predefinedDecorations": ["STRIKE_THROUGH"] if strike else [],
+                }}}],
+            }}}}
+        a = make_item(1, "DISCOUNTED_ITEM", 13900)
+        a["itemThumbnailElements"] = [label(199, True), label(139, False)]
+        b = make_item(1, "DISCOUNTED_ITEM", 13900)
+        b["itemThumbnailElements"] = [label(299, True), label(139, False)]
+        first = {"items": {"item-0001": _signature(a)[1]}}
+        second = {"items": {"item-0001": _signature(b)[1]}}
+        self.assertNotEqual(first["items"], second["items"])
+        self.assertEqual(compare_views(first, second)["status"], "CONFLICT")
 
     def test_one_missing_sku_cannot_pass_as_verified(self):
         first = {"items": {f"item-{i}": (100, "NONE", None, None)
