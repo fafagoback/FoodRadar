@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
+from verified_prices import quote_from_native_item
+
 TW = timezone(timedelta(hours=8))
 PROMOTIONS = {"BOGO", "DISCOUNTED_ITEM", "CATEGORY_DISCOUNT"}
 QUARANTINE_STATUSES = frozenset({"CONFLICT", "UNAVAILABLE"})
@@ -42,6 +44,14 @@ def _signature(item):
     bogo = native.get("buyXGetYItemPromotion") or {}
     buy = bogo.get("buyQuantity") if kind == "BOGO" else None
     free = bogo.get("getQuantity") if kind == "BOGO" else None
+    # Compare the SAME original and payable price evidence the ETL uses.
+    # A direct discount with a different strike-through original price must
+    # not pass merely because the current payable amount is unchanged.
+    verified = quote_from_native_item(item)
+    verified_status = (verified or {}).get("status", "UNVERIFIED")
+    original_cents = (verified or {}).get("original_total_cents")
+    payable_cents = (verified or {}).get("payable_total_cents")
+    validation_reason = (verified or {}).get("reason") if verified_status != "VERIFIED_MENU" else None
     if kind == "BOGO":
         rank = 3
     elif kind in ("DISCOUNTED_ITEM", "CATEGORY_DISCOUNT"):
@@ -52,7 +62,10 @@ def _signature(item):
         rank = 0
     # Include native price/promotion fields. The raw bodies themselves remain
     # the authoritative, immutable evidence in HF.
-    return sku, (price_cents, kind, buy, free), rank
+    return sku, (
+        price_cents, kind, buy, free,
+        verified_status, original_cents, payable_cents, validation_reason,
+    ), rank
 
 
 def read_capture_view(raw_root: Path, store: dict) -> dict:
@@ -101,7 +114,7 @@ def read_capture_view(raw_root: Path, store: dict) -> dict:
         raise ValueError("Saved API catalog contains no valid priced items")
     counts = {"total_skus": len(selected), "bogo": 0,
               "direct_discount": 0, "other_promo": 0}
-    for price, kind, buy, free in selected.values():
+    for price, kind, buy, free, *_ in selected.values():
         if kind == "BOGO":
             counts["bogo"] += 1
         elif kind in ("DISCOUNTED_ITEM", "CATEGORY_DISCOUNT"):
