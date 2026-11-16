@@ -135,12 +135,24 @@ def latest_raw_promotion_baseline(config):
                     baseline[sid] = {
                         "batch": str(recheck.get("previous_batch") or batch),
                         "stats": trusted,
+                        "promotion_watch": (
+                            recheck.get("previous_watch")
+                            if isinstance(recheck.get("previous_watch"), dict)
+                            else {}
+                        ),
                     }
                     continue
                 stats = store.get("promotion_stats")
                 if not isinstance(stats, dict) or "total_skus" not in stats:
                     continue
-                baseline[sid] = {"batch": batch, "stats": stats}
+                baseline[sid] = {
+                    "batch": batch, "stats": stats,
+                    "promotion_watch": (
+                        store.get("promotion_watch")
+                        if isinstance(store.get("promotion_watch"), dict)
+                        else {}
+                    ),
+                }
         print("FOODRADAR_PREVIOUS_PROMOTION_BASELINE=" + json.dumps({
             "stores": len(baseline), "manifests": len(candidates)
         }), flush=True)
@@ -320,7 +332,8 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
             prior = baseline.get(store_uuid) or {}
             try:
                 result = verify_suspicious_store(
-                    item, raw, result, prior.get("stats"), prior.get("batch", ""))
+                    item, raw, result, prior.get("stats"), prior.get("batch", ""),
+                    previous_watch=prior.get("promotion_watch"))
             except Exception as exc:
                 # A new diagnostic must never rewrite a successfully captured
                 # HTTP observation into a claim that the crawler failed.
