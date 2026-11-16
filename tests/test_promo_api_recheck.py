@@ -87,6 +87,45 @@ class SameRunAPIRecheck(unittest.TestCase):
             "20261113063000", NOW),
             "previous_api_recheck_inconclusive")
 
+    def test_hf_baseline_preserves_individual_sku_offer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            latest = Path(temp) / "latest.json"
+            latest.write_text(json.dumps({
+                "format": "foodradar-immutable-http-body-v1",
+                "batch_id": "20261116073000",
+                "stores": [{
+                    "store_uuid": SID, "store_url": "https://example.org/store/test",
+                    "success": True,
+                    "promotion_stats": {
+                        "total_skus": 130, "bogo": 1, "direct_discount": 0},
+                    "promotion_watch": {"item-0000": [13900, 2]},
+                }],
+            }), encoding="utf8")
+            with (
+                patch.dict(os.environ, {"HF_TOKEN": "offline-fixture"}),
+                patch("huggingface_hub.hf_hub_download", return_value=str(latest)),
+            ):
+                baseline = latest_raw_promotion_baseline({
+                    "hf_repo_id": "hub-google/FoodRadar", "hf_folder": "Raw"})
+            self.assertEqual(baseline[SID]["promotion_watch"]["item-0000"],
+                             [13900, 2])
+
+    def test_inconclusive_recheck_keeps_last_trusted_sku_watch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = write_capture(root, total=130)
+            old_watch = {"item-0000": [13900, 2]}
+            result = verify_suspicious_store(
+                {"store_uuid": SID}, root, first,
+                {"total_skus": 130, "bogo": 1, "direct_discount": 0},
+                "20261116063000", now=NOW,
+                fetch_again=lambda _item, _root: {
+                    "store_uuid": SID, "success": False, "error": "HTTP 429"},
+                previous_watch=old_watch)
+            self.assertEqual(result["promo_recheck"]["status"], "UNAVAILABLE")
+            self.assertEqual(result["promo_recheck"]["previous_watch"], old_watch)
+            self.assertNotIn("item-0000", result["promotion_watch"])
+
     def test_unconfirmed_promotions_do_not_replace_hf_baseline(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -118,6 +157,54 @@ class SameRunAPIRecheck(unittest.TestCase):
             self.assertEqual(saved["bogo"], 40)
             self.assertTrue(saved["_recheck_required"])
             self.assertNotEqual(saved["bogo"], 0)
+
+    def test_one_promoted_sku_disappears_without_store_wide_alarm(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = write_capture(root, total=130, bogo=0)
+            old = {"total_skus": 130, "bogo": 1, "direct_discount": 0}
+            old_watch = {"item-0000": [13900, 2]}
+            # A single BOGO ends, while 129 other items remain unchanged.
+            # The old store-level threshold (>=20) would miss this.
+            first = read_capture_view(root, original)
+            self.assertEqual(first["stats"]["bogo"], 0)
+            self.assertEqual(
+                trigger_reason(old, first["stats"], "20261116063000", NOW,
+                               previous_watch=old_watch,
+                               current_items=first["items"]),
+                "previously_promoted_sku_price_increase")
+            calls = []
+            def fetch_again(item, retry_root):
+                calls.append(item)
+                return write_capture(retry_root, total=130)
+            checked = verify_suspicious_store(
+                {"store_uuid": SID}, root, original, old,
+                "20261116063000", fetch_again=fetch_again, now=NOW,
+                previous_watch=old_watch)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(checked["promo_recheck"]["status"], "MATCHED")
+            self.assertEqual(checked["promo_recheck"]["trigger"],
+                             "previously_promoted_sku_price_increase")
+
+    def test_one_promoted_sku_with_same_effective_price_needs_no_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = write_capture(root, total=130, bogo=0)
+            current = read_capture_view(root, source)
+            self.assertIsNone(trigger_reason(
+                {"total_skus": 130, "bogo": 1, "direct_discount": 0},
+                current["stats"], "20261116063000", NOW,
+                previous_watch={"item-0000": [13900, 1]},
+                current_items=current["items"]))
+
+    def test_verified_bogo_saved_as_compact_historical_watch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = write_capture(root, total=130, bogo=1)
+            result = read_capture_view(root, source)
+            self.assertEqual(result["promotion_watch"]["item-0000"],
+                             [13900, 2])
+            self.assertEqual(len(result["promotion_watch"]), 1)
 
     def test_same_run_second_api_confirms_even_if_promo_remains_absent(self):
         with tempfile.TemporaryDirectory() as temp:
