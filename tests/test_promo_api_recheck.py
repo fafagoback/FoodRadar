@@ -172,10 +172,10 @@ class SameRunAPIRecheck(unittest.TestCase):
     def test_changed_strikethrough_reference_price_cannot_match(self):
         def label(amount, strike):
             return {"payload": {"labelPayload": {"label": {
-                "richTextElements": [{"text": {"text": {
-                    "text": f"NT${amount}",
+                "richTextElements": [{"text": {
+                    "text": {"text": f"NT${amount}"},
                     "predefinedDecorations": ["STRIKE_THROUGH"] if strike else [],
-                }}}],
+                }}],
             }}}}
         a = make_item(1, "DISCOUNTED_ITEM", 13900)
         a["itemThumbnailElements"] = [label(199, True), label(139, False)]
