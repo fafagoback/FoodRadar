@@ -103,3 +103,22 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python OpenData/tender-intelligence-web/scripts/build_hf_browser_index.py
+
+  verify-static-hf-http:
+    name: Verify direct HF HTTPS CORS and checksums
+    if: github.event_name == 'push'
+    needs: build-browser-public-packs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: hub-google/OpenData
+          ref: main
+          path: OpenData
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify zero-backend public tender data fetch
+        run: python OpenData/tender-intelligence-web/scripts/smoke_hf_browser_http.py
