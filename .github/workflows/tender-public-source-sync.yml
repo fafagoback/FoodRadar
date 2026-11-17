@@ -81,3 +81,26 @@ jobs:
         run: python -m pip install 'requests>=2.32,<3'
       - name: Check Hugging Face public API after Parquet indexing
         run: python OpenData/tender-intelligence-web/scripts/smoke_hf_dataset_api.py
+
+  build-browser-public-packs:
+    name: Build standalone HF public search catalog (no CF or Supabase)
+    if: github.event_name == 'push'
+    needs: publish-searchable-parquet
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: hub-google/OpenData
+          ref: main
+          path: OpenData
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Hugging Face SDK
+        run: python -m pip install 'huggingface_hub>=0.30,<2'
+      - name: Publish checksum-verified static data packs directly to HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python OpenData/tender-intelligence-web/scripts/build_hf_browser_index.py
