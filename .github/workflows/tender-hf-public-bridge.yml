@@ -1,0 +1,55 @@
+name: Tender Public HF Repository Archive (temporary transfer)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/tender-hf-public-bridge.yml"
+permissions:
+  contents: read
+concurrency:
+  group: tender-hf-public-export
+  cancel-in-progress: false
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: hub-google/OpenData
+          ref: e5797a4241710c488d03c60be9ee1561d4704f16
+          path: OpenData
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install 'requests>=2.32,<3' 'huggingface_hub>=0.30,<2'
+      - name: Run preflight count and first-page checks
+        env:
+          SUPABASE_URL: https://unapiwajmgqqtdkixaab.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_L09XC4Tekm6cZaPTTczm3g_Aap-SOSy
+        run: |
+          python - <<'PY'
+          import importlib.util
+          path="OpenData/tender-intelligence-web/scripts/archive_public_to_hf.py"
+          spec=importlib.util.spec_from_file_location("exporter",path)
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          s=m.session()
+          for table, key in m.TABLES.items():
+            bound=m.upper_bound(s,"https://unapiwajmgqqtdkixaab.supabase.co",table,key)
+            count=m.get_count(s,"https://unapiwajmgqqtdkixaab.supabase.co",table,key)
+            if bound:
+              sample=m.get_page(s,"https://unapiwajmgqqtdkixaab.supabase.co",table,key,None,bound,2)
+              assert sample, f"{table}: first-page query failed"
+            print(f"{table}: {count} source rows",flush=True)
+            assert (count>0)==bool(bound), f"{table}: count mismatch"
+          PY
+      - name: Archive public source tables into public HF Repository and verify hashes
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_DATASET_REPO: hub-google/TenderIntelligence
+          SUPABASE_URL: https://unapiwajmgqqtdkixaab.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_L09XC4Tekm6cZaPTTczm3g_Aap-SOSy
+        run: |
+          test -n "$HF_TOKEN" || (echo "HF_TOKEN unavailable" && exit 1)
+          python OpenData/tender-intelligence-web/scripts/archive_public_to_hf.py
