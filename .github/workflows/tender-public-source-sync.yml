@@ -38,3 +38,25 @@ jobs:
             exit 1
           fi
           python OpenData/tender-intelligence-web/scripts/sync_openfun_daily_to_hf.py
+
+  publish-searchable-parquet:
+    name: Publish HF Public Parquet Search Index
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: hub-google/OpenData
+          ref: main
+          path: OpenData
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Parquet and Hugging Face SDK
+        run: python -m pip install 'pyarrow>=20,<24' 'huggingface_hub>=0.30,<2'
+      - name: Publish verified tender archives as HF-native searchable datasets
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python OpenData/tender-intelligence-web/scripts/publish_parquet_to_hf.py
