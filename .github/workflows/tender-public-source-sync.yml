@@ -41,7 +41,7 @@ jobs:
 
   publish-searchable-parquet:
     name: Publish HF Public Parquet Search Index
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -85,7 +85,6 @@ jobs:
   build-browser-public-packs:
     name: Build standalone HF public search catalog (no CF or Supabase)
     if: github.event_name == 'push'
-    needs: publish-searchable-parquet
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
