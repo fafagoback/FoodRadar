@@ -77,5 +77,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install HTTP client
+        run: python -m pip install 'requests>=2.32,<3'
       - name: Check Hugging Face public API after Parquet indexing
         run: python OpenData/tender-intelligence-web/scripts/smoke_hf_dataset_api.py
