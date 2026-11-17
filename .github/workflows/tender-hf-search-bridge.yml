@@ -1,0 +1,37 @@
+name: Tender HF Public Search Index Archive (temporary transfer)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/tender-hf-search-bridge.yml"
+permissions:
+  contents: read
+concurrency:
+  group: tender-hf-search-public
+  cancel-in-progress: false
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: hub-google/OpenData
+          ref: b11a88c2d0006c321eb90221604dacfb38f5d62b
+          path: OpenData
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m py_compile OpenData/tender-intelligence-web/scripts/archive_public_to_hf.py
+      - run: python -m pip install 'requests>=2.32,<3' 'huggingface_hub>=0.30,<2'
+      - name: Archive public PostgreSQL search indexes into same public HF Repository
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_DATASET_REPO: hub-google/TenderIntelligence
+          TI_ARCHIVE_TABLE_SET: search
+          SUPABASE_URL: https://unapiwajmgqqtdkixaab.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_L09XC4Tekm6cZaPTTczm3g_Aap-SOSy
+        run: |
+          test -n "$HF_TOKEN" || (echo "HF_TOKEN unavailable" && exit 1)
+          python OpenData/tender-intelligence-web/scripts/archive_public_to_hf.py
