@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: hub-google/OpenData
-          ref: 2dc50b3f720308548c7b39f17e551aaf3b5e7aac
+          ref: 108b09252a73cc7dddb23aae8ffa5b24c1cec103
           path: OpenData
           persist-credentials: false
       - name: Python
