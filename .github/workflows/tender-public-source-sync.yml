@@ -60,3 +60,22 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python OpenData/tender-intelligence-web/scripts/publish_parquet_to_hf.py
+
+  verify-native-hf-api:
+    name: HF Dataset Viewer search / filter / details live smoke test
+    if: github.event_name == 'push'
+    needs: publish-searchable-parquet
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: hub-google/OpenData
+          ref: main
+          path: OpenData
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check Hugging Face public API after Parquet indexing
+        run: python OpenData/tender-intelligence-web/scripts/smoke_hf_dataset_api.py
