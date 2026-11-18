@@ -90,13 +90,30 @@ def _check_rate_limit(response, body, attempt):
 
 
 def _subsections_for(base_data, section_uuid):
-    """Only accept real subsection UUIDs supplied by getStoreV1."""
-    for section in base_data.get("sections") or []:
-        if isinstance(section, dict) and section.get("uuid") == section_uuid:
-            return list(dict.fromkeys(
-                x for x in (section.get("subsectionUuids") or [])
-                if isinstance(x, str) and x))
-    return []
+    """Read actual child UUIDs in sections OR aisles, never guessed filters."""
+    candidates = [
+        item for item in (base_data.get("sections") or [])
+        if isinstance(item, dict) and item.get("uuid") == section_uuid
+    ]
+    aisles = base_data.get("aisles") or {}
+    if isinstance(aisles, dict):
+        for entries in aisles.values():
+            if isinstance(entries, list):
+                candidates.extend(
+                    item for item in entries
+                    if isinstance(item, dict)
+                    and item.get("catalogSectionUUID") == section_uuid
+                )
+    children = []
+    for item in candidates:
+        values = item.get("subsectionUuids") or []
+        if not isinstance(values, list):
+            continue
+        for uuid in values:
+            if (isinstance(uuid, str) and uuid
+                    and uuid != section_uuid and uuid not in children):
+                children.append(uuid)
+    return children
 
 
 def _native_subsections_from_catalog(raw_bodies, parent_uuid):
