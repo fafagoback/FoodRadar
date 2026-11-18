@@ -98,6 +98,10 @@ def main():
                       "catalog_complete": captured.get("catalog_complete") is True,
                       "sections_finished": captured.get("catalog_sections_finished"),
                       "sections_total": captured.get("catalog_section_count"),
+                      "recovery_modes": sorted(set(
+                          str(s.get("mode") or "unknown")
+                          for s in (captured.get("catalog_section_reports") or [])
+                      )),
                       "catalog_pages": len(page_refs), "unique_skus": unique_skus,
                       "terminal_by_partition": terminal_ok,
                       "catalog_calls": len(offsets),
