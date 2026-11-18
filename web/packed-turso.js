@@ -684,6 +684,11 @@ export async function searchProductsPage({
     const rows=await sql(`SELECT card,latitude,longitude FROM web_products WHERE ${where} ORDER BY ${order},store_uuid,product_uuid LIMIT ${size+1} OFFSET ${(pageNo-1)*size}`);
     const products=rows.slice(0,size).map(row=>{
       const product=JSON.parse(row.card);
+      // Latest-batch timestamps are shared metadata, not per-SKU mutations.
+      // Keep old/stale observations' original timestamps unchanged.
+      if (product.crawled_time === "__CURRENT_BATCH__") {
+        product.crawled_time = String(releaseMeta.latest_processed_at || "");
+      }
       if (location?.enabled) product.distance_km=distanceKm(Number(location.latitude),Number(location.longitude),Number(row.latitude),Number(row.longitude));
       return product;
     });

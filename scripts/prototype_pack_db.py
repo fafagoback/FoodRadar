@@ -255,7 +255,13 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         "rating_value": store["rating"], "review_count": int(store["review_count"] or 0),
                         "locality": store["locality"], "street_address": store["address"],
                         "city": store["city"], "latitude": store["latitude"], "longitude": store["longitude"],
-                        "crawled_time": product["last_seen"] or latest_time,
+                        # Only the global release time changes for an otherwise
+                        # identical current card. Resolve it from release metadata
+                        # in the client rather than rewriting every card row.
+                        "crawled_time": ("__CURRENT_BATCH__"
+                            if store["last_seen"] == latest_time
+                            and product["last_seen"] == latest_time
+                            else (product["last_seen"] or latest_time)),
                         "first_seen": product["first_seen"],
                         "listing_started_at": product["listing_started_at"] or product["first_seen"],
                         "original_price": week_reference if drop else effective,

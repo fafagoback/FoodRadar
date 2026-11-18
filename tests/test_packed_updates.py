@@ -136,6 +136,32 @@ class PackedUpdateTests(unittest.TestCase):
             # Menu section text alone is not a numeric BOGO proof.
             self.assertEqual(tuple(product),('無',1,100))
 
+    def test_unchanged_current_search_card_uses_metadata_timestamp(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(tmp)
+            conn = sqlite3.connect(root / 'state.db')
+            conn.row_factory = sqlite3.Row
+            sid = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+            pid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            docs = [document(sid, [pid])]
+            try:
+                # The second snapshot establishes the 7-day reference price.
+                apply_snapshot(conn, docs, '20261006063000')
+                apply_snapshot(conn, docs, '20261007063000')
+                build_web_db(root / 'state.db', root / 'a.db')
+                apply_snapshot(conn, docs, '20261008063000')
+                build_web_db(root / 'state.db', root / 'b.db')
+            finally:
+                conn.close()
+            with sqlite3.connect(root / 'a.db') as a, sqlite3.connect(root / 'b.db') as b:
+                acard, ahash = a.execute('SELECT card,checksum FROM web_products').fetchone()
+                bcard, bhash = b.execute('SELECT card,checksum FROM web_products').fetchone()
+                self.assertEqual(json.loads(acard)['crawled_time'], '__CURRENT_BATCH__')
+                self.assertEqual(json.loads(bcard)['crawled_time'], '__CURRENT_BATCH__')
+                self.assertEqual(ahash, bhash, 'Unchanged price must not rewrite indexed card')
+                self.assertEqual(acard, bcard)
+
     def test_daily_observation_does_not_rewrite_current_bundles_or_indexes(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), contextlib.ExitStack() as stack:
             root = Path(tmp)
