@@ -21,7 +21,7 @@ HEADERS={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
          "Content-Type":"application/json", "x-csrf-token":"x"}
 CASES=[
     ("watsons-tianbei", "0fd40e62-4a52-49a5-8620-0706906896e1",
-     "1afa9c0f-13f3-524e-ae44-70e2fbefcd3e"),
+     "a2d4ddff-da44-5935-8d81-a317e72d2d67"),
     ("dashu-wenlin", "2a2613cb-f67c-5774-935d-bb47511095d0",
      "8d66d350-a0bb-5378-84f4-8163e50c7720"),
 ]
@@ -40,7 +40,13 @@ def describe(tag, resp):
              "code":d.get("code"),"message":str(d.get("message") or "")[:80],
              "items":len(ids),"first_ids":ids[:4],
              "hasMore":p.get("hasMore"),"next_offset":p.get("offset"),
-             "data_keys":list(d)[:25]}
+             "data_keys":list(d)[:25],
+        "first_catalog_group_keys": list(entries[0])[:30] if entries else [],
+        "first_catalog_payload_keys": list((entries[0].get("payload") or {}))[:30]
+            if entries and isinstance(entries[0],dict) else [],
+        "first_item_keys": list(((entries[0].get("payload") or {}).get("standardItemsPayload") or {}).get("catalogItems",[{}])[0])[:45]
+            if entries and isinstance(entries[0],dict)
+            and ((entries[0].get("payload") or {}).get("standardItemsPayload") or {}).get("catalogItems") else [],}
         print("NATIVE_1020_VARIANT="+json.dumps(ret,ensure_ascii=False),flush=True)
         return set(ids)
     except Exception as exc:
