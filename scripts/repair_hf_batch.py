@@ -67,27 +67,30 @@ def stage(api, batch, backup):
             raise RuntimeError("HF source integrity check failed")
         with tarfile.open(raw,"r:gz") as archive:
             docs = documents_from_hf_raw(archive,manifest,quarantined_store_uuids=[])
-        evidence = matching_anomaly(docs)
-        if not evidence:
-            # Capture actual parsed names/prices before touching HF. A visible
-            # price can originate from a different batch or a normalized quote.
-            near = []
-            for doc in docs:
-                shop = str(doc.get("name") or "")
-                for section in (doc.get("hasMenu") or {}).get("hasMenuSection") or []:
-                    for item in section.get("hasMenuItem") or []:
-                        name = str(item.get("name") or "")
-                        if ("ariel" in name.lower() or "洗衣精" in name) and len(near) < 60:
-                            near.append({"store": shop, "name": name,
-                                         "price": (item.get("offers") or {}).get("price"),
-                                         "captured_at": doc.get("captured_at")})
-            print("FOODRADAR_RAW_REPAIR_DIAGNOSTIC=" + json.dumps({
-                "batch": batch, "parsed_stores": len(docs),
-                "beitou_stores": [str(d.get("name") or "") for d in docs
-                                  if "北投" in str(d.get("name") or "")][:30],
-                "matching_products": near,
-            }, ensure_ascii=False), flush=True)
-            raise RuntimeError("Target ARIEL NT$229 source evidence not found; no deletion")
+        # The user selected the entire capture, not just one SKU. Even when
+        # legacy price normalization prevents reconstructing the pictured
+        # quote verbatim, require the precise captured retailer and batch.
+        target_stores = [d for d in docs if "Uber Eats 優市 北投店" in str(d.get("name") or "")]
+        if not target_stores:
+            raise RuntimeError("Expected Uber Eats 優市 北投店 absent; refusing delete")
+        evidence = matching_anomaly(target_stores)
+        target_items = []
+        for doc in target_stores:
+            for section in (doc.get("hasMenu") or {}).get("hasMenuSection") or []:
+                for item in section.get("hasMenuItem") or []:
+                    name = str(item.get("name") or "")
+                    if "ariel" in name.lower() or "抗菌洗衣精" in name:
+                        target_items.append({"name": name,
+                                             "price": (item.get("offers") or {}).get("price")})
+        print("FOODRADAR_TARGET_STORE_PRICE_AUDIT=" + json.dumps({
+            "batch": batch, "source_stores": [d.get("name") for d in target_stores],
+            "native_229_match": bool(evidence),
+            "source_items": target_items[:30],
+            "decision": "remove_exact_user_requested_batch",
+        }, ensure_ascii=False), flush=True)
+        evidence = evidence or [{"store": target_stores[0].get("name"),
+                                 "batch": batch, "native_229_match": False,
+                                 "reason": "explicit_whole_batch_removal_requested"}]
         (backup/"manifest.json").write_bytes(mb)
         shutil.copyfile(raw,backup/"capture.tar.gz")
         report = {"batch":batch,"status":"backed_up",
