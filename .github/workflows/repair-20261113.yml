@@ -1,4 +1,5 @@
 name: FoodRadar 04｜11/13 異常價格批次修復
+# Rerun after expanding immutable Raw verification diagnostics.
 on:
   push:
     branches: [main]
