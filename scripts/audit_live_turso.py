@@ -5,9 +5,32 @@ metadata/table counts; the independent HF RAW script audits SKU-level prices.
 """
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 from publish_turso_delta import Remote
+
+def verify_release_identity(observed, packed_database, expected_batch):
+    """Reject stale Turso even if it carries the SAME latest batch timestamp.
+
+    Replaying HF after discarding a historical batch changes the complete
+    packed content digest, not necessarily the most recent batch identifier.
+    """
+    with sqlite3.connect(f"{Path(packed_database).resolve().as_uri()}?mode=ro", uri=True) as db:
+        metadata = {key: json.loads(value)
+                    for key, value in db.execute("SELECT key,value FROM metadata")}
+    revision = metadata.get("data_revision")
+    if (not expected_batch or observed.get("latest_batch") != expected_batch
+            or not revision or observed.get("data_revision") != revision):
+        raise ValueError(
+            "Turso release mismatch: expected latest batch and packed data revision; "
+            + json.dumps({
+                "expected_batch": expected_batch,
+                "actual_batch": observed.get("latest_batch"),
+                "expected_revision": revision,
+                "actual_revision": observed.get("data_revision"),
+            }, ensure_ascii=False))
+    return revision
 
 
 def main():
@@ -19,7 +42,7 @@ def main():
             "seven_day_reference_products", "seven_day_verified_dates",
             "seven_day_history_incomplete", "active_30pct_drops",
             "archive_reference_products", "archive_30pct_candidates",
-            "active_platform_promotions", "source_counts",
+            "active_platform_promotions", "source_counts", "data_revision",
         )
         rows = remote.query("SELECT key,value FROM metadata")
         values = {}
@@ -30,10 +53,14 @@ def main():
         # A successful query against a stale database is not a successful
         # release. Cross-check the exact batch prepared from HF Raw.
         expected_batch = Path("data/latest.txt").read_text(encoding="utf-8").strip()
-        if not expected_batch or str(values.get("latest_batch")) != expected_batch:
-            raise ValueError(
-                f"Turso published batch does not match HF release: "
-                f"expected {expected_batch}, observed {values.get('latest_batch')}")
+        expected_revision = verify_release_identity(
+            values,
+            Path("data") / expected_batch / "packed-serving.db",
+            expected_batch,
+        )
+        print("FOODRADAR_LIVE_RELEASE_REVISION_VERIFIED=" + json.dumps({
+            "latest_batch": expected_batch, "data_revision": expected_revision
+        }), flush=True)
         observed = {}
         for table in ("store_directory","store_bundles","search_buckets","metadata"):
             observed[table] = remote.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"]

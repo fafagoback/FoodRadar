@@ -173,6 +173,21 @@ jobs:
           BATCH=$(cat data/latest.txt)
           python scripts/audit_deal_pipeline.py "data/$BATCH/serving.db"
 
+      # Locally verified rebuilds are safe accelerators even if Turso has
+      # exhausted its write allowance. Restore still verifies every HF manifest
+      # digest and source-code contract; this is not an alternative source.
+      - name: 先驗證本地完整打包，再保存可校驗的 SQLite 快取
+        run: |
+          BATCH=$(cat data/latest.txt)
+          python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
+      - name: 保存經本地完整驗證的 SQLite 加速快取
+        if: ${{ success() }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: 完整驗證後才發布 Turso
         env:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
@@ -193,14 +208,6 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/audit_live_turso.py
-
-      - name: 正式 Turso 唯讀驗證後才保存 SQLite 加速快取
-        if: ${{ success() }}
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: data/state-checkpoint/
-          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: 保存驗證報告
         if: always()
