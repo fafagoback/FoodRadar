@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from catalog_complete import capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure
+from catalog_complete import capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure, _subsections_for
 from menu_core import convert_api_data_to_schema
 from verified_prices import quote_from_native_item
 
@@ -52,6 +52,18 @@ class Session:
 
 
 class CatalogCompleteness(unittest.TestCase):
+    def test_native_aisles_can_recover_explicit_subsections(self):
+        raw = {
+            "sections": [{"uuid": "other", "subsectionUuids": ["wrong"]}],
+            "aisles": {"main": [
+                {"catalogSectionUUID": "parent", "subsectionUuids": ["child-a", "child-b"]},
+                {"catalogSectionUUID": "parent", "subsectionUuids": ["child-a", "parent"]},
+                {"catalogSectionUUID": "else", "subsectionUuids": ["wrong"]},
+            ]}
+        }
+        self.assertEqual(_subsections_for(raw, "parent"), ["child-a", "child-b"])
+        self.assertEqual(_subsections_for(raw, "unknown"), [])
+
     def test_partial_raw_only_allows_deterministic_catalog_gaps(self):
         for error in (
             "RuntimeError: native code 500",
