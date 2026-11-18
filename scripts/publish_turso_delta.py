@@ -60,10 +60,8 @@ class Remote:
                 raise RuntimeError(item['error'].get('message', 'Turso statement failed'))
             value = item['response']['result']
             names = [c['name'] for c in value['cols']]
-            rows.append([dict(zip(names, [None if c['type'] == 'null' else
-                int(c['value']) if c['type'] == 'integer' else
-                float(c['value']) if c['type'] == 'float' else c.get('value')
-                for c in row])) for row in value['rows']])
+            rows.append([dict(zip(names, map(decode_turso_cell, row)))
+                         for row in value['rows']])
         return rows
 
     def query(self, sql, args=()):
@@ -74,6 +72,20 @@ class Remote:
             self.session.post(self.url, json={'baton': self.baton,
                               'requests': [{'type': 'close'}]}, timeout=30)
         self.session.close()
+
+
+def decode_turso_cell(cell_value):
+    """Decode the typed SQL pipeline response, including binary bundles."""
+    kind = cell_value.get('type')
+    if kind == 'null':
+        return None
+    if kind == 'integer':
+        return int(cell_value['value'])
+    if kind == 'float':
+        return float(cell_value['value'])
+    if kind == 'blob':
+        return base64.b64decode(cell_value['base64'], validate=True)
+    return cell_value.get('value')
 
 
 def fingerprint(row):

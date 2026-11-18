@@ -91,6 +91,11 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
           TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
         run: python scripts/audit_live_turso.py
+      - name: 從正式 Turso bundle 驗證 11/13 價格歷史已消失
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: python scripts/audit_removed_batch.py --batch "$TARGET_BATCH"
       - name: 保存修復報告
         if: always()
         uses: actions/upload-artifact@v4
