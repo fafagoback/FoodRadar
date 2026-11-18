@@ -180,12 +180,12 @@ jobs:
           node tests/price_history.cjs
           node tests/web_interactions.cjs
           node tests/packed_concurrency.cjs
-      - name: 驗證三個 Workflow 的 GitHub Actions 語法
+      - name: 驗證 GitHub Actions 語法與必要工作流程
         run: |
           go run github.com/rhysd/actionlint/cmd/actionlint@latest -color=false .github/workflows/*.yml
           python - <<'PY'
           from pathlib import Path
-          expected={'ci.yml','crawl.yml','pages.yml','daily-dual-audit.yml','costco-beitou-audit.yml','maintenance-once-20261112.yml','tender-public-source-sync.yml'}
+          expected={'ci.yml','crawl.yml','pages.yml','daily-dual-audit.yml','costco-beitou-audit.yml','maintenance-once-20261112.yml','tender-public-source-sync.yml','repair-20261113.yml'}
           actual={p.name for p in Path('.github/workflows').glob('*.yml')}
           assert actual==expected, f'Workflow 清單不符：{actual}'
           PY
