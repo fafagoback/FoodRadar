@@ -118,6 +118,32 @@ jobs:
           pip install 'zstandard>=0.23,<1'
           python scripts/configure_web.py
           python scripts/prepare_pages.py --staging pages-static-source
+      - name: 禁止舊爬蟲批次覆蓋網站最新資料
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError, URLError
+          candidate=json.loads(Path('web/version.json').read_text(encoding='utf-8'))
+          url='https://fafagoback.github.io/FoodRadar/version.json?freshness='+candidate['version']
+          try:
+              with urlopen(Request(url,headers={'Cache-Control':'no-cache'}),timeout=25) as response:
+                  previous=json.load(response)
+          except HTTPError as e:
+              if e.code != 404:
+                  raise
+              previous={}
+          except URLError as e:
+              raise RuntimeError('Cannot check currently published batch: refuse uncertain overwrite') from e
+          old=str(previous.get('batch') or '')
+          current=str(candidate['batch'])
+          if old and old > current:
+              raise RuntimeError(f'Stale crawler artifact: published {old}, attempted {current}')
+          print('FOODRADAR_LATEST_BATCH_GUARD='+json.dumps({
+              'published_batch':old,'candidate_batch':current,'allowed':True
+          }),flush=True)
+          PY
       - name: 驗證 JavaScript 與網站資料契約
         run: |
           node --check web/app.js
@@ -144,14 +170,19 @@ jobs:
           python - <<'PY'
           import json, os, time
           from urllib.request import urlopen, Request
-          expected = os.environ['GITHUB_SHA']
+          from pathlib import Path
+          expected = json.loads(Path('web/version.json').read_text(encoding='utf-8'))
           base = 'https://fafagoback.github.io/FoodRadar/'
           for attempt in range(12):
               try:
-                  url = base + 'version.json?_release=' + expected[:12] + '-' + str(attempt)
+                  url = base + 'version.json?_release=' + expected['version'] + '-' + str(attempt)
                   with urlopen(Request(url, headers={'Cache-Control':'no-cache'}), timeout=20) as response:
                       manifest = json.load(response)
-                  if manifest.get('commit') == expected:
+                  # A successful deploy must contain the exact crawler batch,
+                  # not only the matching Git commit; the same code may serve
+                  # many scheduled data refreshes every day.
+                  if all(manifest.get(key) == expected.get(key)
+                         for key in ('commit','batch','data_revision','version')):
                       print('FOODRADAR_LIVE_VERSION=' + json.dumps(manifest, ensure_ascii=False), flush=True)
                       break
               except Exception as error:
