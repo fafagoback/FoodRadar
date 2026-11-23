@@ -30,12 +30,16 @@ jobs:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          CURRENT_SHA: ${{ github.sha }}
           GH_REPOSITORY: ${{ github.repository }}
         run: |
           python - <<'PY'
           import json, os
           from urllib.request import Request, urlopen
-          allowed = os.environ["SOURCE_CONCLUSION"] == "success" and os.environ["SOURCE_BRANCH"] == "main"
+          allowed = (os.environ["SOURCE_CONCLUSION"] == "success"
+                     and os.environ["SOURCE_BRANCH"] == "main"
+                     and os.environ["SOURCE_SHA"] == os.environ["CURRENT_SHA"])
           if allowed:
               url = (f'https://api.github.com/repos/{os.environ["GH_REPOSITORY"]}'
                      f'/actions/runs/{os.environ["SOURCE_RUN_ID"]}/jobs?per_page=100')
@@ -68,6 +72,8 @@ jobs:
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: 準備程式執行環境
         uses: actions/setup-python@v5
         with:
@@ -196,6 +202,8 @@ jobs:
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: 安裝驗收專用瀏覽器
         run: |
           npm install --no-save playwright@1.56.1
@@ -220,6 +228,8 @@ jobs:
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: 下載本次部署指標
         if: ${{ needs.deploy.result == 'success' }} 
         continue-on-error: true

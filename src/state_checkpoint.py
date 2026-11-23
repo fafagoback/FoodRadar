@@ -75,7 +75,7 @@ def restore(target, records, config, cache=CACHE, root=ROOT):
 
 
 def save(source, raw_index_path, cache=CACHE, root=ROOT):
-    """The workflow may publish this cache ONLY after live Turso audit succeeds."""
+    """This cache is reusable only after verified SQLite and Pages-source checks pass."""
     import shutil
     index = json.loads(Path(raw_index_path).read_text(encoding="utf-8"))
     if index.get("contract_digest") != contract_digest(root):

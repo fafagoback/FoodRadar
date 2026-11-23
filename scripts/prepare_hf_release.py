@@ -28,7 +28,7 @@ with sqlite3.connect(ROOT/'data'/batch/'serving.db') as db:
 build_web_db(ROOT/'data'/batch/'serving.db',ROOT/'data'/batch/'packed-serving.db')
 
 print('FOODRADAR_WEB_PACK_AND_AUDIT_SECONDS='+str(round(perf_counter()-started,2)),flush=True)
-# Prepared now; workflow saves to cache only AFTER Turso live audit succeeds.
+# The cache is saved only after validated SQLite projection and static-data checks.
 try:
     save_checkpoint(ROOT/'data'/batch/'serving.db',
                     ROOT/'data'/batch/'raw-manifest-index.json')

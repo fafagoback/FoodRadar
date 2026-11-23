@@ -5,3 +5,6 @@ __pycache__/
 data/
 web/data.json
 .pytest_cache/
+audit-results/
+action-reports/
+test-results/

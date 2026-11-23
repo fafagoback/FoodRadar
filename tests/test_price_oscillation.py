@@ -86,5 +86,56 @@ class OscillationTests(unittest.TestCase):
         self.assertEqual(row["seven_day_reference_price"], 10)
 
 
+    def test_streaming_publisher_handles_more_than_one_write_batch(self):
+        """Exercise the real SQLite projection on thousands of distinct SKUs."""
+        from verified_weekly import UPDATE_BATCH_SIZE
+        count = UPDATE_BATCH_SIZE + 7
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.executescript("""
+            CREATE TABLE stores (
+                store_uuid TEXT PRIMARY KEY, status TEXT, is_open INTEGER,
+                last_seen TEXT);
+            CREATE TABLE products (
+                store_uuid TEXT, product_uuid TEXT, last_seen TEXT,
+                price_evidence_status TEXT, delivery_available INTEGER,
+                is_open INTEGER, status TEXT,
+                seven_day_reference_price REAL, seven_day_discount_pct REAL,
+                seven_day_discount_amount REAL, seven_day_is_price_deal INTEGER,
+                archive_reference_price REAL, archive_discount_pct REAL,
+                archive_discount_amount REAL, archive_evidence_count INTEGER,
+                archive_is_price_deal INTEGER,
+                PRIMARY KEY(store_uuid,product_uuid));
+            CREATE TABLE product_price_observations (
+                batch_id TEXT, store_uuid TEXT, product_uuid TEXT,
+                observed_at TEXT, payable_total_cents INTEGER,
+                received_quantity INTEGER);
+        """)
+        previous, latest = "20261101063000", "20261102063000"
+        older, newer = (datetime.strptime(b, "%Y%m%d%H%M%S")
+            .replace(tzinfo=TW).isoformat() for b in (previous, latest))
+        sid = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        conn.execute("INSERT INTO stores VALUES(?,?,?,?)",
+                     (sid, "active", 1, newer))
+        conn.executemany(
+            "INSERT INTO products(store_uuid,product_uuid,last_seen,"
+            "price_evidence_status,delivery_available,is_open,status) "
+            "VALUES(?,?,?,?,?,?,?)",
+            ((sid, str(i), newer, "VERIFIED_MENU", 1, 1, "active")
+             for i in range(count)))
+        conn.executemany(
+            "INSERT INTO product_price_observations VALUES(?,?,?,?,?,?)",
+            ((batch, sid, str(i), at, price, 1)
+             for i in range(count)
+             for batch,at,price in
+             ((previous,older,10000),(latest,newer,2000))))
+        result = update_verified_weekly(conn, latest)
+        self.assertEqual(result["qualified_comparisons"], count)
+        self.assertEqual(result["oscillation_suppressed"], 0)
+        self.assertEqual(result["deals"], count)
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) FROM products WHERE seven_day_discount_pct=80"
+        ).fetchone()[0], count)
+
 if __name__ == "__main__":
     unittest.main()
