@@ -131,7 +131,7 @@ def main(kind):
         add("資料更新結果", "已完成驗證並產出新的可部署資料包" if succeeded else
             "未完成可確認的資料更新")
         add("網站部署結果", "尚待獨立網站部署流程驗收" if succeeded else "本次無法宣稱網站部署成功")
-        messages.append("資料爬取與網站部署是兩個不同流程；網站成功上線與否，請以「FoodRadar 03｜網站部署」的最終摘要為準。")
+        messages.append("資料爬取與網站部署是兩個不同流程；網站成功上線與否，請以「FoodRadar 02｜網站部署」的最終摘要為準。")
     elif kind == "pages":
         deploy = os.environ.get("DEPLOY_RESULT")
         browser = os.environ.get("BROWSER_RESULT")
