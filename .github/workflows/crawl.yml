@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'crawl=新抓取；republish=重發 HF；full-rebuild=從 Raw 重建靜態資料'
+        description: 'crawl=新抓取；republish=從既有 Raw 重發 Pages；full-rebuild=從 Raw 重建靜態資料'
         required: true
         type: choice
         options:
@@ -198,12 +198,27 @@ jobs:
           BATCH=$(cat data/latest.txt)
           python scripts/build_static_catalog.py "data/$BATCH/packed-serving.db" "data/$BATCH/serving.db" "data/$BATCH/static-public"
 
-      - name: 完成靜態資料發布至 HF
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      - name: 整理已驗證資料供 Pages Artifact 使用（不提交 Git、不上傳 HF 靜態副本）
         run: |
           BATCH=$(cat data/latest.txt)
-          python scripts/publish_static_catalog.py "data/$BATCH/static-public" --repo hub-google/FoodRadar
+          mkdir -p pages-static-source
+          cp -a "data/$BATCH/static-public/." pages-static-source/
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from build_static_catalog import verify
+          manifest = verify(Path('pages-static-source'))
+          print('FOODRADAR_ARTIFACT_SOURCE_VERIFIED=' + manifest['batch'], flush=True)
+          PY
+      - name: 保存已驗證靜態資料為 Pages 來源 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-static-source
+          path: pages-static-source/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
       - name: 保存驗證報告
         if: always()
         uses: actions/upload-artifact@v4
