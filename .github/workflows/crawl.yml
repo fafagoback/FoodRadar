@@ -1,4 +1,5 @@
-name: FoodRadar 02｜爬蟲與資料庫
+name: FoodRadar 02｜資料爬取與更新
+run-name: 'FoodRadar 02｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
   push:
     branches: [main]
@@ -36,11 +37,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
+      - name: 安裝程式所需套件
+        run: pip install -r requirements.txt
       - name: 單次 Feed 掃描與儲存原始 HTTP
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -54,7 +58,7 @@ jobs:
           retention-days: 3
 
   crawl_shard:
-    name: "抓取工作機 ${{ matrix.shard }} / 14"
+    name: "分工爬取工作機 ${{ matrix.shard }}／14"
     needs: discover_once
     if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
     runs-on: ubuntu-latest
@@ -65,11 +69,14 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
+      - name: 安裝程式所需套件
+        run: pip install -r requirements.txt
       - name: 下載同一份店家清單
         uses: actions/download-artifact@v4
         with:
@@ -87,7 +94,7 @@ jobs:
           retention-days: 3
 
   ingest:
-    name: 第 16 台｜彙整驗證 → HF Raw → 靜態資料
+    name: 第十六台｜彙整驗證與發布靜態資料
     needs: crawl_shard
     if: "${{ always() && (needs.crawl_shard.result == 'success' || (needs.crawl_shard.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
     runs-on: ubuntu-latest
@@ -98,11 +105,14 @@ jobs:
       group: foodradar-database-publisher
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
+      - name: 安裝程式所需套件
+        run: pip install -r requirements.txt
       # 任何手動資料庫更新前，都重新驗證核心程式。
       - name: 更新資料前再次執行核心程式回歸測試
         run: |
@@ -232,3 +242,36 @@ jobs:
             data/**/shard-reconciliation.json
           if-no-files-found: ignore
           retention-days: 5
+      - name: 保存本次實際執行指標
+        if: always()
+        run: python scripts/action_summary.py capture
+      - name: 上傳本次統計指標
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-run-metrics
+          path: action-reports/metrics/
+          if-no-files-found: warn
+          retention-days: 5
+
+  report:
+    name: 彙整本次繁體中文爬蟲報告
+    needs: [discover_once, crawl_shard, ingest]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 下載本次統計指標
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: foodradar-run-metrics
+          path: action-reports/metrics
+      - name: 產生繁體中文抓取與更新報告
+        env:
+          DISCOVER_RESULT: ${{ needs.discover_once.result }}
+          SHARD_RESULT: ${{ needs.crawl_shard.result }}
+          INGEST_RESULT: ${{ needs.ingest.result }}
+        run: python scripts/action_summary.py crawl

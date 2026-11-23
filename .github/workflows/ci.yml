@@ -1,4 +1,5 @@
 name: FoodRadar 01｜品質測試
+run-name: 'FoodRadar 01｜品質測試｜執行編號 #${{ github.run_number }}'
 on:
   pull_request:
     branches: [main]
@@ -26,15 +27,18 @@ concurrency:
   cancel-in-progress: true
 jobs:
   regression:
-    name: Python、JavaScript 與 Actions 設定驗證
+    name: 程式品質與設定驗證
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
+      - name: 安裝程式所需套件
+        run: pip install -r requirements.txt
       - name: 補強後測試全聯當下需 offset 1020 的真實分類與完整抓取
         if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(gapfix1020):') }}
         run: python scripts/verify_live_bigstore_1020.py
@@ -68,8 +72,10 @@ jobs:
           FOODRADAR_LIVE_1020_PAIR: ${{ (startsWith(github.event.head_commit.message, 'test(live1020-jinji):') || startsWith(github.event.head_commit.message, 'test(live1020-jinji-fallback):')) && 'jinji' || (startsWith(github.event.head_commit.message, 'test(live1020-pets):') && 'pets' || 'primary') }}
           FOODRADAR_FORCE_MISSING_SECTION_METADATA: ${{ startsWith(github.event.head_commit.message, 'test(live1020-jinji-fallback):') && '1' || '0' }}
         run: python scripts/verify_native_catalog_1020.py
-      - name: Python 全套回歸測試
-        run: python -m unittest discover -s tests -v
+      - name: 執行全部 Python 單元測試
+        run: |
+          mkdir -p action-reports
+          python -m unittest discover -s tests -v 2>&1 | tee action-reports/python-tests.log
 
       - name: 檢測 GitHub Pages 靜態資料規模與地理索引（不下載商品資料）
         run: |
@@ -81,6 +87,9 @@ jobs:
               url+'?ci='+__import__('time').strftime('%Y%m%d%H%M%S'),
               headers={'Cache-Control':'no-cache'}),timeout=30) as response:
               m=json.load(response)
+          from pathlib import Path
+          Path('action-reports').mkdir(exist_ok=True)
+          Path('action-reports/live-manifest.json').write_text(json.dumps(m,ensure_ascii=False),encoding='utf-8')
           assert m['schema']=='foodradar-static-v2', m.get('schema')
           assert m['counts']['products'] > 0
           assert m['counts']['stores'] > 0
@@ -169,7 +178,7 @@ jobs:
           python -m pip install playwright
           python -m playwright install --with-deps webkit
           DOM_CATEGORY_TEST_LIMIT=2 DOM_SCROLL_TEST_LIMIT=4 python scripts/live_ui_api_comparison.py
-      - name: 網站資料契約與 JavaScript 測試
+      - name: 網站資料格式與 JavaScript 功能測試
         run: |
           node --check web/app.js
           node --check web/packed-turso.js
@@ -181,13 +190,23 @@ jobs:
           node tests/price_history.cjs
           node tests/web_interactions.cjs
           node tests/packed_concurrency.cjs
+          mkdir -p action-reports
+          touch action-reports/frontend.ok
       - name: 驗證 GitHub Actions 語法與必要工作流程
         run: |
           go run github.com/rhysd/actionlint/cmd/actionlint@latest -color=false .github/workflows/*.yml
           python - <<'PY'
           from pathlib import Path
-          expected={'ci.yml','crawl.yml','pages.yml','daily-dual-audit.yml','costco-beitou-audit.yml','maintenance-once-20261112.yml','tender-public-source-sync.yml','repair-20261113.yml','price-provenance.yml','audit-beef-raw.yml'}
+          expected={'ci.yml','crawl.yml','pages.yml','tender-public-source-sync.yml'}
           actual={p.name for p in Path('.github/workflows').glob('*.yml')}
           assert actual==expected, f'Workflow 清單不符：{actual}'
           PY
+          mkdir -p action-reports
+          touch action-reports/workflows.ok
 
+
+      - name: 產生繁體中文品質測試報告
+        if: always()
+        env:
+          CI_RESULT: ${{ job.status }}
+        run: python scripts/action_summary.py ci

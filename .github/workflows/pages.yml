@@ -1,4 +1,5 @@
 name: FoodRadar 03｜網站部署
+run-name: 'FoodRadar 03｜網站部署｜執行編號 #${{ github.run_number }}'
 on:
   push:
     branches: [main]
@@ -12,7 +13,7 @@ on:
       - '.github/workflows/pages.yml'
   workflow_run:
     workflows:
-      - 'FoodRadar 02｜爬蟲與資料庫'
+      - 'FoodRadar 02｜資料爬取與更新'
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -56,7 +57,7 @@ jobs:
               })
               with urlopen(request, timeout=25) as response:
                   jobs = json.load(response).get("jobs", [])
-              allowed = any(j.get("name", "").startswith("第 16 台｜彙整驗證")
+              allowed = any(j.get("name", "").startswith("第十六台｜彙整驗證")
                             and j.get("conclusion") == "success"
                             and any(s.get("name") == "保存已驗證靜態資料為 Pages 來源 Artifact"
                                     and s.get("conclusion") == "success"
@@ -76,11 +77,13 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: 從爬蟲的 Actions Artifact 下載最新完整靜態資料
+      - name: 取得最新驗證通過的爬蟲資料包
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -113,7 +116,7 @@ jobs:
           fi
           test -s pages-static-source/current.json
           test -d pages-static-source/blobs
-      - name: 從本機 Artifact 建立 Pages 靜態地理查詢資料
+      - name: 建立網站用的靜態地理查詢資料
         run: |
           pip install 'zstandard>=0.23,<1'
           python scripts/configure_web.py
@@ -144,7 +147,7 @@ jobs:
               'published_batch':old,'candidate_batch':current,'allowed':True
           }),flush=True)
           PY
-      - name: 驗證 JavaScript 與網站資料契約
+      - name: 驗證前端程式與資料格式
         run: |
           node --check web/app.js
           node --check web/packed-turso.js
@@ -159,13 +162,16 @@ jobs:
             echo '已淘汰的歷史菜單區仍存在' >&2
             exit 1
           fi
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - name: 準備網站發布設定
+        uses: actions/configure-pages@v5
+      - name: 上傳網站資料包
+        uses: actions/upload-pages-artifact@v3
         with:
           path: web
-      - uses: actions/deploy-pages@v4
+      - name: 發布 GitHub Pages 網站
+        uses: actions/deploy-pages@v4
         id: deployment
-      - name: 驗證正式版號已上線
+      - name: 確認線上版本與本次資料批次一致
         run: |
           python - <<'PY'
           import json, os, time
@@ -192,6 +198,21 @@ jobs:
               time.sleep(6)
           PY
 
+      - name: 保存部署報告用的真實資料
+        if: always()
+        run: |
+          mkdir -p action-reports/metrics
+          if [ -s web/version.json ]; then cp web/version.json action-reports/metrics/version.json; fi
+          if [ -s web/data/manifest.json ]; then cp web/data/manifest.json action-reports/metrics/manifest.json; fi
+      - name: 上傳網站部署指標
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-deploy-metrics
+          path: action-reports/metrics/
+          if-no-files-found: warn
+          retention-days: 5
+
   acceptance:
     name: 正式網站瀏覽器驗收
     needs: deploy
@@ -203,8 +224,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - name: 安裝 Chromium 瀏覽器
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 安裝驗收專用瀏覽器
         run: |
           npm install --no-save playwright@1.56.1
           npx playwright install --with-deps chromium
@@ -218,3 +240,26 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 5
+
+  report:
+    name: 產生中文網站部署與驗收總報告
+    needs: [ingest-gate, deploy, acceptance]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 下載本次部署指標
+        if: ${{ needs.deploy.result == 'success' }} 
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-deploy-metrics
+          path: action-reports/metrics
+      - name: 產生繁體中文網站部署總報告
+        env:
+          GATE_RESULT: ${{ needs.ingest-gate.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          BROWSER_RESULT: ${{ needs.acceptance.result }}
+        run: python scripts/action_summary.py pages
