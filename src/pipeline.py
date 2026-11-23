@@ -1,0 +1,518 @@
+"""Use UberEat's archive and ETL contracts for a single delivery coordinate."""
+import contextlib
+from collections import Counter
+import gzip
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def assert_useful_price_batch(documents, batch):
+    """Do not overwrite a healthy published catalogue with a broken geo crawl.
+
+    Zero open stores may legitimately occur at night, but that is not a
+    verifiable current-price refresh. A daytime >90% closure response is the
+    signature of the previous missing-location-cookie bug.
+    """
+    from price_observation import price_observation_valid, menu_catalog_valid
+    total = len(documents)
+    valid = sum(bool(price_observation_valid(doc, batch)) for doc in documents)
+    menu_stores = sum(bool(menu_catalog_valid(doc, batch)) for doc in documents)
+    banner = sum(bool(str(doc.get("closedMessage") or "").strip()) for doc in documents)
+    hour = int(batch[8:10])
+    if total >= 50 and menu_stores == 0:
+        raise RuntimeError(
+            f"Unusable menu crawl: 0/{total} open-hours menu stores; "
+            "rejecting batch and preserving previous published prices"
+        )
+    if total >= 100 and 9 <= hour <= 22 and valid * 20 < total and banner * 10 >= total * 9:
+        if menu_stores * 20 < total:
+            raise RuntimeError(
+                f"Suspected broken delivery-location capture: only {menu_stores}/{total} "
+                "usable menu stores; preserving previous catalogue"
+            )
+        print(f"DELIVERY_UNAVAILABLE_WARNING verified={valid}/{total} menu_catalog={menu_stores}/{total} banners={banner}", flush=True)
+    return valid
+
+
+def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> bool:
+    """Incomplete raw is archived for audit but must not enter price history."""
+    batch = str(meta.get("batch_id") or "")
+    if not (len(batch) == 14 and batch.isdigit()):
+        raise ValueError(f"Invalid immutable Raw batch ID: {manifest_path}")
+    is_complete = meta.get("complete") is True
+    is_partial = (meta.get("complete") is False
+                  and meta.get("partial_replayable") is True)
+    if meta.get("complete") is False and not is_partial:
+        return False
+    if not (is_complete or is_partial):
+        raise ValueError(f"Invalid immutable Raw completeness marker: {manifest_path}")
+    if (meta.get("format") != "foodradar-immutable-http-body-v1"
+            or not str(meta.get("archive_path") or "").startswith(f"{folder}/{batch}/")):
+        raise ValueError(f"Invalid immutable Raw source path: {manifest_path}")
+    if is_partial:
+        from catalog_complete import is_recoverable_catalog_failure
+        stores = meta.get("stores")
+        if not isinstance(stores, list):
+            raise ValueError("Missing per-store Raw records for partial replay")
+        passed = [s for s in stores if s.get("success") is True]
+        failed = [s for s in stores if s.get("success") is not True]
+        if (not passed or not failed or meta.get("feed_pages", 0) < 1
+                or meta.get("successful_store_count") != len(passed)
+                or meta.get("failed_store_count") != len(failed)
+                or meta.get("failed_store_uuids") !=
+                    [s.get("store_uuid") for s in failed]):
+            raise ValueError("Partially verified Raw manifest store count mismatch")
+        if not all(is_recoverable_catalog_failure(s.get("error"))
+                   for s in failed):
+            raise ValueError("Unclassified failure in partially verified Raw manifest")
+    return True
+
+
+def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarantined, promo_quarantined=None):
+    """Require exact per-store accounting before preserving any invalid menu."""
+    from menu_core import canonical_store_uuid
+
+    expected_ids = {canonical_store_uuid(r['store_uuid'], r['store_url'])
+                    for r in successful_records}
+    verified_ids = {doc['store_uuid'] for doc in docs}
+    quarantined_ids = set(quarantined)
+    promo_ids = set(promo_quarantined or [])
+    if not promo_ids <= quarantined_ids:
+        raise ValueError('Promotion recheck quarantine is absent from excluded IDs')
+    if (len(successful_records) != expected_raw or not docs
+            or len(docs) != len(verified_ids)
+            or len(quarantined) != len(quarantined_ids)
+            or verified_ids & quarantined_ids
+            or verified_ids | quarantined_ids != expected_ids):
+        raise ValueError('HF verified store coverage or quarantine UUID mismatch')
+    # If many apparently successful stores suddenly have no menu, treat the
+    # entire batch as suspicious (Uber outage/contract drift), not as a new
+    # observation. Historical Raw and live Turso must remain untouched.
+    empty_catalog_ids = quarantined_ids - promo_ids
+    if len(empty_catalog_ids) > max(1, len(expected_ids) // 20):
+        raise ValueError(
+            f'Excess empty-menu quarantine: {len(empty_catalog_ids)}/'
+            f'{len(expected_ids)} stores; refusing widespread catalog failure')
+    return quarantined_ids
+
+
+def restore_history(config, rebuild_all=False):
+    """Replay unprocessed HF Raw from a verified checkpoint or from zero."""
+    from concurrent.futures import ThreadPoolExecutor
+    from time import perf_counter
+    from huggingface_hub import HfApi, hf_hub_download
+    import tarfile
+    import sqlite3
+    from serving_state import apply_snapshot, refresh_product_search
+    from raw_capture import documents_from_hf_raw
+    from menu_core import canonical_store_uuid
+    from verified_weekly import update_verified_weekly
+    from state_checkpoint import restore as restore_checkpoint, contract_digest, manifest_digest
+
+    started = perf_counter()
+    folder = config['hf_folder'].strip('/')
+    api = HfApi(token=os.environ.get('HF_TOKEN'))
+    files = api.list_repo_files(repo_id=config['hf_repo_id'], repo_type='dataset')
+    manifests = sorted(p for p in files
+                       if p.startswith(f'{folder}/') and p.endswith('/manifest.json'))
+    if not manifests:
+        raise RuntimeError(f'No immutable snapshots under {folder}/Raw; refusing DB update')
+
+    def fetch_manifest(path):
+        blob = Path(hf_hub_download(
+            config['hf_repo_id'], path, repo_type='dataset',
+            token=os.environ.get('HF_TOKEN'))).read_bytes()
+        return path, json.loads(blob), hashlib.sha256(blob).hexdigest()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        records = list(executor.map(fetch_manifest, manifests))
+    index_seconds = round(perf_counter() - started, 2)
+    print('FOODRADAR_MANIFEST_INDEX=' + json.dumps({
+        'count': len(records), 'seconds': index_seconds}), flush=True)
+
+    previous = ROOT/'data/latest.txt'
+    previous.parent.mkdir(parents=True, exist_ok=True)
+    temporary_db = ROOT/'data/raw-only-reconstructed.db'
+    temporary_db.unlink(missing_ok=True)
+    checkpoint = None if rebuild_all else restore_checkpoint(temporary_db, records, config)
+    batch, prefix_count = checkpoint if checkpoint else ('', 0)
+    conn = sqlite3.connect(temporary_db)
+    conn.row_factory = sqlite3.Row
+    replayed, skipped_incomplete = [], []
+    quarantined_batches = []
+    latest_excluded_store_uuids = []
+    processed = 0
+    totals = {'download_seconds': 0.0, 'decode_seconds': 0.0,
+              'sqlite_apply_seconds': 0.0}
+    try:
+        print('FOODRADAR_RAW_ONLY_REPLAY_START='+json.dumps({
+            'raw_manifests': len(records), 'checkpoint': bool(checkpoint),
+            'checkpoint_prefix_count': prefix_count, 'legacy_batches': 0
+        }), flush=True)
+        previous_batch = ''
+        for index, (manifest_path, meta, _sha) in enumerate(records):
+            current_batch = str(meta.get('batch_id') or '')
+            if not raw_manifest_should_replay(meta, manifest_path, folder):
+                skipped_incomplete.append(manifest_path)
+                continue
+            if previous_batch and current_batch <= previous_batch:
+                raise ValueError(f'Nonmonotonic immutable Raw batch: {manifest_path}')
+            previous_batch = current_batch
+            if index < prefix_count:
+                replayed.append(manifest_path + ':' + str(meta['archive_sha256']))
+                continue
+            if current_batch <= batch:
+                raise ValueError('New Raw precedes checkpoint; refusing incremental replay')
+            t = perf_counter()
+            downloaded = Path(hf_hub_download(
+                config['hf_repo_id'], meta['archive_path'], repo_type='dataset',
+                token=os.environ.get('HF_TOKEN')))
+            digest = hashlib.sha256(downloaded.read_bytes()).hexdigest()
+            if digest != meta.get('archive_sha256'):
+                raise ValueError('HF immutable Raw archive SHA-256 mismatch')
+            dl = perf_counter()-t
+            totals['download_seconds'] += dl
+            t = perf_counter()
+            quarantined = []
+            with tarfile.open(downloaded,'r:gz') as archive:
+                docs = documents_from_hf_raw(
+                    archive, meta, quarantined_store_uuids=quarantined)
+            decode = perf_counter()-t
+            totals['decode_seconds'] += decode
+            raw_partial = meta.get('complete') is False
+            failed_store_uuids = (
+                [canonical_store_uuid(s['store_uuid'], s['store_url'])
+                 for s in meta['stores'] if not s.get('success')]
+                if raw_partial else [])
+            expected_raw = (meta['successful_store_count']
+                            if raw_partial else len(meta['stores']))
+            successful_records = [r for r in meta['stores'] if r.get('success')]
+            promo_recheck_quarantined = {
+                canonical_store_uuid(s["store_uuid"], s["store_url"])
+                for s in meta["stores"]
+                if s.get("success") is True
+                and (s.get("promo_recheck") or {}).get("status")
+                in ("CONFLICT", "UNAVAILABLE")
+            }
+            quarantined_ids = validate_raw_replay_coverage(
+                successful_records, expected_raw, docs, quarantined,
+                promo_quarantined=promo_recheck_quarantined)
+            empty_catalog_quarantined = quarantined_ids - promo_recheck_quarantined
+            failed_store_uuids = sorted(set(failed_store_uuids) | quarantined_ids)
+            is_partial = raw_partial or bool(quarantined_ids)
+            t = perf_counter()
+            apply_snapshot(conn, docs, current_batch,
+                           excluded_store_uuids=failed_store_uuids,
+                           refresh_search=False)
+            conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                         ('latest_raw_completeness',
+                          'partial_verified' if is_partial else 'complete'))
+            conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                         ('latest_unverified_store_uuids',
+                          json.dumps(failed_store_uuids,ensure_ascii=False)))
+            applied = perf_counter()-t
+            totals['sqlite_apply_seconds'] += applied
+            replayed.append(manifest_path+':'+digest)
+            processed += 1
+            batch = current_batch
+            latest_excluded_store_uuids = failed_store_uuids
+            if quarantined_ids:
+                quarantined_batches.append({
+                    'batch': current_batch, 'store_count': len(quarantined_ids),
+                    'empty_catalog_store_count': len(empty_catalog_quarantined),
+                    'promo_api_recheck_store_count': len(promo_recheck_quarantined),
+                    'store_uuids': sorted(quarantined_ids),
+                })
+            print('HF_RAW_TO_DB=' + json.dumps({
+                'batch':batch, 'verified_stores':len(docs),
+                'failed_stores_retaining_previous_data':len(failed_store_uuids),
+                'quarantined_empty_catalog_stores':len(empty_catalog_quarantined),
+                'quarantined_promo_api_rechecks':len(promo_recheck_quarantined),
+                'raw_declared_complete':not raw_partial,
+                'replay_complete':not is_partial,
+                'replay_partial_verified':is_partial,
+                'download_seconds':round(dl,2),'decode_seconds':round(decode,2),
+                'sqlite_apply_seconds':round(applied,2)
+            }, ensure_ascii=False),flush=True)
+        if not replayed:
+            raise RuntimeError('No complete immutable HF Raw batches to build serving DB')
+        if checkpoint and len([1 for p,m,_ in records[:prefix_count]
+                               if raw_manifest_should_replay(m,p,folder)]) != (
+                conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0]-processed):
+            raise ValueError('Checkpoint verified batch count mismatches Raw history')
+        t=perf_counter()
+        if processed or not checkpoint:
+            refresh_product_search(conn)
+            audit=update_verified_weekly(conn,batch)
+        else:
+            audit={'qualified_comparisons':'unchanged',
+                   'deals':conn.execute('SELECT COUNT(*) FROM products WHERE seven_day_is_price_deal=1').fetchone()[0]}
+        price_seconds=perf_counter()-t
+        print('HF_RAW_FINAL_VERIFIED_WEEKLY='+json.dumps({
+            'batch':batch,**audit,'seconds':round(price_seconds,2)
+        },ensure_ascii=False),flush=True)
+        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                     ('raw_source',f'{folder}/'))
+        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                     ('raw_snapshot_count',str(len(replayed))))
+        conn.commit()
+        destination=ROOT/'data'/batch
+        destination.mkdir(parents=True,exist_ok=True)
+        if checkpoint and not processed:
+            # A cache-only republish must report the actual retained shops from
+            # the verified checkpoint rather than claiming there were none.
+            previous_excluded = conn.execute(
+                "SELECT value FROM metadata "
+                "WHERE key='latest_unverified_store_uuids'").fetchone()
+            if previous_excluded:
+                latest_excluded_store_uuids = json.loads(previous_excluded[0])
+        quarantine_report = {
+            'latest_batch': batch,
+            'quarantined_empty_catalog_store_observations': sum(
+                row['empty_catalog_store_count'] for row in quarantined_batches),
+            'quarantined_promo_api_recheck_observations': sum(
+                row['promo_api_recheck_store_count'] for row in quarantined_batches),
+            'quarantined_batches': quarantined_batches,
+            'latest_retained_store_uuids': latest_excluded_store_uuids,
+            'policy': 'up to 5 percent per batch, minimum one; preserve prior store data',
+        }
+        (destination/'quarantine-report.json').write_text(
+            json.dumps(quarantine_report, ensure_ascii=False, indent=2),
+            encoding='utf-8')
+        print('FOODRADAR_RAW_QUARANTINE_SUMMARY=' +
+              json.dumps(quarantine_report, ensure_ascii=False), flush=True)
+        with sqlite3.connect(destination/'serving.db') as copy:
+            conn.backup(copy)
+        evidence={
+            'format': ('foodradar-raw-verified-incremental-v1' if checkpoint
+                       else 'foodradar-immutable-raw-only-rebuild-v1'),
+            'batch_id':batch,'raw_manifest_count':len(replayed),
+            'verified_manifest_count':len(replayed),
+            'skipped_incomplete_raw_count':len(skipped_incomplete),
+            'manifest_digest':hashlib.sha256('\n'.join(replayed).encode()).hexdigest(),
+            'source_prefix':f'{folder}/','legacy_snapshot_count':0,
+            'source_counts':{
+                'stores':conn.execute('SELECT COUNT(*) FROM stores').fetchone()[0],
+                'products':conn.execute('SELECT COUNT(*) FROM products').fetchone()[0],
+                'crawl_batches':conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0]
+            }
+        }
+        (destination/'verified-rebuild.json').write_text(
+            json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
+        raw_index={
+            'repo_id':config['hf_repo_id'],'folder':folder,'batch_id':batch,
+            'manifest_count':len(records),'verified_batches':len(replayed),
+            'manifest_digest':manifest_digest(records),
+            'contract_digest':contract_digest()
+        }
+        (destination/'raw-manifest-index.json').write_text(
+            json.dumps(raw_index,ensure_ascii=False,indent=2),encoding='utf-8')
+        previous.write_text(batch,encoding='utf-8')
+        print('FOODRADAR_RAW_ONLY_REBUILT='+json.dumps(evidence,ensure_ascii=False),flush=True)
+        timings={'manifest_index_seconds':index_seconds,
+                 'checkpoint_restored':bool(checkpoint),
+                 'raw_batches_processed':processed,
+                 **{k:round(v,2) for k,v in totals.items()},
+                 'price_and_search_seconds':round(price_seconds,2),
+                 'total_seconds':round(perf_counter()-started,2)}
+        print('FOODRADAR_ETL_TIMING='+json.dumps(timings),flush=True)
+        summary=os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary:
+            with open(summary,'a',encoding='utf-8') as out:
+                out.write('\n### HF Raw → SQLite 執行效能\n| 階段 | 結果 |\n|---|---:|\n')
+                for key,value in timings.items():
+                    out.write(f'| {key} | {value} |\n')
+                out.write(
+                    f"| empty_catalog_quarantined_observations | "
+                    f"{quarantine_report['quarantined_empty_catalog_store_observations']} |\n"
+                    f"| latest_retained_stores | "
+                    f"{len(quarantine_report['latest_retained_store_uuids'])} |\n")
+    finally:
+        conn.close()
+
+
+def build_snapshot(output, config):
+    batch = output.name
+    # Remove fields added by the earlier LITE implementation; keep the original converter output.
+    for path in (output/'menus').glob('*.json'):
+        doc=json.loads(path.read_text(encoding='utf-8'))
+        if 'distance_km' in doc or 'batch_id' in doc:
+            for key in ('distance_km', 'batch_id'):
+                doc.pop(key, None)
+            path.write_text(json.dumps(doc,ensure_ascii=False,indent=2),encoding='utf-8')
+    summary={'benchmark_address':'FoodRadar 固定配送座標',
+             'coordinates':{'latitude':config['latitude'],'longitude':config['longitude']},
+             'total_discovered':len(list((output/'menus').glob('*.json'))),
+             'success_count':len(list((output/'menus').glob('*.json'))),'fail_count':0}
+    summary_path=output/f'{batch}_nearby_stores_summary.json'
+    summary_path.write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
+    # Avoid building an unused second DB containing non-operating Raw menus.
+    # Hugging Face receives the untouched JSON archive below.
+    import sqlite3
+    from serving_state import apply_snapshot
+    serving=output/'serving.db'
+    previous=ROOT/'data/latest.txt'
+    if previous.exists():
+        prior=ROOT/'data'/previous.read_text(encoding='utf-8').strip()/'serving.db'
+        if prior.exists() and prior != serving:
+            shutil.copy2(prior, serving)
+    conn=sqlite3.connect(serving)
+    conn.row_factory=sqlite3.Row
+    documents=[json.loads(p.read_text(encoding='utf-8')) for p in sorted((output/'menus').glob('*.json'))]
+    # Run the release gate before mutating normalized prices / advancing batch.
+    assert_useful_price_batch(documents, batch)
+    counts=apply_snapshot(conn, documents, batch)
+    from verified_weekly import update_verified_weekly
+    weekly_audit = update_verified_weekly(conn, batch)
+    print("VERIFIED_V2_WEEKLY_AUDIT=" + json.dumps(weekly_audit), flush=True)
+    conn.close()
+    # Distinguish successful menu downloads from *valid payable-price*
+    # observations. A run containing only rejected observations is not a
+    # successful price refresh; report the rejection signature explicitly.
+    from price_observation import price_observation_valid, menu_catalog_valid
+    audit = {
+        "captured_stores": len(documents),
+        "valid_price_stores": sum(bool(price_observation_valid(doc, batch)) for doc in documents),
+        "catalog_menu_stores": counts["stores"],
+        "raw_only_stores": counts["skipped_closed_stores"],
+        "is_open": dict(Counter(
+            "true" if doc.get("isOpen") is True else
+            "false" if doc.get("isOpen") is False else "missing"
+            for doc in documents)),
+        "menu_status": dict(Counter(str(doc.get("menu_status")) for doc in documents)),
+        "closed_message_present": sum(bool(str(doc.get("closedMessage") or "").strip()) for doc in documents),
+        "hours_spec_present": sum(bool(doc.get("openingHoursSpecification")) for doc in documents),
+        "tagline": dict(Counter(
+            "open" if str(doc.get("workingHoursTagline") or "").lower().startswith(("open ", "currently open", "營業中", "營業至", "營業到")) else
+            "opens_later" if str(doc.get("workingHoursTagline") or "").lower().startswith(("opens ", "opening ", "尚未營業", "休息中")) else
+            "other_or_empty"
+            for doc in documents)),
+    }
+    assert sum(bool(menu_catalog_valid(doc, batch)) for doc in documents) == counts["stores"]
+    print("PRICE_OBSERVATION_AUDIT=" + json.dumps(audit, ensure_ascii=False), flush=True)
+    report_path = output / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["price_observation_audit"] = audit
+    # Preserve new/unknown category names for maintainers; no unknown
+    # category may silently trigger a guessed BOGO unit-price reduction.
+    import re
+    from json_to_db import extract_promo_info
+    unknown_sections = Counter()
+    native_recognized = 0
+    for doc in documents:
+        for sec in (doc.get("hasMenu") or {}).get("hasMenuSection") or []:
+            section = str(sec.get("name") or "").strip()
+            if (section and re.search(r"優惠|特惠|促銷|折扣|限時|買.*送|offer|deal|promotion|sale|bonus|free", section, re.I)
+                    and extract_promo_info(section, "", "")[0] == "無"):
+                unknown_sections[section] += 1
+            native_recognized += sum(
+                item.get("promotion_source") == "native_structured"
+                for item in sec.get("hasMenuItem") or [])
+    api_raw_files = sorted((output/'api_raw').glob('*.json'))
+    field_paths = Counter()
+    # A bounded sample of the *actual* API responses exposes new metadata
+    # paths without leaking raw values into public workflow logs.
+    def scan_native_keys(value, prefix="", depth=0):
+        if depth > 12:
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else key
+                if re.search(r"promo|offer|discount|benefit|reward|deal|bogo", key, re.I):
+                    field_paths[path] += 1
+                if isinstance(child, (dict, list)):
+                    scan_native_keys(child, path, depth + 1)
+        elif isinstance(value, list):
+            for child in value[:5]:
+                if isinstance(child, (dict, list)):
+                    scan_native_keys(child, prefix + "[]", depth + 1)
+    for raw_path in api_raw_files[:40]:
+        with raw_path.open(encoding="utf-8") as source:
+            raw_response = json.load(source)
+        scan_native_keys(raw_response.get("data") or {})
+    report["promotion_source_audit"] = {
+        "api_raw_response_count": len(api_raw_files),
+        "native_structured_item_occurrences": native_recognized,
+        "unrecognized_promotion_sections": dict(unknown_sections.most_common(50)),
+        "sampled_api_responses": min(40, len(api_raw_files)),
+        "observed_native_promotion_field_paths": dict(field_paths.most_common(60)),
+        "interpretation": "Unknown promotions are retained, not treated as BOGO."
+    }
+    print("PROMOTION_SOURCE_AUDIT=" + json.dumps(report["promotion_source_audit"], ensure_ascii=False), flush=True)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    # V2 no longer runs legacy heuristic repair / archive restoration.
+    # Historical quotes are reconstructed exclusively from native ApiRaw evidence.
+    print(f"VALID_OPEN_STORES={counts['stores']} RAW_ONLY_CLOSED_STORES={counts['skipped_closed_stores']}", flush=True)
+    subprocess.run([sys.executable,str(ROOT/'scripts/build_web_db.py'),
+                    str(serving),str(output/'packed-serving.db')],check=True)
+    subprocess.run([sys.executable, str(ROOT/'src/package_and_upload_menu_snapshot.py'),
+                    '--src-dir', str(output/'menus'), '--stores-file', str(output/'stores.json'),
+                    '--api-raw-dir', str(output/'api_raw'),
+                    '--output-dir', str(output/'archive'), '--batch-id', batch,
+                    '--expected-workers', '1', '--actual-workers', '1', '--minimum-stores', '1',
+                    '--repo-id', config['hf_repo_id'], '--offline'], check=True)
+    from export_static_snapshots import export_all_static_snapshots
+    site = output/'site'
+    stats = export_all_static_snapshots(src_dir=str(output/'menus'), output_dir=str(site),
+                                       db_path=str(output/'export.db'), batch_id=batch,
+                                       stores_file=str(output/'stores.json'), scope='regional', upload_hf=False)
+    # Replace legacy Parquet-derived static offers and historical discounts with
+    # the same certified numeric V2 prices used in Turso.
+    from export_verified_public import export_verified_public
+    public_audit = export_verified_public(serving, site, batch)
+    print("V2_PUBLIC_EXPORT_AUDIT="+json.dumps(public_audit),flush=True)
+    archive = output/'archive'/f'taiwan_menus_{batch}.tar.gz'
+    manifest = json.loads((output/'archive/manifest.json').read_text(encoding='utf-8'))
+    manifest.update(complete=True, schema_version=1,
+                    sha256=hashlib.sha256(archive.read_bytes()).hexdigest(), archive_bytes=archive.stat().st_size,
+                    source_sha=os.environ.get('GITHUB_SHA','local'),
+                    archive_path=f"{config['hf_folder']}/snapshots/{batch}/{archive.name}")
+    (output/'complete.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    subprocess.run([sys.executable,str(ROOT/'scripts/verify_snapshot.py'),str(output)],check=True)
+    # Publish only after archive validation and successful ETL. Never ship the build DB.
+    target=ROOT/'web/data'
+    target.mkdir(exist_ok=True)
+    for name in ['stats.json','discounts.json','new_stores.json','new_products.json','promotions.json','products.json','history.json']:
+        shutil.copy2(site/name,target/name)
+    shutil.copy2(site/'version.json', ROOT/'web/version.json')
+
+
+def upload_snapshot(output, config):
+    from huggingface_hub import HfApi, CommitOperationAdd
+    folder=config['hf_folder'].strip('/')
+    batch=output.name
+    manifest=json.loads((output/'complete.json').read_text(encoding='utf-8'))
+    archive_name=f'taiwan_menus_{batch}.tar.gz'
+    base=f'{folder}/snapshots/{batch}'
+    manifest['archive_path']=f'{base}/{archive_name}'
+    payload=json.dumps(manifest,ensure_ascii=False).encode('utf-8')
+    operations=[CommitOperationAdd(path_in_repo=f'{base}/{archive_name}',path_or_fileobj=str(output/'archive'/archive_name)),
+                CommitOperationAdd(path_in_repo=f'{base}/stores.json',path_or_fileobj=str(output/'stores.json')),
+                CommitOperationAdd(path_in_repo=f'{base}/complete.json',path_or_fileobj=payload),
+                CommitOperationAdd(path_in_repo=f'{folder}/latest.json',path_or_fileobj=payload)]
+    for path in (output/'site').glob('*.parquet'):
+        subfolder='' if path.name.endswith('_latest.parquet') else 'history/'
+        operations.append(CommitOperationAdd(path_in_repo=f'{folder}/Parquet/{subfolder}{path.name}',path_or_fileobj=str(path)))
+    # Durable normalized state retains inactive identities independently of Raw
+    # retention. Publish state and its pointer atomically with the complete Raw.
+    state_path=output/'serving-state.db.gz'
+    with (output/'serving.db').open('rb') as source, gzip.open(state_path,'wb') as dest:
+        shutil.copyfileobj(source,dest)
+    state_remote=f'{folder}/state/{batch}/serving-state.db.gz'
+    state_manifest={'schema_version':2,'batch_id':batch,'state_path':state_remote,
+                    'sha256':hashlib.sha256(state_path.read_bytes()).hexdigest()}
+    operations.extend([
+        CommitOperationAdd(path_in_repo=state_remote,path_or_fileobj=str(state_path)),
+        CommitOperationAdd(path_in_repo=f'{folder}/state/latest.json',
+                           path_or_fileobj=json.dumps(state_manifest).encode('utf-8'))])
+    api=HfApi(token=os.environ['HF_TOKEN'])
+    result=api.create_commit(repo_id=config['hf_repo_id'],repo_type='dataset',operations=operations,
+                             commit_message=f'FoodRadar complete snapshot {batch}')
+    print(f'HF complete snapshot committed: {result.oid}',flush=True)

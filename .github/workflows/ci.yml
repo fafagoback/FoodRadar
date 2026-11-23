@@ -1,0 +1,192 @@
+name: FoodRadar 01｜品質測試
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'web/**'
+      - '.github/workflows/**'
+      - 'requirements.txt'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'web/**'
+      - '.github/workflows/**'
+      - 'requirements.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: foodradar-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    name: Python、JavaScript 與 Actions 設定驗證
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 補強後測試全聯當下需 offset 1020 的真實分類與完整抓取
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(gapfix1020):') }}
+        run: python scripts/verify_live_bigstore_1020.py
+      - name: 直接請求全聯北投明德店 offset 1020，記錄原始 API 回應
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(direct1020):') }}
+        run: python scripts/probe_live_direct_1020.py
+      - name: 即時驗證家樂福與全聯目前確實超過 offset 1020 並完整抓取
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(bigstore1020):') }}
+        run: python scripts/verify_live_bigstore_1020.py
+      - name: 金吉利已知 1020 分類的原生子分類完整分頁驗證
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(native1020):') }}
+        run: python scripts/verify_jinji_native_children.py
+      - name: 金吉利商品分頁原生子分類 UUID 檢查
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(items1020):') }}
+        run: python scripts/probe_jinji_item_subsections.py
+      - name: 金吉利 1020 問題之原生子分類穩定性檢查
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(meta1020):') }}
+        run: python scripts/probe_jinji_metadata.py
+      - name: 交叉比對兩家店完整原生分類的商品覆蓋率
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(cross1020):') }}
+        run: python scripts/cross_category_1020.py
+      - name: 檢查原生店家商品預載與分頁筆數（兩家；不寫 HF / Turso）
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(page1020):') }}
+        run: python scripts/probe_1020_page_size.py
+      - name: 原生 API 分類篩選探查兩家失敗店家（不寫 HF / Turso）
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(probe1020):') }}
+        run: python scripts/probe_1020_filters.py
+      - name: 只實測 2 家先前失敗的大型店（不寫 HF / Turso）
+        if: ${{ github.event_name == 'push' && (startsWith(github.event.head_commit.message, 'test(live1020):') || startsWith(github.event.head_commit.message, 'test(live1020-pets):') || startsWith(github.event.head_commit.message, 'test(live1020-jinji):') || startsWith(github.event.head_commit.message, 'test(live1020-jinji-fallback):')) }}
+        env:
+          FOODRADAR_LIVE_1020_PAIR: ${{ (startsWith(github.event.head_commit.message, 'test(live1020-jinji):') || startsWith(github.event.head_commit.message, 'test(live1020-jinji-fallback):')) && 'jinji' || (startsWith(github.event.head_commit.message, 'test(live1020-pets):') && 'pets' || 'primary') }}
+          FOODRADAR_FORCE_MISSING_SECTION_METADATA: ${{ startsWith(github.event.head_commit.message, 'test(live1020-jinji-fallback):') && '1' || '0' }}
+        run: python scripts/verify_native_catalog_1020.py
+      - name: Python 全套回歸測試
+        run: python -m unittest discover -s tests -v
+
+      - name: 檢測 HF 靜態資料規模與分片數（不下載商品資料）
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import hf_hub_download
+          path=hf_hub_download(repo_id='hub-google/FoodRadar',
+            filename='StaticCatalog/current.json',repo_type='dataset',
+            token=os.environ.get('HF_TOKEN'),force_download=True)
+          m=json.load(open(path,encoding='utf-8'))
+          f=m['files']
+          print('FOODRADAR_HF_SOURCE_DIAGNOSTIC='+json.dumps({
+            'schema':m['schema'],'products':m['counts']['products'],
+            'stores':m['counts']['stores'],'bytes':m['bytes'],
+            'product_blobs':len(f['products']),
+            'search_blobs':len(f['search']),'history_blobs':len(f['history']),
+            'total_source_blobs':len(set(
+              [f['catalog'],f['stores'],*f['products'],
+              *f['search'].values(),*f['history'].values()])),
+          },ensure_ascii=False),flush=True)
+          PY
+
+      - name: 指定執行的真實北投店 HTTP Raw → SQLite → 網頁索引驗收
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(live):')) }}
+        run: python scripts/acceptance_live_catalog.py
+      - name: 指定稽核 HF Raw 不完整批次的真實失敗店家
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(hf):') }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          from collections import Counter
+          import json, os
+          batch='20261109105106'
+          path=hf_hub_download('hub-google/FoodRadar',f'Raw/{batch}/manifest.json',
+            repo_type='dataset',token=os.environ['HF_TOKEN'])
+          m=json.load(open(path,encoding='utf-8'))
+          failures=[s for s in m.get('stores',[]) if not s.get('success')]
+          reason_counts=Counter(str(s.get('error') or '?')[:240] for s in failures)
+          print('HF_FAILED_STORES=' + json.dumps({
+            'batch':batch,'complete':m.get('complete'),
+            'stores_total':len(m.get('stores',[])),
+            'failed_count':len(failures),
+            'reasons':dict(reason_counts),
+            'sample':[{'uuid':s.get('store_uuid'),'error':s.get('error'),
+                        'url':s.get('store_url')} for s in failures[:20]]
+          },ensure_ascii=False),flush=True)
+          PY
+      - name: 指定核對四間店 HF 原始失敗 HTTP 回應
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(hf):') }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python scripts/audit_failed_http_raw.py
+          python scripts/retest_catalog_failures.py
+      - name: 實測全聯北投明德原生子分類 API 是否可繞過 offset 限制
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(probe):') }}
+        run: |
+          python scripts/probe_catalog_recovery.py
+          python scripts/probe_pxmart_subsections.py
+          python scripts/live_failed_stores_retest.py
+      - name: 實際 WebKit 瀏覽全聯：觀察商品超過 1020 時網頁如何載入
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(pxweb1020):') }}
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps webkit
+          python scripts/probe_pxmart_browser_network.py
+      - name: 保存全聯瀏覽器網路商品載入紀錄
+        if: ${{ always() && github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(pxweb1020):') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pxmart-browser-network-1020
+          path: audit-results/pxmart-browser-pagination-1020.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: 單獨比對北投好市多（相同外送定位；API vs WebKit 全分類）
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(beitou):') }}
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps webkit
+          python scripts/compare_costco_beitou.py
+      - name: 保存北投店兩種方法交叉驗證報告
+        if: ${{ always() && github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(beitou):') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: costco-beitou-two-method
+          path: audit-results/costco-beitou-two-method-latest.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: 實測真實網頁渲染（WebKit Firefox Chromium）
+        if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(dom):') }}
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps webkit
+          DOM_CATEGORY_TEST_LIMIT=2 DOM_SCROLL_TEST_LIMIT=4 python scripts/live_ui_api_comparison.py
+      - name: 網站資料契約與 JavaScript 測試
+        run: |
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/static-catalog.js
+          node --check web/data-contract.js
+          node --check tests/live_site.cjs
+          node tests/dom_parser.cjs
+          node tests/web_contract.cjs
+          node tests/price_history.cjs
+          node tests/web_interactions.cjs
+          node tests/packed_concurrency.cjs
+      - name: 驗證 GitHub Actions 語法與必要工作流程
+        run: |
+          go run github.com/rhysd/actionlint/cmd/actionlint@latest -color=false .github/workflows/*.yml
+          python - <<'PY'
+          from pathlib import Path
+          expected={'ci.yml','crawl.yml','pages.yml','daily-dual-audit.yml','costco-beitou-audit.yml','maintenance-once-20261112.yml','tender-public-source-sync.yml','repair-20261113.yml','price-provenance.yml','audit-beef-raw.yml'}
+          actual={p.name for p in Path('.github/workflows').glob('*.yml')}
+          assert actual==expected, f'Workflow 清單不符：{actual}'
+          PY
+

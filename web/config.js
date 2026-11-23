@@ -1,0 +1,1 @@
+window.UBER_RADAR_CONFIG = { ENABLE_STATIC: true, ENABLE_TURSO: false, ENABLE_DUCKDB: false, SINGLE_POINT: true };

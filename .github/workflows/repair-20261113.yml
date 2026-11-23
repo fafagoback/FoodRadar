@@ -1,0 +1,107 @@
+name: FoodRadar 04｜11/13 舊版修復流程（封存停用）
+# Rerun: exact store and batch verified; original 229 quote not required for user-directed whole-batch deletion.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: foodradar-crawl-pipeline
+  cancel-in-progress: false
+jobs:
+  repair:
+    # Legacy job can delete immutable HF Raw and write paid Turso; never run after static migration.
+    if: ${{ github.event_name == 'never_run_legacy_repair' }}
+    name: 舊版流程已停用（保留稽核記錄）
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: github-pages
+    env:
+      TARGET_BATCH: '20261113110657'
+      BACKUP_DIR: data/repair-backup-20261113110657
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 執行完整回歸測試
+        run: |
+          python -m unittest discover -s tests -q
+          node --check web/app.js
+          node --check web/packed-turso.js
+      - name: 驗證 11/13 HF Raw 及北投 ARIEL 價格證據
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/repair_hf_batch.py stage --batch "$TARGET_BATCH" --backup-dir "$BACKUP_DIR"
+      - name: 先保存未修改原始檔與證據
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-raw-backup-20261113110657
+          path: data/repair-backup-20261113110657/
+          if-no-files-found: error
+          retention-days: 30
+      - name: 僅刪除指定 HF Raw 來源
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/repair_hf_batch.py delete --batch "$TARGET_BATCH" --backup-dir "$BACKUP_DIR"
+      - name: 從餘下 HF Raw 完整重算，確保清除污染批次
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FOODRADAR_REBUILD_VALID_PRICE_HISTORY: '1'
+        run: |
+          python scripts/prepare_hf_release.py
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          b=Path("data/latest.txt").read_text().strip()
+          with sqlite3.connect(Path("data")/b/"serving.db") as db:
+              assert db.execute("SELECT COUNT(*) FROM product_price_observations WHERE batch_id=?",("20261113110657",)).fetchone()[0]==0
+              assert db.execute("SELECT COUNT(*) FROM crawl_batches WHERE batch_id=?",("20261113110657",)).fetchone()[0]==0
+              stamp="2026-11-13T11:06:57+08:00"
+              assert db.execute("SELECT COUNT(*) FROM events WHERE event_time=?",(stamp,)).fetchone()[0]==0
+              assert db.execute("""SELECT COUNT(*) FROM products p
+                  WHERE EXISTS (SELECT 1 FROM json_each(p.menu_quote_history) q
+                                WHERE json_extract(q.value,'$[0]')=?)""",(stamp,)).fetchone()[0]==0
+          print("FOODRADAR_REPAIR_REPLAY=verified")
+          PY
+      - name: 對照本地價格與 Turso 打包契約
+        run: |
+          BATCH=$(cat data/latest.txt)
+          python scripts/audit_deal_pipeline.py "data/$BATCH/serving.db"
+          python scripts/verify_packed_local.py "data/$BATCH/packed-serving.db" --report packed-report.json
+      - name: 保存經本地驗證的重建快取（Turso 配額滿亦可復用）
+        if: ${{ success() }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: 只發布真正不同的 Turso 資料
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.FOODRADAR_TURSO_WRITE_TOKEN }}
+        run: |
+          BATCH=$(cat data/latest.txt)
+          python scripts/publish_turso_delta.py "data/$BATCH/packed-serving.db" --apply --report delta-report.json
+      - name: 獨立唯讀檢查 Turso 已生效
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: python scripts/audit_live_turso.py
+      - name: 從正式 Turso bundle 驗證 11/13 價格歷史已消失
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.FOODRADAR_TURSO_DATABASE_URL }}
+          TURSO_READONLY_TOKEN: ${{ secrets.FOODRADAR_TURSO_READONLY_TOKEN }}
+        run: python scripts/audit_removed_batch.py --batch "$TARGET_BATCH"
+      - name: 保存修復報告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-price-repair-reports
+          path: |
+            packed-report.json
+            delta-report.json
+            data/**/verified-rebuild.json
+          if-no-files-found: ignore
+          retention-days: 14
