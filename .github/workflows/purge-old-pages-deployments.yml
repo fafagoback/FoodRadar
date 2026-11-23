@@ -1,0 +1,99 @@
+name: 臨時清除舊版 Pages 部署紀錄
+run-name: 臨時清除舊版 Pages 部署紀錄
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/purge-old-pages-deployments.yml'
+permissions:
+  contents: read
+  deployments: write
+jobs:
+  purge:
+    name: 保留現行網站並刪除舊部署紀錄
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 檢查目前部署狀態並清除舊版本
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import os, json, time, urllib.request, urllib.error
+          repo=os.environ['GH_REPOSITORY']
+          token=os.environ['GH_TOKEN']
+          base=f'https://api.github.com/repos/{repo}'
+          headers={
+            'Authorization':'Bearer '+token,
+            'Accept':'application/vnd.github+json',
+            'X-GitHub-Api-Version':'2022-11-28',
+            'User-Agent':'foodradar-old-pages-cleanup'
+          }
+          def req(method,path,payload=None):
+              data=None if payload is None else json.dumps(payload).encode()
+              for n in range(5):
+                  r=urllib.request.Request(base+path, data=data, method=method, headers=headers)
+                  try:
+                      with urllib.request.urlopen(r, timeout=30) as resp:
+                          b=resp.read()
+                          return resp.status, json.loads(b) if b else None
+                  except urllib.error.HTTPError as e:
+                      body=e.read().decode(errors='replace')[:250]
+                      if e.code in (429,500,502,503) or (e.code==403 and 'rate limit' in body.lower()):
+                          time.sleep(min(5*(n+1),25)); continue
+                      print(f'API錯誤 HTTP {e.code} {method} {path}: {body}',flush=True)
+                      return e.code, None
+              return 599,None
+          print('開始檢查 github-pages 歷史部署',flush=True)
+          deployments=[]
+          for page in range(1,21):
+              s,d=req('GET',f'/deployments?environment=github-pages&per_page=100&page={page}')
+              if s!=200: raise SystemExit(f'無法讀取部署清單 HTTP {s}')
+              if not d: break
+              deployments+=d
+              if len(d)<100: break
+          deployments.sort(key=lambda d:(d['created_at'],d['id']),reverse=True)
+          print('歷史部署數量:',len(deployments),flush=True)
+          if not deployments:
+              print('沒有可刪除的舊部署紀錄',flush=True)
+              raise SystemExit(0)
+          states={}
+          for d in deployments:
+              s,sts=req('GET',f"/deployments/{d['id']}/statuses?per_page=1")
+              if s!=200: raise SystemExit(f"讀取部署狀態失敗: {d['id']}, HTTP {s}")
+              states[d['id']]=(sts[0].get('state') if sts else 'unknown')
+          # Keep newest successful deployment (current published site);
+          # don't touch newer pending/in-progress jobs or any uncertain state.
+          latest_success=next((d for d in deployments if states[d['id']]=='success'),None)
+          if latest_success is None:
+              print('沒有可確認的成功部署，為保護線上網站，不執行刪除',flush=True)
+              print('現況:',[(d['id'],states[d['id']]) for d in deployments[:12]],flush=True)
+              raise SystemExit(1)
+          keep=latest_success['id']
+          print('保留最新成功部署:',keep,'建立時間',latest_success['created_at'], 'sha',latest_success.get('sha'),flush=True)
+          saved=0; failed=[]
+          protected={keep}
+          for d in deployments:
+              if d['id']==keep:continue
+              # Protect newer deployments and ongoing work.
+              if d['created_at']>=latest_success['created_at']:
+                  protected.add(d['id']);continue
+              if states[d['id']] in ('queued','pending','in_progress','unknown'):
+                  protected.add(d['id']);continue
+              depid=d['id']
+              if states[depid] != 'inactive':
+                  s,_=req('POST',f'/deployments/{depid}/statuses',{'state':'inactive','description':'已淘汰的舊版部署紀錄清理'})
+                  if s not in (200,201):
+                      failed.append((depid,f'無法停用 HTTP {s}'));continue
+              s,_=req('DELETE',f'/deployments/{depid}')
+              if s in (204,404):saved+=1
+              else:failed.append((depid,f'無法刪除 HTTP {s}'))
+              if saved and saved%25==0:print('已刪除舊版部署:',saved,flush=True)
+              time.sleep(.12)
+          s,remain=req('GET','/deployments?environment=github-pages&per_page=100')
+          print('最後驗證:', '已刪除',saved,'筆; API 目前傳回',len(remain or []) if s==200 else '查詢失敗','筆; 保留',sorted(protected),'筆; 失敗',failed[:25],flush=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as f:
+              f.write(f'## 舊版 GitHub Pages 部署清理\n\n- 原有：{len(deployments)} 筆\n- 已刪除：{saved} 筆\n- 保留現行成功版本：{keep}\n- 其他保護紀錄：{len(protected)-1} 筆\n- 刪除失敗：{len(failed)} 筆\n')
+          if failed:raise SystemExit(1)
+          PY
