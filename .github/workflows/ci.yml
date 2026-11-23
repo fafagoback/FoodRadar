@@ -71,26 +71,27 @@ jobs:
       - name: Python 全套回歸測試
         run: python -m unittest discover -s tests -v
 
-      - name: 檢測 HF 靜態資料規模與分片數（不下載商品資料）
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      - name: 檢測 GitHub Pages 靜態資料規模與地理索引（不下載商品資料）
         run: |
           python - <<'PY'
-          import json, os
-          from huggingface_hub import hf_hub_download
-          path=hf_hub_download(repo_id='hub-google/FoodRadar',
-            filename='StaticCatalog/current.json',repo_type='dataset',
-            token=os.environ.get('HF_TOKEN'),force_download=True)
-          m=json.load(open(path,encoding='utf-8'))
-          f=m['files']
-          print('FOODRADAR_HF_SOURCE_DIAGNOSTIC='+json.dumps({
-            'schema':m['schema'],'products':m['counts']['products'],
-            'stores':m['counts']['stores'],'bytes':m['bytes'],
-            'product_blobs':len(f['products']),
-            'search_blobs':len(f['search']),'history_blobs':len(f['history']),
-            'total_source_blobs':len(set(
-              [f['catalog'],f['stores'],*f['products'],
-              *f['search'].values(),*f['history'].values()])),
+          import json
+          import urllib.request
+          url='https://fafagoback.github.io/FoodRadar/data/manifest.json'
+          with urllib.request.urlopen(urllib.request.Request(
+              url+'?ci='+__import__('time').strftime('%Y%m%d%H%M%S'),
+              headers={'Cache-Control':'no-cache'}),timeout=30) as response:
+              m=json.load(response)
+          assert m['schema']=='foodradar-static-v2', m.get('schema')
+          assert m['counts']['products'] > 0
+          assert m['counts']['stores'] > 0
+          assert m.get('geo',{}).get('schema')=='foodradar-geo-grid-v1'
+          assert m['geo']['products'] and m['geo']['stores']
+          print('FOODRADAR_PAGES_SOURCE_DIAGNOSTIC='+json.dumps({
+              'schema':m['schema'],'batch':m['batch'],
+              'products':m['counts']['products'],
+              'stores':m['counts']['stores'],'bytes':m['bytes'],
+              'geo_product_cells':len(m['geo']['products']),
+              'geo_store_cells':len(m['geo']['stores'])
           },ensure_ascii=False),flush=True)
           PY
 
