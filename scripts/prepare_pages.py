@@ -1,4 +1,4 @@
-"""Assemble GitHub Pages from the last verified HF static pointer, never Turso."""
+"""Assemble GitHub Pages from a verified local Actions artifact, never HF."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -8,11 +8,10 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from huggingface_hub import hf_hub_download
 
 
-# The HF source is a verified V1 snapshot; convert it at deploy-time so old
-# published data remains usable without fetching an all-products index in browsers.
+# V1 snapshots are converted during Actions deployment so browsers never
+# need to download an all-products search index.
 # This conversion runs on GitHub Actions, never on a visitor's device.
 from collections import defaultdict
 import zstandard as zstd
@@ -235,22 +234,12 @@ def referenced_blobs(manifest):
     return refs
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO_ID = "hub-google/FoodRadar"
-PREFIX = "StaticCatalog"
 
 
-def prepare(web_dir, source_dir=None, token=None, commit=None):
+def prepare(web_dir, source_dir, commit=None):
     web_dir = Path(web_dir)
-    if source_dir is not None:
-        source_dir = Path(source_dir)
-        raw = (source_dir / "current.json").read_bytes()
-    else:
-        if not token:
-            raise ValueError("HF_TOKEN required to prepare Pages")
-        path = hf_hub_download(
-            repo_id=REPO_ID, filename=PREFIX+"/current.json", repo_type="dataset",
-            token=token, force_download=True)
-        raw = Path(path).read_bytes()
+    source_dir = Path(source_dir)
+    raw = (source_dir / "current.json").read_bytes()
     manifest = json.loads(raw)
     if (manifest.get("schema") not in ("foodradar-static-v1","foodradar-static-v2") or
             manifest.get("metadata", {}).get("application") != "FoodRadar"):
@@ -268,16 +257,7 @@ def prepare(web_dir, source_dir=None, token=None, commit=None):
     target.mkdir(parents=True)
 
     def download(digest):
-        if source_dir is not None:
-            src = source_dir/"blobs"/(digest+".zst")
-        else:
-            if manifest.get("hf_blob_layout") == "sha256-prefix-2":
-                remote_path=f"{PREFIX}/v2/blobs/{digest[:2]}/{digest}.zst"
-            else:
-                remote_path=f"{PREFIX}/blobs/{digest}.zst"
-            src = hf_hub_download(
-                repo_id=REPO_ID, filename=remote_path,
-                repo_type="dataset", token=token)
+        src = source_dir/"blobs"/(digest+".zst")
         payload = Path(src).read_bytes()
         if hashlib.sha256(payload).hexdigest() != digest:
             raise ValueError("Static asset SHA256 verification failed: " + digest)
@@ -313,7 +293,7 @@ def prepare(web_dir, source_dir=None, token=None, commit=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--staging", default=None)
+    parser.add_argument("--staging", required=True, help="Unpacked verified crawler artifact directory")
     parser.add_argument("--web-dir", default=str(ROOT/"web"))
     args = parser.parse_args()
-    prepare(args.web_dir, args.staging, os.getenv("HF_TOKEN"))
+    prepare(args.web_dir, args.staging)
