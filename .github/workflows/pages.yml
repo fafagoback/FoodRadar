@@ -195,6 +195,8 @@ jobs:
     if: ${{ always() && github.event_name == 'workflow_run' && needs.deploy.result == 'success' && needs.acceptance.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    environment:
+      name: github-pages
     steps:
       - name: 只刪除舊靜態副本，不觸碰 Raw 歷史資料
         env:
