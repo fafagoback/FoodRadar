@@ -1,5 +1,5 @@
-name: FoodRadar 03｜網站部署
-run-name: 'FoodRadar 03｜網站部署｜執行編號 #${{ github.run_number }}'
+name: FoodRadar 02｜網站部署
+run-name: 'FoodRadar 02｜網站部署｜執行編號 #${{ github.run_number }}'
 on:
   push:
     branches: [main]
@@ -13,7 +13,7 @@ on:
       - '.github/workflows/pages.yml'
   workflow_run:
     workflows:
-      - 'FoodRadar 02｜資料爬取與更新'
+      - 'FoodRadar 01｜資料爬取與更新'
     types: [completed]
     branches: [main]
   workflow_dispatch:
