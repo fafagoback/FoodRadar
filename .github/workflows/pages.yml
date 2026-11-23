@@ -1,22 +1,11 @@
 name: FoodRadar 02｜網站部署
 run-name: 'FoodRadar 02｜網站部署｜執行編號 #${{ github.run_number }}'
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'web/**'
-      - 'tests/live_site.cjs'
-      - 'scripts/configure_web.py'
-      - 'scripts/prepare_pages.py'
-      - 'scripts/build_geo_index.py'
-      - 'scripts/build_static_catalog.py'
-      - '.github/workflows/pages.yml'
   workflow_run:
     workflows:
       - 'FoodRadar 01｜資料爬取與更新'
     types: [completed]
     branches: [main]
-  workflow_dispatch:
 permissions:
   contents: read
   actions: read
@@ -70,7 +59,7 @@ jobs:
   deploy:
     name: 部署最新程式與已驗證資料版本
     needs: [ingest-gate]
-    if: ${{ always() && (github.event_name != 'workflow_run' || needs.ingest-gate.outputs.published == 'true') }}
+    if: ${{ needs.ingest-gate.outputs.published == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 18
     environment:
@@ -92,28 +81,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p pages-static-source
-          if [[ -n "$SOURCE_RUN_ID" ]]; then
-            echo "FOODRADAR_ARTIFACT_SOURCE_RUN=$SOURCE_RUN_ID"
-            gh run download "$SOURCE_RUN_ID" --name foodradar-static-source --dir pages-static-source
-          else
-            # For code-only pushes, reuse the newest successfully completed crawler
-            # artifact. Never download catalog data from HF or commit it to Git.
-            found=0
-            while read -r run_id; do
-              [[ -z "$run_id" ]] && continue
-              rm -rf pages-static-source
-              mkdir -p pages-static-source
-              if gh run download "$run_id" --name foodradar-static-source --dir pages-static-source; then
-                echo "FOODRADAR_ARTIFACT_SOURCE_RUN=$run_id"
-                found=1
-                break
-              fi
-            done < <(gh run list --workflow crawl.yml --branch main --status success --limit 25 --json databaseId --jq '.[].databaseId')
-            if [[ "$found" != 1 ]]; then
-              echo '找不到未過期的已驗證爬蟲 Artifact；拒絕使用舊 HF 資料或部署空資料。' >&2
-              exit 1
-            fi
-          fi
+          # Only the completed and verified crawl run may supply a deployment.
+          # Never reuse an older artifact or start a deployment from a code push.
+          test -n "$SOURCE_RUN_ID" || { echo '爬蟲尚未完成，禁止部署' >&2; exit 1; }
+          echo "FOODRADAR_ARTIFACT_SOURCE_RUN=$SOURCE_RUN_ID"
+          gh run download "$SOURCE_RUN_ID" --name foodradar-static-source --dir pages-static-source
           test -s pages-static-source/current.json
           test -d pages-static-source/blobs
       - name: 建立網站用的靜態地理查詢資料
@@ -216,9 +188,7 @@ jobs:
   acceptance:
     name: 正式網站瀏覽器驗收
     needs: deploy
-    # A skipped ingest-gate is normal on web-only pushes. GitHub's default
-    # success() propagates transitive skips, so explicitly require the actual
-    # deploy job to succeed and ALWAYS run browser verification afterward.
+    # Browser acceptance is permitted only after the verified crawl-backed deploy.
     if: ${{ always() && needs.deploy.result == 'success' }}
     # Playwright 1.56.1 does not provide Chromium for ubuntu-26.04 runners.
     runs-on: ubuntu-24.04
