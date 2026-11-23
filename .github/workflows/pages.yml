@@ -57,7 +57,7 @@ jobs:
               })
               with urlopen(request, timeout=25) as response:
                   jobs = json.load(response).get("jobs", [])
-              allowed = any(j.get("name", "").startswith("第 16 台｜彙整驗證")
+              allowed = any(j.get("name", "").startswith("第十六台｜彙整驗證")
                             and j.get("conclusion") == "success"
                             and any(s.get("name") == "保存已驗證靜態資料為 Pages 來源 Artifact"
                                     and s.get("conclusion") == "success"
