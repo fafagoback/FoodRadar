@@ -8,9 +8,7 @@ on:
       - 'scripts/configure_web.py'
       - 'scripts/prepare_pages.py'
       - 'scripts/build_geo_index.py'
-      - 'scripts/benchmark_static_hosts.py'
       - 'scripts/build_static_catalog.py'
-      - 'scripts/publish_static_catalog.py'
       - '.github/workflows/pages.yml'
   workflow_run:
     workflows:
@@ -60,7 +58,7 @@ jobs:
                   jobs = json.load(response).get("jobs", [])
               allowed = any(j.get("name", "").startswith("第 16 台｜彙整驗證")
                             and j.get("conclusion") == "success"
-                            and any(s.get("name") == "完成靜態資料發布至 HF"
+                            and any(s.get("name") == "保存已驗證靜態資料為 Pages 來源 Artifact"
                                     and s.get("conclusion") == "success"
                                     for s in j.get("steps", [])) for j in jobs)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
@@ -82,14 +80,44 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: 安裝網頁設定所需相依套件
-        run: pip install 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1'
-      - name: 從已驗證的 HF 靜態資料部署最新網站
+      - name: 從爬蟲的 Actions Artifact 下載最新完整靜態資料
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p pages-static-source
+          if [[ -n "$SOURCE_RUN_ID" ]]; then
+            echo "FOODRADAR_ARTIFACT_SOURCE_RUN=$SOURCE_RUN_ID"
+            gh run download "$SOURCE_RUN_ID" --name foodradar-static-source --dir pages-static-source
+          else
+            # For code-only pushes, reuse the newest successfully completed crawler
+            # artifact. Never download catalog data from HF or commit it to Git.
+            found=0
+            while read -r run_id; do
+              [[ -z "$run_id" ]] && continue
+              rm -rf pages-static-source
+              mkdir -p pages-static-source
+              if gh run download "$run_id" --name foodradar-static-source --dir pages-static-source; then
+                echo "FOODRADAR_ARTIFACT_SOURCE_RUN=$run_id"
+                found=1
+                break
+              fi
+            done < <(gh run list --workflow crawl.yml --branch main --status success --limit 25 --json databaseId --jq '.[].databaseId')
+            if [[ "$found" != 1 ]]; then
+              echo '找不到未過期的已驗證爬蟲 Artifact；拒絕使用舊 HF 資料或部署空資料。' >&2
+              exit 1
+            fi
+          fi
+          test -s pages-static-source/current.json
+          test -d pages-static-source/blobs
+      - name: 從本機 Artifact 建立 Pages 靜態地理查詢資料
+        run: |
+          pip install 'zstandard>=0.23,<1'
           python scripts/configure_web.py
-          python scripts/prepare_pages.py
+          python scripts/prepare_pages.py --staging pages-static-source
       - name: 驗證 JavaScript 與網站資料契約
         run: |
           node --check web/app.js
@@ -160,80 +188,38 @@ jobs:
           if-no-files-found: ignore
           retention-days: 5
 
-  hf-mirror-geo-benchmark:
-    name: 同版地理資料同步 HF 並實際測速
-    needs: deploy
-    # The skipped ingest-gate is normal on web-only pushes; success() must not suppress mirroring.
-    if: ${{ always() && needs.deploy.result == 'success' && github.event_name == 'push' && startsWith(github.event.head_commit.message, 'test(geo-mirror):') }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
+
+  cleanup-hf-static-copy:
+    name: 上線驗收成功後移除 HF 靜態副本（保留歷史 Raw）
+    needs: [deploy, acceptance]
+    if: ${{ always() && github.event_name == 'workflow_run' && needs.deploy.result == 'success' && needs.acceptance.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: 安裝建檔與瀏覽器測速套件
-        run: |
-          pip install 'requests>=2.31,<3' 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1' 'playwright>=1.56,<2'
-          python -m playwright install --with-deps chromium
-      - name: 從同一 HF 原始批次重建與 Pages 完全一致的 V2 地理資料
+      - name: 只刪除舊靜態副本，不觸碰 Raw 歷史資料
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          mkdir -p hf-geo-benchmark/site
-          cp -a web/. hf-geo-benchmark/site/
-          python scripts/prepare_pages.py --web-dir hf-geo-benchmark/site
+          pip install 'huggingface_hub>=0.30,<2'
           python - <<'PY'
-          import json
-          from pathlib import Path
-          m=json.loads(Path('hf-geo-benchmark/site/data/manifest.json').read_text())
-          assert m['geo']['schema']=='foodradar-geo-grid-v1'
-          print('GEO_SNAPSHOT_SOURCE='+json.dumps({
-            'batch':m['batch'],'blobs':len(list(Path('hf-geo-benchmark/site/data/blobs').glob('*.zst'))),
-            'bytes':m['bytes'],'geo_cells':len(m['geo']['products'])
-          }),flush=True)
+          import os
+          from huggingface_hub import HfApi
+          if not os.environ.get("HF_TOKEN"):
+              raise RuntimeError("缺少 HF_TOKEN；Pages 已發布，但 HF 副本尚未清除")
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          raw_repo = "hub-google/FoodRadar"
+          paths = api.list_repo_files(repo_id=raw_repo, repo_type="dataset")
+          if any(name.startswith("StaticCatalog/") for name in paths):
+              api.delete_folder(
+                  repo_id=raw_repo, repo_type="dataset", path_in_repo="StaticCatalog",
+                  commit_message="Remove obsolete FoodRadar static mirror; keep Raw history")
+              print("FOODRADAR_HF_STATIC_COPY_DELETED=StaticCatalog/", flush=True)
+          else:
+              print("FOODRADAR_HF_STATIC_COPY_ALREADY_ABSENT", flush=True)
+          benchmark_repo = "hub-google/FoodRadarHostBenchmark"
+          if api.repo_exists(repo_id=benchmark_repo, repo_type="dataset"):
+              api.delete_repo(repo_id=benchmark_repo, repo_type="dataset")
+              print("FOODRADAR_HF_BENCHMARK_REPO_DELETED=" + benchmark_repo, flush=True)
+          else:
+              print("FOODRADAR_HF_BENCHMARK_REPO_ALREADY_ABSENT", flush=True)
           PY
-      - name: 對照正式 Pages 資料版本與地理索引雜湊
-        run: |
-          python - <<'PY'
-          import hashlib,json,os,sys
-          from pathlib import Path
-          import requests
-          sys.path.insert(0,'scripts')
-          from prepare_pages import referenced_blobs
-          source=Path('hf-geo-benchmark/site/data/manifest.json').read_bytes()
-          # No reliance on JSON whitespace/key order or stale CDN cache.
-          url='https://fafagoback.github.io/FoodRadar/data/manifest.json?compare='+os.environ['GITHUB_SHA'][:12]
-          live=requests.get(url,timeout=40,headers={'Cache-Control':'no-cache'})
-          live.raise_for_status()
-          expected,actual=json.loads(source),live.json()
-          keys=('schema','batch','data_revision','counts','bytes','metadata','summary','files','geo')
-          diffs=[key for key in keys if expected.get(key)!=actual.get(key)]
-          print('GEO_MANIFEST_COMPARE='+json.dumps({
-            'source_sha256':hashlib.sha256(source).hexdigest(),
-            'pages_sha256':hashlib.sha256(live.content).hexdigest(),
-            'difference_fields':diffs,'source_bytes':expected.get('bytes'),
-            'pages_bytes':actual.get('bytes'),
-            'source_refs':len(referenced_blobs(expected)),
-            'pages_refs':len(referenced_blobs(actual)),
-          }),flush=True)
-          assert not diffs, 'Deployed Pages content differs from the HF mirror source'
-          assert referenced_blobs(expected)==referenced_blobs(actual), 'Referenced blob IDs differ'
-          print('GEO_SAME_REFERENCED_DATA_VERIFIED='+expected['data_revision'],flush=True)
-          PY
-      - name: 一次整批發布相同分片到獨立 HF Dataset（保留舊 GitHub Pages）
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/benchmark_static_hosts.py --mode publish --source hf-geo-benchmark/site --stage hf-geo-benchmark/result
-      - name: 從真實瀏覽器比較 Pages 與 HF 同檔下載速度
-        run: python scripts/benchmark_static_hosts.py --mode benchmark --stage hf-geo-benchmark/result
-      - name: 保留速度報告
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: foodradar-geo-pages-vs-hf
-          path: |
-            hf-geo-benchmark/result/results.json
-            hf-geo-benchmark/result/published.json
-          if-no-files-found: ignore
-          retention-days: 7
