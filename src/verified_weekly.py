@@ -1,12 +1,16 @@
-"""Seven-day discount projection from V2 numeric raw-API observations ONLY.
+"""Seven-day discount projection from verified V2 numeric observations.
 
-No historical Json promotion guesses, category badges or unit-price rounding may
-enter the official deal baseline. Compare exact Fraction prices per received unit.
+Price reversals A-B-A block the price-drop listing while any of the
+reversal's high-priced observations remain in the comparison window.
+Neither Uber Raw observations nor normal catalog prices are modified.
 """
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from decimal import Decimal, ROUND_HALF_UP
+from itertools import groupby
+
+from price_oscillation import has_disputed_high_in_week
 
 TW = timezone(timedelta(hours=8))
 
@@ -20,39 +24,55 @@ def _two_decimals(value):
 def update_verified_weekly(conn, latest_batch_id, minimum_discount_pct=30):
     now = datetime.strptime(latest_batch_id, "%Y%m%d%H%M%S").replace(tzinfo=TW)
     cutoff = (now - timedelta(days=7)).isoformat()
+    lookback = (now - timedelta(days=14)).isoformat()
     now_iso = now.isoformat()
-    # Explicitly clear all old inferred price flags even for off-hours products.
     conn.execute("""UPDATE products SET seven_day_reference_price=NULL,
         seven_day_discount_pct=0,seven_day_discount_amount=0,
         seven_day_is_price_deal=0,archive_reference_price=NULL,
         archive_discount_pct=0,archive_discount_amount=0,
         archive_evidence_count=0,archive_is_price_deal=0""")
-    candidates = {}
-    rows = conn.execute("""SELECT o.store_uuid,o.product_uuid,o.batch_id,
-        o.observed_at,o.payable_total_cents,o.received_quantity
-        FROM product_price_observations o
-        WHERE o.observed_at >= ? AND o.observed_at <= ?
-        ORDER BY o.store_uuid,o.product_uuid,o.observed_at""", (cutoff, now_iso))
-    for sid,pid,batch,at,cents,count in rows:
-        if not isinstance(cents,int) or not isinstance(count,int) or count <= 0:
-            continue
-        record = candidates.setdefault((sid,pid), [None, []])
-        unit = Fraction(cents, 100 * count)
-        if at == now_iso and batch == latest_batch_id:
-            record[0] = unit
-        elif at < now_iso:
-            record[1].append(unit)
+
+    # Stream by SKU rather than materializing the entire nationwide history.
+    # An extra seven days is required to recognize A-B-A after the first A
+    # moves outside the current seven-day baseline window.
+    rows = conn.execute("""SELECT store_uuid,product_uuid,batch_id,observed_at,
+            payable_total_cents,received_quantity
+        FROM product_price_observations
+        WHERE observed_at >= ? AND observed_at <= ?
+        ORDER BY store_uuid,product_uuid,observed_at,batch_id""",
+        (lookback, now_iso))
     updates = []
-    for (sid,pid),(current,prior) in candidates.items():
-        if current is None or not prior:
+    suppressed = 0
+    for (sid, pid), sku_rows in groupby(rows, key=lambda row: (row[0], row[1])):
+        observations = []
+        previous = []
+        current = None
+        for _, _, batch, at, cents, count in sku_rows:
+            if not isinstance(cents, int) or not isinstance(count, int) or cents <= 0 or count <= 0:
+                continue
+            price = Fraction(cents, 100 * count)
+            observations.append((datetime.fromisoformat(at), price))
+            if at == now_iso and batch == latest_batch_id:
+                current = price
+            elif cutoff <= at < now_iso:
+                previous.append(price)
+        if current is None or not previous:
             continue
-        high = max(prior)
+
+        if has_disputed_high_in_week(observations, now):
+            # The full SKU remains searchable. Only its seven-day discount
+            # reference and deal flags are withheld until the dispute expires.
+            suppressed += 1
+            updates.append((None, 0.0, 0.0, 0, sid, pid, now_iso))
+            continue
+
+        high = max(previous)
         drop = max(Fraction(0), high - current)
-        percent = (drop / high) * 100
-        pct = _two_decimals(percent)
+        pct = _two_decimals(100 * drop / high)
         updates.append((_two_decimals(high), pct, _two_decimals(drop),
                         int(drop > 0 and pct >= minimum_discount_pct),
-                        sid,pid,now_iso))
+                        sid, pid, now_iso))
+
     conn.executemany("""UPDATE products SET
         seven_day_reference_price=?,seven_day_discount_pct=?,
         seven_day_discount_amount=?,seven_day_is_price_deal=?
@@ -64,5 +84,6 @@ def update_verified_weekly(conn, latest_batch_id, minimum_discount_pct=30):
                       AND s.last_seen=products.last_seen)""", updates)
     conn.commit()
     return {"qualified_comparisons": len(updates),
+            "oscillation_suppressed": suppressed,
             "deals": conn.execute("""SELECT COUNT(*) FROM products
                 WHERE seven_day_is_price_deal=1""").fetchone()[0]}

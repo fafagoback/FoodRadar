@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - 'scripts/build_static_catalog.py'
+      - 'src/price_oscillation.py'
+      - 'src/verified_weekly.py'
+      - 'scripts/audit_deal_pipeline.py'
+      - 'tests/test_price_oscillation.py'
       - '.github/workflows/crawl.yml'
   # 每天台灣時間 06:30、18:30 自動更新（UTC 前一天 22:30、當天 10:30）。
   # 只保留每日排程與手動操作；程式碼 push 不啟動爬蟲。
