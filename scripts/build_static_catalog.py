@@ -153,6 +153,8 @@ def build(packed_db, serving_db, output):
         has_quotes = source.execute("""SELECT 1 FROM sqlite_master
              WHERE type='table' AND name='product_price_observations'""").fetchone()
         if has_quotes:
+            import sys
+            sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
             from canonical_history import quote_points
             for sid, pid, quote in quote_points(source):
                 if (sid,pid) not in history_keys:

@@ -152,6 +152,28 @@ class StaticMigrationTests(unittest.TestCase):
             self.assertEqual(served["lookup_buckets"],4096)
             self.assertEqual(served["history_buckets"],4096)
 
+    def test_native_observations_replace_duplicate_events_and_retain_older_history(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            packed,source=root/"packed.db",root/"serving.db"
+            fixture(packed,source)
+            with sqlite3.connect(source) as db:
+                db.execute("""CREATE TABLE product_price_observations(
+                    store_uuid TEXT,product_uuid TEXT,observed_at TEXT,batch_id TEXT,
+                    menu_price_cents INTEGER,promotion_type TEXT,buy_quantity INTEGER,
+                    free_quantity INTEGER,received_quantity INTEGER,payable_total_cents INTEGER)""")
+                db.executemany("INSERT INTO product_price_observations VALUES(?,?,?,?,?,?,?,?,?,?)",[
+                    ("s1","p0","2026-11-10T06:30:00+08:00","20261110063000",10000,"NONE",1,0,1,10000),
+                    ("s1","p0",LAST,BATCH,10000,"SAME_SKU_BXGY",1,1,2,10000)])
+            result=build(packed,source,root/"output")
+            h=result["files"]["history"][str(bucket("s1",128))]
+            entries=json.loads(zstd.ZstdDecompressor().decompress(
+                (root/"output"/"blobs"/(h+".zst")).read_bytes()))["s1\x1fp0"]
+            self.assertEqual(len(entries),2)
+            self.assertTrue(all(e["event_type"]=="MENU_QUOTE" for e in entries))
+            values=[json.loads(e["new_state"])["effective_price"] for e in entries]
+            self.assertEqual(values,[100.0,50.0])
+
     def test_geo_manifest_reproducible_across_python_hash_seeds(self):
         """Identical input must yield identical content-hash references, regardless of hash randomization."""
         with tempfile.TemporaryDirectory() as temp:
