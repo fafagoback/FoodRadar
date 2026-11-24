@@ -22,27 +22,19 @@ jobs:
           path: data/state-checkpoint/
           key: foodradar-state-v1-45337750740-1
           fail-on-cache-miss: true
-      - name: 讀取已成功產出的網站資料清單
+      - name: 讀取本次真實新爬取批次的舊引擎基準
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download 45337750740 --name foodradar-static-source --dir reference-static
-      - name: 完整回歸與增量功能等價測試
+        run: gh run download 45338816255 --name foodradar-static-source --dir reference-static
+      - name: 安裝執行環境與回歸測試
         run: |
           python -m pip install -q -r requirements.txt
           python -m unittest discover -s tests -v
           node tests/price_history.cjs
-      - name: 直接讀取18MB資料庫產出原網站並逐一比對雜湊
-        run: |
-          cp -a data/state-checkpoint /tmp/foodradar-original-compact
-          python scripts/verify_direct_compact.py
-          rm -rf data/state-checkpoint
-          mv /tmp/foodradar-original-compact data/state-checkpoint
-      - name: 真實 HF 原始資料索引與 v3 快取遷移驗收
+      - name: 從舊快取直接更新本次真實新爬取資料
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # The previous step only recalculated unchanged derived flags.
-          # Restore the pristine cache hash before exercising the real entrypoint.
           python scripts/prepare_hf_release.py
           python - <<'PY'
           import json
@@ -52,14 +44,34 @@ jobs:
           m=json.loads(Path("data/state-checkpoint/manifest.json").read_text())
           old=json.loads(Path("reference-static/current.json").read_text())
           new=json.loads((Path("data")/batch/"static-public/current.json").read_text())
+          assert batch=="20261124142003",batch
           assert m["format"]=="foodradar-checkpoint-v4"
           assert r["full_expanded_database_bytes"]==0
           assert r["compact_bytes"]<20_000_000
-          assert old["files"]==new["files"]
-          assert old["summary"]==new["summary"]
-          assert old["counts"]==new["counts"]
-          assert old["data_revision"]==new["data_revision"]
-          print("DIRECT_PRODUCTION_ENTRYPOINT_VERIFIED",json.dumps(r))
+          assert r["max_shop_scratch_bytes"]>0
+          for field in ("batch","files","summary","counts","data_revision"):
+              assert old[field]==new[field],field
+          print("DIRECT_REAL_NEW_BATCH_PARITY="+json.dumps(r),flush=True)
+          Path("direct-compact-report.json").write_text(json.dumps(r,ensure_ascii=False,indent=2))
+          PY
+      - name: 重新直接讀取新快取並確認所有資料一致
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python scripts/prepare_hf_release.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          batch=Path("data/latest.txt").read_text().strip()
+          r=json.loads((Path("data")/batch/"direct-db-report.json").read_text())
+          old=json.loads(Path("reference-static/current.json").read_text())
+          new=json.loads((Path("data")/batch/"static-public/current.json").read_text())
+          assert r["full_expanded_database_bytes"]==0
+          assert r["max_shop_scratch_bytes"]==0
+          assert r["compact_bytes"]<20_000_000
+          for field in ("batch","files","summary","counts","data_revision"):
+              assert old[field]==new[field],field
+          print("DIRECT_V4_CACHE_REUSE_PARITY="+json.dumps(r),flush=True)
           PY
       - uses: actions/upload-artifact@v4
         if: always()
