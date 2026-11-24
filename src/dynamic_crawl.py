@@ -16,7 +16,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
-from crawl_queue import GitQueue, HEARTBEAT_SECONDS, initial_state, artifact_name
+from crawl_queue import SharedGitQueue, HEARTBEAT_SECONDS, initial_state, artifact_name
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip, _validate_references
 from menu_core import global_limiter
@@ -27,7 +27,7 @@ HELPER = ROOT / ".github/actions/fr-dynamic-crawl/artifact.cjs"
 
 
 def runtime_queue():
-    return GitQueue(ROOT, os.environ["GITHUB_RUN_ID"],
+    return SharedGitQueue(ROOT, os.environ["GITHUB_RUN_ID"],
                     int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")))
 
 
@@ -215,8 +215,9 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
                         sid, lease, artifact_id, folder = future.result()
                         if not queue.finish(sid, lease["token"], artifact_id):
                             # A stale worker never overwrites a recovered task.
-                            raise RuntimeError("Lease lost before completion: " + sid)
-                        captured_count += 1
+                            print("FOODRADAR_STALE_TASK_RESULT_IGNORED=" + sid, flush=True)
+                        else:
+                            captured_count += 1
                         shutil.rmtree(folder)
                         next_poll = 0
                 else:
@@ -293,7 +294,7 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["init", "worker", "status", "assemble"])
+    p.add_argument("command", choices=["init", "worker", "status", "assemble", "cleanup"])
     p.add_argument("--discovery-file", type=Path, default=ROOT / "data/discovery/discovery.json")
     p.add_argument("--index", type=int, default=0)
     p.add_argument("--task-dir", type=Path, default=ROOT / "data/tasks")
@@ -312,6 +313,9 @@ def main():
                           "completed": len(state["completed"])}))
     elif args.command == "worker":
         capture_worker(config, args.index, args.discovery_file, queue=q)
+    elif args.command == "cleanup":
+        verify_queue(q.read(), shared, digest, ids)
+        q.cleanup()
     else:
         assemble(config, args.discovery_file, args.task_dir, args.summary_dir, args.output, queue=q)
 

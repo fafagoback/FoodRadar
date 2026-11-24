@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from crawl_queue import GitQueue, initial_state, validate_state, artifact_name
+from crawl_queue import GitQueue, SharedGitQueue, initial_state, validate_state, artifact_name
 
 
 class QueueTests(unittest.TestCase):
@@ -76,6 +76,31 @@ class QueueTests(unittest.TestCase):
             raise RuntimeError("storage unavailable")
         a.recover_expired(broken)
         self.assertEqual(len(a.read()["leased"]), 1)
+
+    def test_sharded_locks_are_one_global_pool(self):
+        clients = []
+        for i in range(15):
+            c = self.client(i)
+            clients.append(SharedGitQueue(c.repo, "123"))
+        ids = ["shop-%02d" % n for n in range(60)]
+        clients[0].initialize(initial_state("123", "epoch", "sha", ids))
+        def work(i):
+            q = clients[i]
+            accepted = []
+            while True:
+                claims = q.claim("w-" + str(i), i, 2)
+                if not claims:
+                    if q.read()["pending"]:
+                        continue
+                    return accepted
+                for sid, lease in claims:
+                    self.assertTrue(q.finish(sid, lease["token"], int(sid[-2:])+1))
+                    accepted.append(sid)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as pool:
+            accepted = sum(pool.map(work, range(15)), [])
+        self.assertEqual(sorted(accepted), ids)
+        self.assertEqual(set(clients[0].read()["completed"]), set(ids))
+        clients[0].cleanup()
 
     def test_bad_roster_is_rejected(self):
         s = initial_state("123", "epoch", "sha", ["a"])

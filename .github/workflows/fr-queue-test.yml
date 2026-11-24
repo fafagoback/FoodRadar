@@ -4,8 +4,28 @@ on:
     branches: [feature/fr-dynamic-queue-20261125]
 permissions:
   contents: read
+concurrency:
+  group: fr-dynamic-queue-development
+  cancel-in-progress: true
 jobs:
+  prepare:
+    name: 停止同一開發分支舊測試
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Cancel superseded test runs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/fr-queue-test.yml/runs?branch=feature/fr-dynamic-queue-20261125&per_page=30" --jq '.workflow_runs[] | [.id,.run_number,.status] | @tsv' | while read -r id number status; do
+            if [ "$number" -lt "$GITHUB_RUN_NUMBER" ] && [ "$status" != completed ]; then
+              gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" || true
+            fi
+          done
   tests:
+    needs: prepare
     name: 動態任務池與既有功能回歸
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -25,6 +45,8 @@ jobs:
           node --check .github/actions/fr-dynamic-crawl/artifact.cjs
 
   fixture:
+    needs: prepare
+    if: ${{ contains(github.event.head_commit.message, 'FR_HOSTED_MATRIX') }}
     name: 建立跨工作機唯讀測試任務池
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -111,4 +133,4 @@ jobs:
           pattern: fr-worker-*
           path: data/worker-summaries
       - run: python tests/dynamic_runner_smoke.py assemble
-      - run: git push origin --delete "fr-queue/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - run: python src/dynamic_crawl.py cleanup

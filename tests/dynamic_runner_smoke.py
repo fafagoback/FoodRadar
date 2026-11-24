@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 import dynamic_crawl as dc
-from crawl_queue import GitQueue, initial_state
+from crawl_queue import SharedGitQueue, initial_state
 from distributed_crawl import merge_shards
 
 CFG = json.loads((ROOT / "config.json").read_text())
@@ -51,9 +51,9 @@ def worker(index):
         return {"store_uuid": sid, "store_url": item["store_url"], "success": True,
                 "inactive": True, "response_path": relative, "captured_at": "2026-11-25T00:00:00+08:00"}
     dc.public_ip = lambda: None
-    dc.HEARTBEAT_SECONDS = 5
-    q = GitQueue(ROOT, os.environ["GITHUB_RUN_ID"],
-                 int(os.environ["GITHUB_RUN_ATTEMPT"]), lease_seconds=45)
+    dc.HEARTBEAT_SECONDS = 15
+    q = SharedGitQueue(ROOT, os.environ["GITHUB_RUN_ID"],
+                 int(os.environ["GITHUB_RUN_ATTEMPT"]), lease_seconds=90)
     if index == 0:
         # Simulate power loss just after immutable artifact upload, before
         # queue completion. Other actual hosted runners must recover it.

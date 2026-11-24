@@ -56,11 +56,13 @@ def artifact_name(state, sid, lease):
 
 
 class GitQueue:
-    def __init__(self, repo, run_id, attempt=1, remote="origin", lease_seconds=LEASE_SECONDS):
+    def __init__(self, repo, run_id, attempt=1, remote="origin", lease_seconds=LEASE_SECONDS, lane=None):
         self.repo = Path(repo).resolve()
         if not re.fullmatch(r"[A-Za-z0-9_-]+", str(run_id)) or not str(attempt).isdigit():
             raise ValueError("Invalid queue ref")
         self.ref = f"refs/heads/fr-queue/{run_id}-{attempt}"
+        if lane is not None:
+            self.ref += f"-lane-{lane:02d}"
         self.run_id = str(run_id)
         self.remote = remote
         self.lease_seconds = lease_seconds
@@ -159,7 +161,7 @@ class GitQueue:
         def edit(s):
             now = time.time()
             rows = [v for v in s["leased"].values()
-                    if v["owner"] == owner and v["expires"] > now]
+                    if v["owner"] == owner]
             for row in rows:
                 row["expires"] = now + self.lease_seconds
             return bool(rows), len(rows)
@@ -176,7 +178,9 @@ class GitQueue:
             if not row or row["token"] != token:
                 return False, False
             expired = row["expires"] <= time.time()
-            if expired != recovered:
+            # A delayed writer with the still-current fencing token may
+            # complete an already-saved result; a reassigned token cannot.
+            if recovered and not expired:
                 return False, False
             s["completed"][sid] = {"owner": row["owner"], "worker": row["worker"],
                                    "token": token, "artifact_id": artifact_id}
@@ -210,3 +214,141 @@ class GitQueue:
                 self.release_expired(sid, row["token"])
             else:
                 self.finish(sid, row["token"], artifact_id, recovered=True)
+
+
+class SharedGitQueue:
+    """One logical pool, multiple independent CAS lanes to avoid one hot ref.
+
+    Lanes partition only the synchronization metadata, not the work. Any
+    worker may claim any lane, in a randomized order, with no estimates and
+    no persistent worker assignment. The immutable root defines the roster.
+    """
+    def __init__(self, repo, run_id, attempt=1, remote="origin", lease_seconds=LEASE_SECONDS):
+        self.root = GitQueue(repo, run_id, attempt, remote, lease_seconds)
+        self.args = (repo, run_id, attempt, remote, lease_seconds)
+        self.lock = self.root.lock
+        self.meta = None
+        self.lanes = []
+        self.lane_of = {}
+        self.available = set()
+        self.owner_lanes = {}
+
+    def _configure(self, state):
+        count = state.get("lane_count")
+        if type(count) is not int or not 1 <= count <= 32 or count > len(state["tasks"]):
+            raise ValueError("Invalid synchronization lane count")
+        self.meta = state
+        self.lanes = [GitQueue(*self.args, lane=i) for i in range(count)]
+        for lane in self.lanes:
+            lane.lock = self.lock
+        self.lane_of = {sid: i % count for i, sid in enumerate(state["tasks"])}
+        self.available = set(range(count))
+
+    def _ensure(self):
+        if self.meta is None:
+            self._configure(self.root.read())
+
+    def initialize(self, state):
+        with self.lock:
+            # Lanes are fixed by roster size, never by predicted store work.
+            state = dict(state, lane_count=min(32, max(1, (len(state["tasks"]) + 1) // 2)))
+            self._configure(state)
+            commits = [(self.root.make_commit(state), self.root.ref)]
+            for index, lane in enumerate(self.lanes):
+                part = initial_state(state["run_id"], state["epoch"], state["source_sha"],
+                                     [sid for sid, i in self.lane_of.items() if i == index])
+                commits.append((lane.make_commit(part), lane.ref))
+            args = ["push", "--atomic"]
+            args += ["--force-with-lease=" + ref + ":" for _, ref in commits]
+            args += [self.root.remote] + [sha + ":" + ref for sha, ref in commits]
+            result = self.root.git(*args, check=False)
+            if result.returncode:
+                # A repeated initialization can only reuse the exact roster.
+                current = self.root.read()
+                if any(current[k] != state[k] for k in ("run_id", "epoch", "source_sha", "tasks", "lane_count")):
+                    raise RuntimeError("Existing task pool identity differs")
+                self._configure(current)
+                self.read()
+            return state
+
+    def read(self):
+        with self.lock:
+            self._ensure()
+            # Fetch all lane heads in one network operation.
+            refs = [f"+{q.ref}:refs/fr-local/lane-{i:02d}" for i, q in enumerate(self.lanes)]
+            self.root.git("fetch", "--no-tags", "--depth=1", self.root.remote, *refs)
+            merged = {k: self.meta[k] for k in ("version", "run_id", "epoch", "source_sha", "tasks")}
+            merged.update(pending=[], leased={}, completed={})
+            available = set()
+            for i, lane in enumerate(self.lanes):
+                state = validate_state(json.loads(self.root.git("show", f"refs/fr-local/lane-{i:02d}:queue.json").stdout))
+                if (any(state[k] != self.meta[k] for k in ("run_id", "epoch", "source_sha"))
+                    or set(state["tasks"]) != {sid for sid, index in self.lane_of.items() if index == i}):
+                    raise ValueError("Synchronization lane identity changed")
+                if state["pending"]:
+                    available.add(i)
+                merged["pending"].extend(state["pending"])
+                merged["leased"].update(state["leased"])
+                merged["completed"].update(state["completed"])
+            self.available = available
+            merged["pending"].sort()
+            return validate_state(merged)
+
+    def claim(self, owner, worker, slots):
+        if slots < 1:
+            return []
+        with self.lock:
+            self._ensure()
+            if not self.available:
+                self.read()
+            order = list(self.available)
+            random.shuffle(order)
+            for index in order:
+                claimed = self.lanes[index].claim(owner, worker, slots)
+                if claimed:
+                    self.owner_lanes.setdefault(owner, set()).add(index)
+                    if len(claimed) < slots:
+                        self.available.discard(index)
+                    return claimed
+                self.available.discard(index)
+            return []
+
+    def renew(self, owner):
+        with self.lock:
+            self._ensure()
+            total = 0
+            lanes = self.owner_lanes.get(owner, set())
+            for i in list(lanes):
+                n = self.lanes[i].renew(owner)
+                if not n:
+                    lanes.discard(i)
+                total += n
+            return total
+
+    def finish(self, sid, token, artifact_id, recovered=False):
+        with self.lock:
+            self._ensure()
+            return self.lanes[self.lane_of[sid]].finish(sid, token, artifact_id, recovered=recovered)
+
+    def recover_expired(self, find_artifact):
+        state = self.read()
+        for sid, row in state["leased"].items():
+            if row["expires"] > time.time():
+                continue
+            artifact_id = find_artifact(artifact_name(state, sid, row))
+            with self.lock:
+                lane = self.lanes[self.lane_of[sid]]
+                if artifact_id is None:
+                    if lane.release_expired(sid, row["token"]):
+                        self.available.add(self.lane_of[sid])
+                else:
+                    lane.finish(sid, row["token"], artifact_id, recovered=True)
+
+    def cleanup(self):
+        with self.lock:
+            self._ensure()
+            state = self.read()
+            if state["pending"] or state["leased"]:
+                raise RuntimeError("Cannot delete an incomplete task pool")
+            refs = [self.root.ref] + [q.ref for q in self.lanes]
+            self.root.git("push", "--atomic", self.root.remote, *[":" + ref for ref in refs])

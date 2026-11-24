@@ -476,7 +476,7 @@ jobs:
           retention-days: 5
       - name: 移除已完成的臨時任務池分支
         if: ${{ success() && needs.discover_once.result == 'success' }}
-        run: git push origin --delete "fr-queue/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        run: python src/dynamic_crawl.py cleanup
 
       - name: 保存本次實際執行指標
         if: ${{ !cancelled() }}
