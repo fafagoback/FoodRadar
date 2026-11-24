@@ -216,7 +216,7 @@ def discover(config: dict, raw: Path, index: int):
 
 
 
-def save_shared_discovery(config: dict, root: Path = ROOT):
+def save_shared_discovery(config: dict, root: Path = ROOT, dynamic=False):
     """Discover once at the configured coordinate; all 15 crawl workers share this file."""
     folder = root / "data" / "discovery"
     if folder.exists():
@@ -228,18 +228,23 @@ def save_shared_discovery(config: dict, root: Path = ROOT):
         p.relative_to(raw).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(raw.rglob("*.body"))
     }
-    weights = latest_raw_workload_weights(config)
     previous_promotions = latest_raw_promotion_baseline(config)
-    ownership, batch_count, estimates = plan_batches(stores, weights)
-    loads = [0] * batch_count
-    for sid, owner in ownership.items():
-        loads[owner] += estimates[sid]
-    print("FOODRADAR_WEIGHTED_SHARDS=" + json.dumps({
-        "method": "fixed_15_weighted_workers", "max_parallel": MAX_PARALLEL, "batches": batch_count,
-        "estimated_loads": loads, "stores": len(stores),
-    }), flush=True)
+    if dynamic:
+        ownership, batch_count, estimates = None, 15, {}
+        print("FOODRADAR_DYNAMIC_TASK_POOL=" + json.dumps({"workers": 15, "stores": len(stores)}), flush=True)
+    else:
+        weights = latest_raw_workload_weights(config)
+        ownership, batch_count, estimates = plan_batches(stores, weights)
+        loads = [0] * batch_count
+        for sid, owner in ownership.items():
+            loads[owner] += estimates[sid]
+        print("FOODRADAR_WEIGHTED_SHARDS=" + json.dumps({
+            "method": "fixed_15_weighted_workers", "max_parallel": MAX_PARALLEL, "batches": batch_count,
+            "estimated_loads": loads, "stores": len(stores),
+        }), flush=True)
     manifest = {
         "ownership": ownership, "owner_count": batch_count,
+        "assignment_mode": "dynamic" if dynamic else "legacy-fixed",
         "workload_weights": estimates,
         "format": "foodradar-shared-feed-v1",
         "run_id": os.getenv("GITHUB_RUN_ID", "local"),
@@ -607,9 +612,14 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             raise ValueError("Worker results do not match current discovery digest")
         expected = json.loads(discovery_file.read_bytes())
         if (run_ids != {expected.get("run_id")} or source_shas != {expected.get("source_sha")}
-                or set(expected["ownership"]) != all_discovered
+                or {s["store_uuid"] for s in expected["stores"]} != all_discovered
                 or expected["owner_count"] != count
-                or shared_ownership_maps[0] != expected["ownership"]):
+                or (expected.get("assignment_mode") != "dynamic"
+                    and shared_ownership_maps[0] != expected["ownership"])
+                or (expected.get("assignment_mode") == "dynamic"
+                    and (expected.get("ownership") is not None
+                         or not isinstance(shared_ownership_maps[0], dict)
+                         or set(shared_ownership_maps[0]) != all_discovered))):
             raise ValueError("Worker results do not match current discovery assignment")
     owner_missing = sorted(all_discovered - set(all_captured))
     unexpected = sorted(set(all_captured) - all_discovered)
@@ -703,7 +713,8 @@ def main():
     worker.add_argument("--index", type=int, required=True)
     worker.add_argument("--count", type=int, default=15)
     worker.add_argument("--discovery-file", type=Path, default=None)
-    sub.add_parser("discover")
+    discovery = sub.add_parser("discover")
+    discovery.add_argument("--dynamic", action="store_true")
     merge = sub.add_parser("merge")
     merge.add_argument("--input-dir", type=Path, default=ROOT / "data" / "parts")
     merge.add_argument("--count", type=int, default=15)
@@ -714,7 +725,7 @@ def main():
     args = parser.parse_args()
     cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     if args.command == "discover":
-        save_shared_discovery(cfg)
+        save_shared_discovery(cfg, dynamic=args.dynamic)
     elif args.command == "shard":
         capture_shard(cfg, args.index, args.count, discovery_file=args.discovery_file)
     else:

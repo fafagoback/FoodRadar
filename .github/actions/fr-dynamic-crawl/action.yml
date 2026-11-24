@@ -1,0 +1,9 @@
+name: FR dynamic crawler
+description: Run a persistent worker with access to the GitHub Actions artifact runtime.
+inputs:
+  index:
+    description: Fixed worker index 0 through 14
+    required: true
+runs:
+  using: node20
+  main: main.cjs
