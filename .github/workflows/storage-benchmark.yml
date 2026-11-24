@@ -1,5 +1,5 @@
 name: FoodRadar｜一次性實際資料庫容量實驗
-run-name: FoodRadar｜商品及計價資料正規化共用儲存實驗
+run-name: FoodRadar｜完整無損儲存最佳化實驗
 on:
   push:
     branches: [main]
@@ -15,7 +15,7 @@ jobs:
   benchmark:
     name: 唯讀還原正式資料並比較容量及效能
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,7 +34,7 @@ jobs:
       - name: 逐筆比對及壓縮效能實驗
         run: |
           set -o pipefail
-          python scripts/benchmark_normalized_storage.py data/state-checkpoint | tee /tmp/fr-benchmark.log
+          python scripts/benchmark_storage_search.py data/state-checkpoint | tee /tmp/fr-benchmark.log
       - name: 彙整實驗結果
         if: always()
         run: |
