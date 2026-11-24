@@ -1,5 +1,5 @@
-name: FoodRadar｜第七輪自動結構搜尋
-run-name: FoodRadar｜跨欄位共用及連續容量實測
+name: FoodRadar｜第八輪自動結構搜尋
+run-name: FoodRadar｜跨店商品區塊共用實測
 on:
   push:
     branches: [research/storage-20261124]
@@ -44,25 +44,16 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p docs/storage-research
-          python scripts/benchmark_storage_round7.py data/state-checkpoint docs/storage-research/round7-state.json | tee /tmp/fr7.log
+          python scripts/benchmark_storage_round8.py data/state-checkpoint | tee /tmp/fr8.log
+          grep -q '^FR8_RESULT=' /tmp/fr8.log
       - name: 保存本輪研究紀錄
         if: always() && steps.deadline.outputs.active == 'true'
         run: |
           mkdir -p docs/storage-research
-          if test -f /tmp/fr7.log; then cp /tmp/fr7.log docs/storage-research/round7-${{ github.run_id }}.log; else echo '未取得測試日誌' > docs/storage-research/round7-${{ github.run_id }}.log; fi
-          tail -c 50000 docs/storage-research/round7-${{ github.run_id }}.log >> "$GITHUB_STEP_SUMMARY"
+          if test -f /tmp/fr8.log; then cp /tmp/fr8.log docs/storage-research/round8-${{ github.run_id }}.log; else echo '未取得測試日誌' > docs/storage-research/round8-${{ github.run_id }}.log; fi
+          tail -c 50000 docs/storage-research/round8-${{ github.run_id }}.log >> "$GITHUB_STEP_SUMMARY"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add docs/storage-research
-          git commit -m '保存第七輪結構搜尋進度'
+          git commit -m '保存第八輪結構搜尋進度'
           git push origin HEAD:research/storage-20261124
-      - name: 有未測候選即接續下一批
-        if: success() && steps.deadline.outputs.active == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          remaining=$(sed -n 's/^FR7_REMAINING=//p' /tmp/fr7.log | tail -1)
-          if [[ "$remaining" =~ ^[0-9]+$ ]] && [ "$remaining" -gt 0 ] && [ "$(date -u +%s)" -lt "$(date -u -d '2026-11-25 00:00:00' +%s)" ]; then
-            gh workflow run storage-benchmark.yml --ref research/storage-20261124
-          fi
