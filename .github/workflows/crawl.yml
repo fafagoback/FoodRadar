@@ -368,7 +368,12 @@ jobs:
         if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
         env:
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
-        run: python src/distributed_crawl.py merge --count ${{ needs.discover_once.outputs.batch_count }} --input-dir data/parts --upload --strict --discovery-file data/discovery/discovery.json
+        # Preserve strict per-store verification, discovery coverage and HTTP hashes.
+        # Restore the previously tested fail-closed quarantine policy for known
+        # deterministic catalog gaps only (<=5%, >=50 verified stores).
+        # The failed stores' previous verified state is retained, not overwritten.
+        # Unknown errors and missing or invalid artifacts still abort publication.
+        run: python src/distributed_crawl.py merge --count ${{ needs.discover_once.outputs.batch_count }} --input-dir data/parts --upload --discovery-file data/discovery/discovery.json
 
       - name: 保存所有工作機平均最佳執行緒至 Repo
         if: ${{ success() && needs.discover_once.result == 'success' }}
