@@ -42,7 +42,7 @@ class CheckpointTests(unittest.TestCase):
             'folder':'Raw','verified_batches':1,'manifest_count':1,
             'manifest_digest':manifest_digest(self.rows),
             'contract_digest':'valid-contract'}))
-        save(self.src,index,cache=self.cache)
+        save(self.src,index,cache=self.cache,compact=False)
 
     def test_valid_cache_preserves_product(self):
         self.assertEqual(restore(self.target,self.rows,self.config,self.cache),
