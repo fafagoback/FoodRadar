@@ -38,7 +38,13 @@ def capture_response(directory: Path, filename: str, response) -> str:
 
 
 def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
-    """Capture native getStoreV1 response bytes; no menu/schema conversion."""
+    """Capture immutable HTTP bodies; retry store metadata only before paging.
+
+    capture_catalog owns the per-page retry budget, including 429 cooldown.
+    Once catalog capture starts, never restart the entire store on an
+    exhausted page or structural partition error. Keep the failed capture
+    for audit and let the existing release gate decide whether to publish.
+    """
     uuid = normalize_store_uuid(store["store_uuid"], store["store_url"])
     if not re.fullmatch(r"[0-9a-f-]{36}", uuid):
         return {"store_uuid": uuid, "error": "Invalid store UUID"}
@@ -56,6 +62,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
     result = {"store_uuid": uuid, "store_url": store["store_url"], "success": False}
     try:
         for attempt in range(1, max_retries + 1):
+            catalog_started = False
             try:
                 global_limiter.wait()
                 response = session.post(
@@ -97,6 +104,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
                         global_limiter.record_success()
                         # getStoreV1 is only a preview for large grocery stores.
                         # Save every native catalog page before accepting a complete capture.
+                        catalog_started = True
                         all_catalog = capture_catalog(
                             session, uuid, data, root, headers, capture_response, store_attempt=attempt)
                         result.update(success=True, response_path=relative,
@@ -116,6 +124,15 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
                     chain.append(f"{type(cause).__name__}: {cause}")
                     cause = cause.__cause__
                 result["error"] = " <- ".join(chain)
+                if catalog_started:
+                    # A page already exhausted its own retry budget, or the
+                    # partition is structurally incomplete. Do not re-download
+                    # earlier successful pages or bless the partial menu.
+                    print("FOODRADAR_CATALOG_RETRY_STOP=" + json.dumps({
+                        "store_uuid": uuid, "store_attempt": attempt,
+                        "error": result["error"],
+                    }, ensure_ascii=False), flush=True)
+                    return result
             if attempt < max_retries:
                 time.sleep(attempt)
     finally:

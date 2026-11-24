@@ -6,6 +6,9 @@ on:
     paths:
       - 'scripts/build_static_catalog.py'
       - 'src/price_oscillation.py'
+      - 'src/raw_capture.py'
+      - 'src/catalog_complete.py'
+      - 'tests/test_immutable_raw_capture.py'
       - 'src/verified_weekly.py'
       - 'scripts/audit_deal_pipeline.py'
       - 'tests/test_price_oscillation.py'

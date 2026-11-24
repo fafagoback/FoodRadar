@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from raw_capture import capture_response, documents_from_hf_raw
+from raw_capture import capture_response, documents_from_hf_raw, fetch_store_raw
 
 
 class ImmutableRawTests(unittest.TestCase):
@@ -72,6 +72,106 @@ class ImmutableRawTests(unittest.TestCase):
                         "complete":True, "responses":{filename:"bad"},
                         "stores":[], "batch_id":"20261030160101",
                     })
+
+
+class StoreRetryScopeTests(unittest.TestCase):
+    STORE = {"store_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+             "store_url": "https://www.ubereats.com/tw/store/test/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+
+    @staticmethod
+    def response(body, status=200):
+        return SimpleNamespace(status_code=status,
+                               content=json.dumps(body).encode("utf-8"),
+                               json=lambda: body)
+
+    def run_capture(self, replies, offsets=None):
+        session = SimpleNamespace()
+        calls = []
+
+        def post(url, json, headers, timeout):
+            calls.append((url.rsplit("/", 1)[-1],
+                          (json.get("pagingInfo") or {}).get("offset")))
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        session.post = post
+        session.close = lambda: None
+        with tempfile.TemporaryDirectory() as temp:
+            with patch("raw_capture.requests.Session", return_value=session), \
+                 patch("raw_capture.attach_delivery_location", return_value=True), \
+                 patch("raw_capture.global_limiter.wait"), \
+                 patch("raw_capture.global_limiter.record_success"), \
+                 patch("raw_capture.global_limiter.trigger_backoff") as backoff, \
+                 patch("raw_capture.time.sleep"):
+                result = fetch_store_raw(self.STORE, Path(temp))
+                files = list(Path(temp).rglob("*.body"))
+                if offsets is not None:
+                    self.assertEqual([offset for api, offset in calls
+                                      if api == "getCatalogPresentationV2"], offsets)
+                return result, calls, len(files), backoff.call_count
+
+    def base(self):
+        return self.response({"status": "success", "data": {
+            "title": "Test store",
+            "aisles": {"store": [{"catalogSectionUUID": "parent"}]},
+        }})
+
+    def page(self, more=False, offset=0):
+        return self.response({"status": "success", "data": {
+            "catalog": [{"payload": {"standardItemsPayload": {
+                "catalogItems": [{"uuid": "sku-1", "title": "Item", "price": 1000}]
+            }}}],
+            "pagingInfo": {"hasMore": more, "offset": offset},
+        }})
+
+    def test_structural_partition_failure_never_restarts_store(self):
+        result, calls, count, _ = self.run_capture(
+            [self.base(), self.page(True, 1020)], [0])
+        self.assertFalse(result["success"])
+        self.assertIn("native subsection UUIDs unavailable", result["error"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(count, 2)
+        self.assertNotIn("catalog_complete", result)
+
+    def test_transient_later_page_retries_only_that_page(self):
+        from requests import Timeout
+        result, calls, count, _ = self.run_capture(
+            [self.base(), self.page(True, 60), Timeout("temporary"), self.page()],
+            [0, 60, 60])
+        self.assertTrue(result["success"])
+        self.assertTrue(result["catalog_complete"])
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(count, 3)
+
+    def test_exhausted_later_page_never_restarts_store(self):
+        from requests import Timeout
+        result, calls, count, _ = self.run_capture(
+            [self.base(), self.page(True, 60)] + [Timeout("persistent")] * 3,
+            [0, 60, 60, 60])
+        self.assertFalse(result["success"])
+        self.assertIn("offset 60 failed", result["error"])
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(count, 2)
+        self.assertNotIn("catalog_complete", result)
+
+    def test_metadata_timeout_can_retry_before_paging(self):
+        from requests import Timeout
+        result, calls, count, _ = self.run_capture(
+            [Timeout("metadata"), self.base(), self.page()], [0])
+        self.assertTrue(result["success"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(count, 2)
+
+    def test_metadata_429_still_backs_off_and_retries(self):
+        result, calls, count, backoffs = self.run_capture(
+            [self.response({"error": "rate limited"}, 429), self.base(), self.page()],
+            [0])
+        self.assertTrue(result["success"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(count, 3)
+        self.assertEqual(backoffs, 1)
 
 
 if __name__ == "__main__":
