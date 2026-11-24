@@ -32,7 +32,35 @@ jobs:
           python -m unittest discover -s tests -v
           node tests/price_history.cjs
       - name: 直接讀取18MB資料庫產出原網站並逐一比對雜湊
-        run: python scripts/verify_direct_compact.py
+        run: |
+          cp -a data/state-checkpoint /tmp/foodradar-original-compact
+          python scripts/verify_direct_compact.py
+          rm -rf data/state-checkpoint
+          mv /tmp/foodradar-original-compact data/state-checkpoint
+      - name: 真實 HF 原始資料索引與 v3 快取遷移驗收
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # The previous step only recalculated unchanged derived flags.
+          # Restore the pristine cache hash before exercising the real entrypoint.
+          python scripts/prepare_hf_release.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          batch=Path("data/latest.txt").read_text().strip()
+          r=json.loads((Path("data")/batch/"direct-db-report.json").read_text())
+          m=json.loads(Path("data/state-checkpoint/manifest.json").read_text())
+          old=json.loads(Path("reference-static/current.json").read_text())
+          new=json.loads((Path("data")/batch/"static-public/current.json").read_text())
+          assert m["format"]=="foodradar-checkpoint-v4"
+          assert r["full_expanded_database_bytes"]==0
+          assert r["compact_bytes"]<20_000_000
+          assert old["files"]==new["files"]
+          assert old["summary"]==new["summary"]
+          assert old["counts"]==new["counts"]
+          assert old["data_revision"]==new["data_revision"]
+          print("DIRECT_PRODUCTION_ENTRYPOINT_VERIFIED",json.dumps(r))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

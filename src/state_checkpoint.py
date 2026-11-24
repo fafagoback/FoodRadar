@@ -256,8 +256,8 @@ def save(source, raw_index_path, cache=CACHE, root=ROOT, *, compact=True):
 DIRECT_CONTRACTS=CONTRACTS+("src/compact_direct.py",)
 DIRECT_V3_ANCHOR="3ecd55f11ab6449f1eab661833833d17c97d3dab"
 DIRECT_V3_REVIEWED={
-    "src/pipeline.py":"PIN_PIPELINE",
-    "src/compact_direct.py":"PIN_DIRECT",
+    "src/pipeline.py":"a55e5a5a71a2e3d78daf310afb011ceec93901cf",
+    "src/compact_direct.py":"27bace902b74505d3e8d214200de7ae8c4b24e65",
 }
 
 def direct_contract_digest(root=ROOT):
