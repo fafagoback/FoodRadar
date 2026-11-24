@@ -152,7 +152,7 @@ jobs:
     needs: discover_once
     if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       max-parallel: 15
@@ -172,9 +172,15 @@ jobs:
         with:
           name: foodradar-shared-feed
           path: data/discovery
-      - name: 依 UUID 分工抓取該台負責店家
+      - name: 讀取 Repo 共用最佳執行緒
         env:
-          FOODRADAR_PARALLEL_SECTIONS: '1'
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er '.optimal_threads | select(type == "number" and . >= 1 and . <= 12 and . == floor)')
+          echo "FOODRADAR_INITIAL_THREADS=$value" >> "$GITHUB_ENV"
+      - name: 多店並行、自動調整執行緒並完整爬取
+        env:
+          FOODRADAR_PARALLEL_SECTIONS: '0'
         run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count 15 --discovery-file data/discovery/discovery.json
       - name: 上傳分工原始資料給第 16 台（不寫 HF / DB）
         if: ${{ !cancelled() }}
@@ -191,6 +197,8 @@ jobs:
     if: "${{ !cancelled() && needs.prepare_run.result == 'success' && (needs.crawl_shard.result == 'success' || (needs.crawl_shard.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: write
     environment:
       name: github-pages
     concurrency:
@@ -296,6 +304,11 @@ jobs:
             data/**/shard-reconciliation.json
           if-no-files-found: ignore
           retention-days: 5
+      - name: 保存所有工作機平均最佳執行緒至 Repo
+        if: ${{ success() && needs.crawl_shard.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/save_crawl_settings.py
       - name: 保存本次實際執行指標
         if: ${{ !cancelled() }}
         run: python scripts/action_summary.py capture

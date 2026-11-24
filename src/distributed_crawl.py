@@ -26,6 +26,7 @@ from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
 from catalog_complete import is_recoverable_catalog_failure
 from promo_api_recheck import verify_suspicious_store
+from adaptive_threads import run_adaptive, valid_threads, DEFAULT_THREADS
 
 ROOT = Path(__file__).resolve().parents[1]
 TW = timezone(timedelta(hours=8))
@@ -335,10 +336,9 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
         if not isinstance(baseline, dict):
             raise ValueError("Invalid previous promotion baseline in shared discovery")
     captured = []
-    for completed, store_uuid in enumerate(assigned, 1):
+    def capture_one(store_uuid):
         item = discovered[store_uuid]
         started = time.monotonic()
-        before_requests = global_limiter.snapshot()["requests"]
         try:
             result = fetch_store_raw(item, raw)
         except Exception as exc:
@@ -366,14 +366,26 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
                     "store_uuid": store_uuid, "reason": result["promotion_stats_error"]
                 }), flush=True)
         result["crawl_elapsed_ms"] = max(1, round((time.monotonic() - started) * 1000))
-        result["crawl_api_requests"] = global_limiter.snapshot()["requests"] - before_requests
+        # Process-wide request counters cannot be attributed to one thread.
+        result["crawl_api_requests"] = (len(list((raw / "stores").glob(f"{store_uuid}-*.body")))
+                                        + len(list((raw / "catalog" / store_uuid).rglob("*.body"))))
+        return result
+
+    def completed_one(result):
         captured.append(result)
+        completed = len(captured)
         if completed % 10 == 0 or completed == len(assigned):
             print("FOODRADAR_SHARD_PROGRESS=" + json.dumps({
                 "shard": index, "completed": completed, "assigned": len(assigned),
                 "failed": sum(s.get("success") is not True for s in captured),
                 "api": global_limiter.snapshot(),
             }, ensure_ascii=False), flush=True)
+    initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
+    if not valid_threads(initial):
+        raise ValueError("Invalid FOODRADAR_INITIAL_THREADS")
+    thread_learning = run_adaptive(assigned, capture_one, global_limiter, initial, completed_one)
+    captured.sort(key=lambda row: row["store_uuid"])
+    print("FOODRADAR_THREAD_LEARNING=" + json.dumps(thread_learning), flush=True)
     checksums = {
         p.relative_to(raw).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(raw.rglob("*.body"))
@@ -391,6 +403,7 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
         "discovered_store_uuids": sorted(discovered),
         "assigned_store_uuids": assigned,
         "stores": captured,
+        "thread_learning": thread_learning,
         "responses": checksums,
         "api": global_limiter.snapshot(),
     }
