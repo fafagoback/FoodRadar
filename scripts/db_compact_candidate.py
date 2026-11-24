@@ -41,7 +41,7 @@ def packed(v):
 def unpack(v):
     return msgpack.unpackb(decompressor.decompress(v),raw=False,strict_map_key=False)
 report={"target_bytes":20_000_000,"original_bytes":source.stat().st_size,
-        "batch":meta["batch_id"],"production_ready":False}
+        "batch":meta["batch_id"],"production_ready":False,"quote_keys":"store-local product ordinal"}
 start=time.perf_counter()
 out=Path("compact-candidate.db")
 dst=sqlite3.connect(out)
@@ -102,7 +102,7 @@ def qvalue(r):
     return (r["menu_price_cents"],kinds[r["promotion_type"]],
         r["buy_quantity"],r["free_quantity"],r["received_quantity"],
         r["original_total_cents"],r["payable_total_cents"])
-def quote_payload(rows, include_hash=False):
+def quote_payload(rows, product_index, include_hash=False):
     groups=defaultdict(dict)
     for r in rows:
         key=r["product_uuid"]
@@ -112,9 +112,9 @@ def quote_payload(rows, include_hash=False):
         pos=batch_index[(r["batch_id"],r["observed_at"])]
         masks=groups[key]
         masks[vals]=masks.get(vals,0)|(1<<pos)
-    return [[pk(pid),[[list(v),mask.to_bytes(mask_width,"little")] for v,mask in vals.items()]]
+    return [[product_index[pid],[[list(v),mask.to_bytes(mask_width,"little")] for v,mask in vals.items()]]
         for pid,vals in sorted(groups.items())]
-def verify_quotes(payload,rows):
+def verify_quotes(payload,rows,product_ids):
     reconstructed={}
     for pid,values in payload:
         for value,mask in values:
@@ -122,7 +122,7 @@ def verify_quotes(payload,rows):
             while bits:
                 least=bits&-bits
                 pos=least.bit_length()-1
-                key=(unpk(pid),pos)
+                key=(product_ids[pid],pos)
                 assert key not in reconstructed
                 reconstructed[key]=tuple(value)
                 bits^=least
@@ -140,12 +140,14 @@ for sid in sids:
     state=[[encode_field(c,store[c]) for c in store_cols],
            [[encode_field(c,p[c]) for c in product_cols] for p in products]]
     sh=packed(state)
-    price=quote_payload(quotes)
+    product_ids=[p["product_uuid"] for p in products]
+    product_index={pid:i for i,pid in enumerate(product_ids)}
+    price=quote_payload(quotes,product_index)
     ph=packed(price)
-    verify_quotes(unpack(ph),quotes)
+    verify_quotes(unpack(ph),quotes,product_ids)
     # Benchmark the additional cost of retaining each SHA locally rather than
     # locating it in authoritative Raw through (store, product, batch).
-    with_hash=packed(quote_payload(quotes,True))
+    with_hash=packed(quote_payload(quotes,product_index,True))
     dst.execute("INSERT INTO shop_state VALUES(?,?)",(pk(sid),sh))
     dst.execute("INSERT INTO price_history VALUES(?,?)",(pk(sid),ph))
     counts["stores"]+=1
