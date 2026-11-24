@@ -17,6 +17,8 @@ on:
       - 'tests/live_site.cjs'
       - '.github/workflows/pages.yml'
       - 'src/raw_capture.py'
+      - 'src/promo_api_recheck.py'
+      - 'src/promo_target_recheck.py'
       - 'src/catalog_complete.py'
       - 'src/distributed_crawl.py'
       - 'src/adaptive_threads.py'

@@ -255,6 +255,7 @@ def verify_suspicious_store(store_item: dict, raw_root: Path, original: dict,
         previous_watch=previous_watch, current_items=first["items"])
     if not reason:
         return original
+    use_targeted = fetch_again is None
     if fetch_again is None:
         from raw_capture import fetch_store_raw
         fetch_again = fetch_store_raw
@@ -265,8 +266,20 @@ def verify_suspicious_store(store_item: dict, raw_root: Path, original: dict,
                   "previous_stats": previous, "first_stats": first["stats"],
                   "raw_prefix": f"promo-recheck/{sid}/"}
     try:
-        repeated = fetch_again(store_item, retry_root)
-        if repeated.get("success") is True and repeated.get("store_uuid") != sid:
+        targeted = None
+        if use_targeted:
+            from promo_target_recheck import suspicious_skus, targeted_recheck
+            targets = suspicious_skus(previous, first, previous_batch, now, previous_watch)
+            if targets:
+                targeted = targeted_recheck(store_item, raw_root, original, targets, retry_root)
+        if targeted is not None:
+            retry_info.update(targeted)
+            repeated = None
+        else:
+            repeated = fetch_again(store_item, retry_root)
+        if repeated is None:
+            pass  # Exact SKU evidence already verified independently.
+        elif repeated.get("success") is True and repeated.get("store_uuid") != sid:
             retry_info["error"] = "Recheck returned different store UUID"
         elif repeated.get("success") is not True or repeated.get("inactive"):
             retry_info["error"] = str(repeated.get("error") or "API retry returned no valid store")[:250]

@@ -316,7 +316,8 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                     records.append({"path": relative, "section_uuid": section_uuid,
                                     "subsection_uuid": subsection_uuid,
                                     "section_index": section_index, "page": page,
-                                    "offset": offset, "item_count": n})
+                                    "offset": offset, "item_count": n,
+                                    "request_payload": json.loads(json.dumps(payload))})
                     bodies.append(body)
                     break
                 except _DeepOffsetRejected:
