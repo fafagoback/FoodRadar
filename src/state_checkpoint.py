@@ -2,6 +2,7 @@
 import hashlib
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,7 +10,7 @@ CACHE = ROOT / "data" / "state-checkpoint"
 CONTRACTS = ("src/pipeline.py", "src/serving_state.py", "src/raw_capture.py",
              "src/menu_core.py", "src/catalog_complete.py", "src/json_to_db.py",
              "src/raw_price_enrichment.py", "src/verified_prices.py",
-             "src/verified_weekly.py", "src/price_oscillation.py", "src/price_observation.py",
+             "src/price_observation.py",
              "src/snapshot_validation.py", "src/promotion_evidence.py",
              "src/catalog_web_fields.py")
 
@@ -30,6 +31,55 @@ def contract_digest(root=ROOT):
     return h.hexdigest()
 
 
+# Only the raw-to-observation contract invalidates the checkpoint. Weekly
+# prices are derived afresh on every restore_history call.
+# Legacy caches are accepted only for reviewed, exact historical contracts.
+# The changes between these commits and the anchor affect capture retries
+# or weekly projections, not persisted native observations.
+MIGRATION_ANCHOR = "f05afa66b8483d93781816bacee75f3d8cb944c6"
+LEGACY_CONTRACT_REFS = (
+    ("a5bf4dd71aa46d92bb60349408b5f86d721296ae", False),
+    ("2e91a6a748374bbe1e7df41dfb7622a17e2f57f9", True),
+    ("86eac20a8a8c77d7f83d673016d5dfa476e0097e", True),
+    ("4c758cf2369e81fdc249adb8b7bada42108b20b6", True),
+    (MIGRATION_ANCHOR, True),
+)
+
+
+def _historical_digest(root, ref, files):
+    h = hashlib.sha256()
+    for file in files:
+        data = subprocess.check_output(
+            ["git", "show", f"{ref}:{file}"], cwd=root,
+            stderr=subprocess.DEVNULL, timeout=15)
+        h.update(file.encode() + b"\0")
+        h.update(data)
+    return h.hexdigest()
+
+
+def compatible_contract(meta, root):
+    current = contract_digest(root)
+    if meta.get("format") == "foodradar-checkpoint-v2":
+        return meta.get("contract_digest") == current
+    if meta.get("format") != "foodradar-checkpoint-v1":
+        return False
+    try:
+        if _historical_digest(root, MIGRATION_ANCHOR, CONTRACTS) != current:
+            return False
+        pos = CONTRACTS.index("src/price_observation.py")
+        for ref, has_oscillation in LEGACY_CONTRACT_REFS:
+            projection = ("src/verified_weekly.py",)
+            if has_oscillation:
+                projection += ("src/price_oscillation.py",)
+            files = CONTRACTS[:pos] + projection + CONTRACTS[pos:]
+            if meta.get("contract_digest") == _historical_digest(root, ref, files):
+                print("FOODRADAR_CHECKPOINT_LEGACY_CONTRACT_MIGRATED=" + ref, flush=True)
+                return True
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return False
+
+
 def manifest_digest(rows):
     h = hashlib.sha256()
     for path, _meta, sha in rows:
@@ -45,12 +95,12 @@ def restore(target, records, config, cache=CACHE, root=ROOT):
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         count = meta.get("manifest_count")
-        if (meta.get("format") != "foodradar-checkpoint-v1"
+        if (meta.get("format") not in ("foodradar-checkpoint-v1", "foodradar-checkpoint-v2")
                 or meta.get("repo_id") != config["hf_repo_id"]
                 or meta.get("folder") != config["hf_folder"].strip("/")
                 or type(count) is not int or count < 1 or count > len(records)
                 or meta.get("manifest_digest") != manifest_digest(records[:count])
-                or meta.get("contract_digest") != contract_digest(root)
+                or not compatible_contract(meta, root)
                 or meta.get("sqlite_sha256") != digest_file(candidate)):
             raise ValueError("invalid checkpoint provenance, code contract or SHA-256")
         with sqlite3.connect(candidate) as db:
@@ -92,7 +142,7 @@ def save(source, raw_index_path, cache=CACHE, root=ROOT):
     target = cache / "serving.db"
     shutil.copy2(source, target)
     (cache / "manifest.json").write_text(json.dumps({
-        **index, "format": "foodradar-checkpoint-v1",
+        **index, "format": "foodradar-checkpoint-v2",
         "sqlite_sha256": digest_file(target)
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print("FOODRADAR_CHECKPOINT_PREPARED=" + json.dumps({

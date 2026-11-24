@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
-from state_checkpoint import restore, save, manifest_digest
+from state_checkpoint import restore, save, manifest_digest, CONTRACTS, compatible_contract
 
 
 class CheckpointTests(unittest.TestCase):
@@ -53,6 +53,29 @@ class CheckpointTests(unittest.TestCase):
     def test_appended_batch_uses_verified_prefix(self):
         rows=self.rows+[('Raw/20261112183000/manifest.json',{},'f'*64)]
         self.assertEqual(restore(self.target,rows,self.config,self.cache),('20261112063000',1))
+
+    def test_projection_changes_do_not_invalidate_observations(self):
+        self.assertNotIn("src/verified_weekly.py", CONTRACTS)
+        self.assertNotIn("src/price_oscillation.py", CONTRACTS)
+        self.assertIn("src/serving_state.py", CONTRACTS)
+        self.assertIn("src/price_observation.py", CONTRACTS)
+        self.assertIn("src/raw_capture.py", CONTRACTS)
+
+    def test_changed_observation_contract_rejects_cache(self):
+        with patch("state_checkpoint.contract_digest", return_value="new-observation-contract"):
+            self.assertIsNone(restore(self.target,self.rows,self.config,self.cache))
+
+    def test_legacy_cache_requires_reviewed_exact_contract(self):
+        def historical(root, ref, files):
+            return "valid-contract" if tuple(files) == CONTRACTS else "reviewed-legacy"
+        with patch("state_checkpoint._historical_digest", side_effect=historical):
+            self.assertTrue(compatible_contract(
+                {"format":"foodradar-checkpoint-v1","contract_digest":"reviewed-legacy"},self.root))
+            self.assertFalse(compatible_contract(
+                {"format":"foodradar-checkpoint-v1","contract_digest":"unknown"},self.root))
+        with patch("state_checkpoint._historical_digest", return_value="different"):
+            self.assertFalse(compatible_contract(
+                {"format":"foodradar-checkpoint-v1","contract_digest":"reviewed-legacy"},self.root))
 
     def test_old_manifest_changed_falls_back(self):
         changed=[(self.rows[0][0],self.rows[0][1],'e'*64)]

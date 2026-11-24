@@ -5,7 +5,7 @@
 | 名稱 | 檔案 | 觸發時機 | 成功條件 |
 |---|---|---|---|
 | FoodRadar 01｜資料爬取與更新 | `.github/workflows/crawl.yml` | 每天臺灣時間 06:30、18:30；相關核心程式碼更新；必要時人工從該 Workflow 啟動 | Python/JavaScript 回歸測試 → 原生 Uber API 原始資料完整性 → SQLite V2 → 七日降價與反覆價格判斷 → 靜態索引 → `foodradar-static-source` Artifact |
-| FoodRadar 02｜網站部署 | `.github/workflows/pages.yml` | **只有 01 成功完成後**，透過 `workflow_run` 自動啟動 | 僅下載同一次 01 的 Artifact → 建置搜尋與地理索引 → 部署 GitHub Pages → 核對正式網頁版本 → Chromium 電腦及手機實測 |
+| FoodRadar 02｜網站部署 | `.github/workflows/pages.yml` | **只有 01 資料與報告成功後**，由 01 發出部署通知；02 等待來源完整成功後才執行發布 | 僅下載同一次 01 的 Artifact → 建置搜尋與地理索引 → 部署 GitHub Pages → 核對正式網頁版本 → Chromium 電腦及手機實測 |
 
 ## 資料權威與發布
 
@@ -36,3 +36,8 @@
 ## 價格規則修正的重新發布
 
 核心價格程式更新只觸發 01 的既有 Raw 重播／重算，不重新抓取店家。即使恢復 SQLite 快取且沒有新增 Raw，也重新計算全部七日價格聲明。發布前核對完整價格稽核；正式網站驗收加入北投優市 YBARRA 橄欖油近似 ABA 案例，商品可正常搜尋，但有 ABA 時不得出現為七日降價。取消或失敗的 01 不執行 02 的部署與報告工作。
+
+## 2026-11-24 發布門禁與快取修正
+
+- 01 資料處理及稽核未成功，不送出 02 啟動通知；02 獨立驗證來源執行已完成且成功、來源 SHA、Artifact 上傳步驟及 main 最新版本。失敗／取消的 01 不再建立 02 執行紀錄。
+- SQLite checkpoint v2 的原始觀測合約不包含 `verified_weekly.py` 與 `price_oscillation.py`。已驗證的觀測可重用，七日價格每次必須重新計算。v1 僅允許已審核的確切歷史合約遷移，仍核對 Raw manifest、SQLite SHA 和完整性。

@@ -1,11 +1,16 @@
 name: FoodRadar 02｜網站部署
 run-name: 'FoodRadar 02｜網站部署｜執行編號 #${{ github.run_number }}'
 on:
-  workflow_run:
-    workflows:
-      - 'FoodRadar 01｜資料爬取與更新'
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: '已通過資料稽核的 01 執行 ID'
+        required: true
+        type: string
+      source_sha:
+        description: '來源 01 的完整 commit SHA'
+        required: true
+        type: string
 permissions:
   contents: read
   actions: read
@@ -13,13 +18,12 @@ permissions:
   id-token: write
 concurrency:
   group: foodradar-pages-deployment
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   ingest-gate:
     name: 確認爬蟲實際成功發布資料
-    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     outputs:
       published: ${{ steps.verify.outputs.published }}
     steps:
@@ -27,34 +31,51 @@ jobs:
         id: verify
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
           CURRENT_SHA: ${{ github.sha }}
           GH_REPOSITORY: ${{ github.repository }}
         run: |
           python - <<'PY'
-          import json, os
+          import json, os, re, time
           from urllib.request import Request, urlopen
-          allowed = (os.environ["SOURCE_CONCLUSION"] == "success"
-                     and os.environ["SOURCE_BRANCH"] == "main"
-                     and os.environ["SOURCE_SHA"] == os.environ["CURRENT_SHA"])
-          if allowed:
-              url = (f'https://api.github.com/repos/{os.environ["GH_REPOSITORY"]}'
-                     f'/actions/runs/{os.environ["SOURCE_RUN_ID"]}/jobs?per_page=100')
-              request = Request(url, headers={
-                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              })
-              with urlopen(request, timeout=25) as response:
-                  jobs = json.load(response).get("jobs", [])
-              allowed = any(j.get("name", "").startswith("第十六台｜彙整驗證")
-                            and j.get("conclusion") == "success"
-                            and any(s.get("name") == "保存已驗證靜態資料為 Pages 來源 Artifact"
-                                    and s.get("conclusion") == "success"
-                                    for s in j.get("steps", [])) for j in jobs)
+          run_id = os.environ["SOURCE_RUN_ID"]
+          sha = os.environ["SOURCE_SHA"]
+          if not re.fullmatch(r"[0-9]+", run_id) or not re.fullmatch(r"[a-f0-9]{40}", sha):
+              raise SystemExit("無效來源執行 ID 或版本")
+          if sha != os.environ["CURRENT_SHA"]:
+              raise SystemExit("來源版本已過期，不得部署")
+          base = f'https://api.github.com/repos/{os.environ["GH_REPOSITORY"]}'
+          headers = {
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          def read(path):
+              with urlopen(Request(base + path, headers=headers), timeout=15) as response:
+                  return json.load(response)
+          for _ in range(60):
+              source = read(f"/actions/runs/{run_id}")
+              if (source.get("head_branch") != "main" or source.get("head_sha") != sha
+                  or source.get("path", "").split("@")[0] != ".github/workflows/crawl.yml"):
+                  raise SystemExit("非本次正式資料更新，禁止部署")
+              if source.get("status") == "completed":
+                  break
+              time.sleep(3)
+          else:
+              raise SystemExit("資料更新尚未完成，禁止部署")
+          if source.get("conclusion") != "success":
+              raise SystemExit("資料更新未成功，禁止部署")
+          jobs = read(f"/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
+          allowed = any(j.get("name", "").startswith("第十六台｜彙整驗證")
+                        and j.get("conclusion") == "success"
+                        and any(s.get("name") == "保存已驗證靜態資料為 Pages 來源 Artifact"
+                                and s.get("conclusion") == "success"
+                                for s in j.get("steps", [])) for j in jobs)
+          if not allowed:
+              raise SystemExit("資料包尚未完整驗證，禁止部署")
+          if read("/branches/main")["commit"]["sha"] != sha:
+              raise SystemExit("來源版本已過期，不得部署")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f'published={str(allowed).lower()}\n')
           print('VERIFIED_INGEST_DEPLOY_GATE=' + str(allowed))
@@ -73,7 +94,7 @@ jobs:
       - name: 取得程式碼
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.source_sha }}
       - name: 準備程式執行環境
         uses: actions/setup-python@v5
         with:
@@ -82,7 +103,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +117,7 @@ jobs:
           test -d pages-static-source/blobs
       - name: 建立網站用的靜態地理查詢資料
         env:
-          GITHUB_SHA: ${{ github.event.workflow_run.head_sha }}
+          GITHUB_SHA: ${{ inputs.source_sha }}
         run: |
           pip install 'zstandard>=0.23,<1'
           python scripts/configure_web.py
@@ -205,7 +226,7 @@ jobs:
       - name: 取得程式碼
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.source_sha }}
       - name: 安裝驗收專用瀏覽器
         run: |
           npm install --no-save playwright@1.56.1
@@ -224,14 +245,14 @@ jobs:
   report:
     name: 產生中文網站部署與驗收總報告
     needs: [ingest-gate, deploy, acceptance]
-    if: ${{ always() && github.event.workflow_run.conclusion == 'success' }}
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.source_sha }}
       - name: 下載本次部署指標
         if: ${{ needs.deploy.result == 'success' }} 
         continue-on-error: true

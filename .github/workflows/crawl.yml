@@ -112,7 +112,7 @@ jobs:
     needs: crawl_shard
     if: "${{ always() && (needs.crawl_shard.result == 'success' || (needs.crawl_shard.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 120
     environment:
       name: github-pages
     concurrency:
@@ -121,6 +121,8 @@ jobs:
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: 準備程式執行環境
         uses: actions/setup-python@v5
         with:
@@ -289,3 +291,27 @@ jobs:
           SHARD_RESULT: ${{ needs.crawl_shard.result }}
           INGEST_RESULT: ${{ needs.ingest.result }}
         run: python scripts/action_summary.py crawl
+
+  request-deployment:
+    name: 資料與稽核全部成功後才啟動網站部署
+    needs: [ingest, report]
+    if: ${{ !cancelled() && needs.ingest.result == 'success' && needs.report.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: 核對來源版本並通知網站部署
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$GH_REPO/branches/main" --jq .commit.sha)
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo '有更新版本排隊，舊版資料不部署。' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh workflow run pages.yml --ref main -f source_run_id="$GITHUB_RUN_ID" -f source_sha="$GITHUB_SHA"
+          echo '來源資料與稽核均已成功，已通知 02；02 仍會等待整個 01 完成才發布。' >> "$GITHUB_STEP_SUMMARY"
