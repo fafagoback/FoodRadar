@@ -187,7 +187,6 @@ def restore(target, records, config, cache=CACHE, root=ROOT, *, lean=False):
             db_count=db.execute("SELECT COUNT(*) FROM crawl_batches").fetchone()[0]
         if not row or row[0]!=meta.get("batch_id") or db_count!=meta.get("verified_batches"):
             raise ValueError("Checkpoint/database batch mismatch")
-        for part in state.parts:part.remove_image_urls()
         print("FOODRADAR_CHECKPOINT_RESTORED="+json.dumps({
             "batch":row[0],"manifests":count,"verified_batches":db_count,
             "compact_bytes":(sum(p["bytes"] for p in parts) if parts else
@@ -359,6 +358,7 @@ def restore_direct(records,config,cache=CACHE,root=ROOT):
             or state.meta.get("latest_batch")!=meta["batch_id"]
             or len(state.batch_rows())!=meta["verified_batches"]):
             raise ValueError("Checkpoint counts or batch mismatch")
+        for part in state.parts:part.remove_image_urls()
         print("FOODRADAR_CHECKPOINT_RESTORED="+json.dumps({
             "batch":meta["batch_id"],"manifests":count,"verified_batches":meta["verified_batches"],
             "compact_bytes":state.metrics()["compact_bytes"],"direct":True},ensure_ascii=False),flush=True)
