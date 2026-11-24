@@ -27,6 +27,12 @@ with tempfile.TemporaryDirectory() as temp:
             columns=",".join(columns)
             original=list(a.execute(f"SELECT {columns} FROM {table} ORDER BY 1,2"))
             rebuilt=list(b.execute(f"SELECT {columns} FROM {table} ORDER BY 1,2"))
+            if table=="products":
+                colnames=columns.split(",")
+                for j,col in enumerate(colnames):
+                    if col in ("catalog_web","menu_quote_history"):
+                        original=[tuple(json.loads(v) if i==j else v for i,v in enumerate(row)) for row in original]
+                        rebuilt=[tuple(json.loads(v) if i==j else v for i,v in enumerate(row)) for row in rebuilt]
             assert original==rebuilt,(table,len(original),len(rebuilt),next(((x,y) for x,y in zip(original,rebuilt) if x!=y),None))
         fields=("batch_id","store_uuid","product_uuid","observed_at","menu_price_cents","promotion_type",
                 "buy_quantity","free_quantity","received_quantity","original_total_cents","payable_total_cents")

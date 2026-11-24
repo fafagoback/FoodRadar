@@ -165,9 +165,9 @@ def expand(source: str | Path, target: str | Path) -> dict:
                 and not isinstance(value, bool) else value)
 
     db = sqlite3.connect(target)
-    ensure_schema_and_migrations(db)
     db.execute("PRAGMA journal_mode=OFF")
     db.execute("PRAGMA synchronous=OFF")
+    ensure_schema_and_migrations(db)
     batch_rows = dictionaries["__crawl_batches"]
     meta_rows = dictionaries["__metadata"]
     original_observations = 0
