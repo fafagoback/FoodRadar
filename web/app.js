@@ -1,5 +1,5 @@
 /**
- * UberEats Radar - 前端分析儀表板核心互動邏輯
+ * FoodRadar - 前端分析儀表板核心互動邏輯
  * FoodRadar：資料從 Hugging Face Verified Raw 編譯為 GitHub Pages 靜態索引
  * 完整全資料集分頁展示 (每頁 50 筆，無截斷限制)
  * [Live Sync Support]
@@ -93,12 +93,12 @@ async function checkVersionUpdate(isInitial = false) {
 
     if (isInitial) {
       CURRENT_VERSION = info.version;
-      console.log(`[UberEats Radar] 當前系統版本: ${CURRENT_VERSION} (${info.buildTime || '最新'})`);
+      console.log(`[FoodRadar] 當前系統版本: ${CURRENT_VERSION} (${info.buildTime || '最新'})`);
       return;
     }
 
     if (CURRENT_VERSION && info.version !== CURRENT_VERSION) {
-      console.log(`[UberEats Radar] 發現新版本發佈: ${info.version} (目前: ${CURRENT_VERSION})，準備自動更新...`);
+      console.log(`[FoodRadar] 發現新版本發佈: ${info.version} (目前: ${CURRENT_VERSION})，準備自動更新...`);
       showToast('發現新版本發佈', '系統正在為您載入最新版本...', 'external', 2500);
       setTimeout(() => {
         window.location.reload();
@@ -2408,14 +2408,14 @@ async function openUberEatsOrder(event, url, productName = '', storeName = '') {
       );
     } catch (e) {
       showToast(
-        '正在前往 Uber Eats 店家',
+        '正在前往店家',
         `已為您在新分頁開啟店家，請於菜單中選購「${cleanName}」`,
         'external',
         3500
       );
     }
   } else {
-    showToast('前往 Uber Eats', '已為您在新分頁開啟 Uber Eats 店家網頁！', 'external', 3000);
+    showToast('前往店家', '已在新分頁開啟店家網頁！', 'external', 3000);
   }
 
 }
