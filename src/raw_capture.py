@@ -22,7 +22,7 @@ from pathlib import Path
 
 import requests
 
-from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter
+from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter, response_retry_after
 from promo_api_recheck import QUARANTINE_STATUSES
 from catalog_complete import (
     capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure,
@@ -95,7 +95,8 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
                 capture_response(root, relative, response)
                 if response.status_code == 429:
                     global_limiter.trigger_backoff(
-                        min(120, 15 * (2 ** (attempt - 1))), "Store HTTP 429")
+                        min(120, 15 * (2 ** (attempt - 1))), "Store HTTP 429",
+                        retry_after=response_retry_after(response))
                     result["error"] = "Store HTTP 429 (too many requests)"
                     continue
                 # Terminal inactive responses are complete captures too.
@@ -113,7 +114,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
                     if payload.get("status") == "failure" and code == "429":
                         global_limiter.trigger_backoff(
                             min(120, 15 * (2 ** (attempt - 1))),
-                            "Store application 429")
+                            "Store application 429", retry_after=response_retry_after(response))
                         result["error"] = "Store application code 429 (too many requests)"
                         continue
                     if (payload.get("status") == "failure" and

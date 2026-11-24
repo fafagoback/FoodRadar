@@ -7,7 +7,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import requests
-from menu_core import global_limiter
+from menu_core import global_limiter, response_retry_after
 
 CATALOG_API = "https://www.ubereats.com/api/getCatalogPresentationV2"
 MAX_CATALOG_PAGES = 250
@@ -89,7 +89,7 @@ def _check_rate_limit(response, body, attempt):
         # can keep every worker throttled; pause all threads instead.
         seconds = min(120, 15 * (2 ** (attempt - 1)))
         kind = "HTTP 429" if response.status_code == 429 else "application 429"
-        global_limiter.trigger_backoff(seconds, f"Catalog {kind}")
+        global_limiter.trigger_backoff(seconds, f"Catalog {kind}", retry_after=response_retry_after(response))
         raise _UpstreamRateLimit(f"Catalog {kind} (retry {attempt})")
 
 
