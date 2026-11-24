@@ -22,6 +22,7 @@ class AdaptiveThreads:
     since: float = 0.0
     saturated: bool = True
     next_probe: float = 0.0
+    direction: int = 1
     samples: list = field(default_factory=list)
 
     def __post_init__(self):
@@ -67,11 +68,17 @@ class AdaptiveThreads:
         if improved or equivalent_lower:
             self.best, self.best_rate = self.target, rate
         if now >= self.next_probe:
-            if self.best is not None and self.target > self.best and not improved:
+            if self.best is not None and self.target != self.best:
+                self.direction = -1 if self.target > self.best else 1
                 self.target = self.best
                 self.next_probe = now + 120
-            elif self.target < MAX_THREADS:
-                self.target += 1
+            else:
+                candidate = self.target + self.direction
+                if not valid_threads(candidate):
+                    self.direction *= -1
+                    candidate = self.target + self.direction
+                if valid_threads(candidate):
+                    self.target = candidate
         self.reset(now, snapshot)
 
     def report(self):
@@ -88,9 +95,9 @@ def run_adaptive(items, capture, limiter, initial, on_result, clock=time.monoton
     with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool:
         while active or not exhausted:
             snap = limiter.snapshot()
-            # Assess occupancy before freeing completed futures.
-            if active:
-                ctrl.observe(clock(), snap, len(active) >= ctrl.target and not exhausted)
+            # React to a newly observed throttle before admitting new work.
+            if snap["rate_limit_events"] > ctrl.baseline["rate_limit_events"]:
+                ctrl.observe(clock(), snap, False)
             if snap["cooldown_remaining_seconds"] <= 0:
                 while not exhausted and len(active) < ctrl.target:
                     try:
@@ -101,6 +108,7 @@ def run_adaptive(items, capture, limiter, initial, on_result, clock=time.monoton
                     active[pool.submit(capture, item)] = item
             if not active:
                 if not exhausted:
+                    ctrl.observe(clock(), limiter.snapshot(), False)
                     time.sleep(min(1, max(.05, snap["cooldown_remaining_seconds"])))
                 continue
             done, _ = wait(active, timeout=.25, return_when=FIRST_COMPLETED)
