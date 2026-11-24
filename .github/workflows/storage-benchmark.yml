@@ -1,46 +1,68 @@
-name: FoodRadar｜一次性實際資料庫容量實驗
-run-name: FoodRadar｜完整無損儲存最佳化實驗
+name: FoodRadar｜第七輪自動結構搜尋
+run-name: FoodRadar｜跨欄位共用及連續容量實測
 on:
   push:
-    branches: [main]
+    branches: [research/storage-20261124]
     paths:
       - '.github/workflows/storage-benchmark.yml'
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
+  actions: write
 concurrency:
   group: foodradar-storage-benchmark
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
-  benchmark:
-    name: 唯讀還原正式資料並比較容量及效能
+  search:
+    if: github.ref == 'refs/heads/research/storage-20261124'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: research/storage-20261124
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: 安裝測試必要套件
+      - name: 檢查研究截止時間
+        id: deadline
+        run: |
+          if [ "$(date -u +%s)" -lt "$(date -u -d '2026-11-25 00:00:00' +%s)" ]; then echo 'active=true' >> "$GITHUB_OUTPUT"; fi
+      - name: 安裝免費開源套件
+        if: steps.deadline.outputs.active == 'true'
         run: pip install 'msgpack>=1,<2' 'zstandard>=0.23,<1'
-      - name: 唯讀還原既有正式資料庫快取
+      - name: 還原固定正式資料版本
+        if: steps.deadline.outputs.active == 'true'
         uses: actions/cache/restore@v4
         with:
           path: data/state-checkpoint/
-          key: foodradar-storage-experiment-${{ github.run_id }}
-          restore-keys: |
-            foodradar-state-v1-
+          key: foodradar-state-v1-45353673604-1
           fail-on-cache-miss: true
-      - name: 逐筆比對及壓縮效能實驗
+      - name: 逐輪驗證並記錄不同候選方案
+        if: steps.deadline.outputs.active == 'true'
+        id: bench
         run: |
           set -o pipefail
-          python scripts/benchmark_storage_search.py data/state-checkpoint | tee /tmp/fr-benchmark.log
-      - name: 彙整實驗結果
-        if: always()
+          mkdir -p docs/storage-research
+          python scripts/benchmark_storage_round7.py data/state-checkpoint docs/storage-research/round7-state.json | tee /tmp/fr7.log
+      - name: 保存本輪研究紀錄
+        if: always() && steps.deadline.outputs.active == 'true'
         run: |
-          echo '## 真實資料容量與效能實驗（不部署、不更新快取）' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f /tmp/fr-benchmark.log ]; then
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat /tmp/fr-benchmark.log >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p docs/storage-research
+          if test -f /tmp/fr7.log; then cp /tmp/fr7.log docs/storage-research/round7-${{ github.run_id }}.log; else echo '未取得測試日誌' > docs/storage-research/round7-${{ github.run_id }}.log; fi
+          tail -c 50000 docs/storage-research/round7-${{ github.run_id }}.log >> "$GITHUB_STEP_SUMMARY"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/storage-research
+          git commit -m '保存第七輪結構搜尋進度'
+          git push origin HEAD:research/storage-20261124
+      - name: 有未測候選即接續下一批
+        if: success() && steps.deadline.outputs.active == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          remaining=$(sed -n 's/^FR7_REMAINING=//p' /tmp/fr7.log | tail -1)
+          if [[ "$remaining" =~ ^[0-9]+$ ]] && [ "$remaining" -gt 0 ] && [ "$(date -u +%s)" -lt "$(date -u -d '2026-11-25 00:00:00' +%s)" ]; then
+            gh workflow run storage-benchmark.yml --ref research/storage-20261124
           fi
