@@ -174,6 +174,7 @@ jobs:
   crawl_shard:
     name: "動態排程｜任務批次 ${{ matrix.shard }}"
     needs: discover_once
+    continue-on-error: true
     if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -218,7 +219,7 @@ jobs:
   plan_recovery:
     name: 確認中斷工作機尚未保存的任務
     needs: [discover_once, crawl_shard]
-    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.crawl_shard.result == 'failure' }}
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -297,7 +298,7 @@ jobs:
   ingest:
     name: 第十六台｜彙整驗證與發布靜態資料
     needs: [prepare_run, discover_once, crawl_shard, plan_recovery, recover_shard]
-    if: "${{ !cancelled() && needs.prepare_run.result == 'success' && (needs.crawl_shard.result == 'success' || (needs.crawl_shard.result == 'failure' && needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success')) || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
+    if: "${{ !cancelled() && needs.prepare_run.result == 'success' && ((needs.discover_once.result == 'success' && needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success')) || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -445,7 +446,7 @@ jobs:
 
   report:
     name: 彙整本次繁體中文爬蟲報告
-    needs: [prepare_run, discover_once, crawl_shard, ingest]
+    needs: [prepare_run, discover_once, crawl_shard, plan_recovery, recover_shard, ingest]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -462,6 +463,9 @@ jobs:
         env:
           DISCOVER_RESULT: ${{ needs.discover_once.result }}
           SHARD_RESULT: ${{ needs.crawl_shard.result }}
+          RECOVERY_PLAN_RESULT: ${{ needs.plan_recovery.result }}
+          RECOVERY_RESULT: ${{ needs.recover_shard.result }}
+          RECOVERY_COUNT: ${{ needs.plan_recovery.outputs.missing_count }}
           INGEST_RESULT: ${{ needs.ingest.result }}
         run: python scripts/action_summary.py crawl
 

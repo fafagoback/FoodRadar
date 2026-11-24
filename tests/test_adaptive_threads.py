@@ -22,6 +22,21 @@ class AdaptiveThreadTests(unittest.TestCase):
         c.observe(90, snap(240, 1, 1, .65), True)
         self.assertEqual(c.target, 3)
 
+    def test_reference_updates_when_service_slows_later_in_same_run(self):
+        c = AdaptiveThreads(6)
+        c.reset(0, snap())
+        c.observe(30, snap(120), True)
+        c.observe(60, snap(240), True)
+        self.assertEqual(c.best, 6)
+        self.assertEqual(c.direction, -1)
+        # Throughput dropped long after the first measurement.
+        c.observe(90, snap(300), True)
+        self.assertEqual(c.best_rate, 2)
+        c.observe(180, snap(480), True)
+        self.assertEqual(c.target, 5)
+        c.observe(210, snap(552), True)
+        self.assertEqual(c.best, 5)
+
     def test_tail_does_not_learn(self):
         c = AdaptiveThreads(6)
         c.reset(0, snap())

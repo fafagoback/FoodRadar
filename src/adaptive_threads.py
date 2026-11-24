@@ -1,4 +1,5 @@
 """Bounded per-run adaptive store concurrency."""
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 import time
@@ -13,8 +14,8 @@ def valid_threads(value):
 @dataclass
 class AdaptiveThreads:
     initial: int
-    window_seconds: float = 30
-    minimum_successes: int = 20
+    window_seconds: float = 15
+    minimum_successes: int = 12
     target: int = field(init=False)
     best: int | None = field(init=False, default=None)
     best_rate: float = field(init=False, default=0.0)
@@ -65,7 +66,9 @@ class AdaptiveThreads:
                              "seconds": round(elapsed, 2), "rate": round(rate, 4)})
         improved = self.best is None or rate > self.best_rate * 1.05
         equivalent_lower = self.best is not None and self.target < self.best and rate >= self.best_rate * 0.95
-        if improved or equivalent_lower:
+        # Refresh the reference on every saturated window of the current
+        # best setting. A morning peak must not dominate an hours-long run.
+        if improved or equivalent_lower or self.target == self.best:
             self.best, self.best_rate = self.target, rate
         if now >= self.next_probe:
             if self.best is not None and self.target != self.best:
@@ -88,31 +91,26 @@ class AdaptiveThreads:
 def run_adaptive(items, capture, limiter, initial, on_result, clock=time.monotonic):
     """At most target whole stores are in flight. Never cancel a successful request."""
     ctrl = AdaptiveThreads(initial)
-    pending = iter(items)
-    exhausted = False
+    pending = deque(items)
     active = {}
     ctrl.reset(clock(), limiter.snapshot())
     with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool:
-        while active or not exhausted:
+        while active or pending:
             snap = limiter.snapshot()
             # React to a newly observed throttle before admitting new work.
             if snap["rate_limit_events"] > ctrl.baseline["rate_limit_events"]:
                 ctrl.observe(clock(), snap, False)
             if snap["cooldown_remaining_seconds"] <= 0:
-                while not exhausted and len(active) < ctrl.target:
-                    try:
-                        item = next(pending)
-                    except StopIteration:
-                        exhausted = True
-                        break
+                while pending and len(active) < ctrl.target:
+                    item = pending.popleft()
                     active[pool.submit(capture, item)] = item
             if not active:
-                if not exhausted:
+                if pending:
                     ctrl.observe(clock(), limiter.snapshot(), False)
                     time.sleep(min(1, max(.05, snap["cooldown_remaining_seconds"])))
                 continue
             done, _ = wait(active, timeout=.25, return_when=FIRST_COMPLETED)
-            ctrl.observe(clock(), limiter.snapshot(), len(active) >= ctrl.target and not exhausted)
+            ctrl.observe(clock(), limiter.snapshot(), len(active) >= ctrl.target and bool(pending))
             for future in done:
                 active.pop(future)
                 on_result(future.result())

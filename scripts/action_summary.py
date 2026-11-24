@@ -109,6 +109,10 @@ def main(kind):
     elif kind == "crawl":
         add("店家清單掃描", result(os.environ.get("DISCOVER_RESULT")))
         add("分工抓取", result(os.environ.get("SHARD_RESULT")))
+        if os.environ.get("RECOVERY_PLAN_RESULT") == "success":
+            add("需故障接手的批次", integer(os.environ.get("RECOVERY_COUNT")))
+            if os.environ.get("RECOVERY_COUNT") != "0":
+                add("故障接手結果", result(os.environ.get("RECOVERY_RESULT")))
         add("資料彙整與發布", result(os.environ.get("INGEST_RESULT")))
         m = read("action-reports/metrics/shard-reconciliation.json")
         if m:
