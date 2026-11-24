@@ -113,7 +113,7 @@ def source_digest(conn, table, order):
     return count, h.hexdigest()
 
 
-def build(source, output, bucket_count=1024, level=10, max_items=2048):
+def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static_only=False):
     started = time.perf_counter()
     src = sqlite3.connect(source)
     src.row_factory = sqlite3.Row
@@ -121,9 +121,12 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     if out_path.exists():
         out_path.unlink()
     dst = sqlite3.connect(output)
-    dst.executescript(SCHEMA)
+    schema=(SCHEMA if not static_only else "\n".join(
+        line for line in SCHEMA.splitlines()
+        if not line.lstrip().startswith("CREATE INDEX")))
+    dst.executescript(schema)
     compressor = zstd.ZstdCompressor(level=level)
-    postings = [defaultdict(list) for _ in range(bucket_count)]
+    postings = [defaultdict(list) for _ in range(bucket_count)] if not static_only else []
     sc, pc, ec = (columns(src, t) for t in ("stores", "products", "events"))
     product_gid = 0
     max_raw = max_blob = chunks = 0
@@ -150,7 +153,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     for store_id, store in enumerate(stores):
         sid = store["store_uuid"]
         products = list(src.execute("SELECT * FROM products WHERE store_uuid=? ORDER BY first_seen,product_uuid", (sid,)))
-        events = list(src.execute("SELECT * FROM events WHERE store_uuid=? ORDER BY id", (sid,)))
+        events = [] if static_only else list(src.execute("SELECT * FROM events WHERE store_uuid=? ORDER BY id", (sid,)))
         product_arrays = []
         store_terms = tokens(store["name"]) | tokens(store["city"]) | tokens(store["locality"]) | tokens(store["address"])
         for local_index, product in enumerate(products):
@@ -158,7 +161,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                 raise ValueError(f"store {sid} exceeds the packed 20-bit product index capacity")
             product_gid += 1
             arr = row_array(product, pc)
-            product_arrays.append([(store_id << 20) | local_index, arr])
+            if not static_only:
+                product_arrays.append([(store_id << 20) | local_index, arr])
             # A closed shop or unavailable delivery cannot erase its last menu.
             searchable = (store["status"] == "active"
                           and product["status"] == "active"
@@ -296,7 +300,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
                         store["rating"],int(new_item),int((platform or drop) and is_current_price),
                         int(drop and is_current_price),int(platform and is_current_price),
                         store["latitude"],store["longitude"]))
-            for term in sorted(terms):
+            for term in sorted(terms) if not static_only else ():
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
                 # One integer identifies store and product without a row-per-product
                 # lookup table (20 bits allows >1M products in one store).
@@ -304,9 +308,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
 
         # Deterministic chunks keep pathological stores bounded. Store data is in
         # chunk zero; all product/event arrays remain present exactly once.
-        pchunks = [product_arrays[i:i + max_items] for i in range(0, len(product_arrays), max_items)] or [[]]
-        echunks = [[row_array(e, ec) for e in events[i:i + max_items]] for i in range(0, len(events), max_items)] or [[]]
-        chunk_count = max(len(pchunks), len(echunks))
+        pchunks = ([product_arrays[i:i + max_items] for i in range(0, len(product_arrays), max_items)] or [[]]) if not static_only else []
+        echunks = ([[row_array(e, ec) for e in events[i:i + max_items]] for i in range(0, len(events), max_items)] or [[]]) if not static_only else []
+        chunk_count = max(len(pchunks), len(echunks)) if not static_only else 0
         if store['status'] == 'active':
             active_stores += 1
         dst.execute("INSERT INTO store_directory VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
@@ -331,21 +335,32 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
         raw, blob, digest = packed(dict(sorted(terms.items())), compressor)
         dst.execute("INSERT INTO search_buckets VALUES(?,?,?,?,?)", (bid, "msgpack+zstd", len(raw), digest, blob))
 
-    auxiliary = {}
-    for table in ("crawl_batches", "metadata"):
-        auxiliary[table] = {"columns": columns(src, table), "rows": [list(r) for r in src.execute(f"SELECT * FROM {table} ORDER BY 1")]}
-    raw, blob, digest = packed(auxiliary, compressor)
-    dst.execute("INSERT INTO auxiliary_bundles VALUES(?,?,?,?,?)", ("normalized_auxiliary", "msgpack+zstd", len(raw), digest, blob))
+    if not static_only:
+        auxiliary = {}
+        for table in ("crawl_batches", "metadata"):
+            auxiliary[table] = {"columns": columns(src, table), "rows": [list(r) for r in src.execute(f"SELECT * FROM {table} ORDER BY 1")]}
+        raw, blob, digest = packed(auxiliary, compressor)
+        dst.execute("INSERT INTO auxiliary_bundles VALUES(?,?,?,?,?)", ("normalized_auxiliary", "msgpack+zstd", len(raw), digest, blob))
 
     digests = {}
     store_order = '(SELECT first_seen FROM stores s WHERE s.store_uuid=products.store_uuid),store_uuid,first_seen,product_uuid'
     event_order = '(SELECT first_seen FROM stores s WHERE s.store_uuid=events.store_uuid),store_uuid,id'
-    for table, order in (("stores", "first_seen,store_uuid"), ("products", store_order), ("events", event_order), ("crawl_batches", "batch_id"), ("metadata", "key")):
-        count, digest = source_digest(src, table, order)
-        digests[table] = {"count": count, "sha256": digest}
+    if static_only:
+        digests = {table: {"count": src.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
+                           "sha256": None} for table in TABLES}
+        revision = hashlib.sha256()
+        for sid,pid,checksum in dst.execute(
+                "SELECT store_uuid,product_uuid,checksum FROM web_products ORDER BY store_uuid,product_uuid"):
+            revision.update((sid+"\x1f"+pid+"\x1f"+checksum+"\n").encode("utf-8"))
+        revision.update(str(latest_time).encode("utf-8"))
+        data_revision = revision.hexdigest()
+    else:
+        for table, order in (("stores", "first_seen,store_uuid"), ("products", store_order), ("events", event_order), ("crawl_batches", "batch_id"), ("metadata", "key")):
+            count, digest = source_digest(src, table, order)
+            digests[table] = {"count": count, "sha256": digest}
+        data_revision = hashlib.sha256(json.dumps(digests, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     source_meta = dict(src.execute("select key,value from metadata"))
-    data_revision = hashlib.sha256(json.dumps(digests, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    info = {"definition_version": "foodradar-native-price-v2", "data_revision": data_revision, "source_revision": source_meta.get("source_revision", "local"),
+    info = {"definition_version": "foodradar-native-price-v2", "data_revision": data_revision, "projection": ("static-only" if static_only else "full-audit"), "published_product_cards": dst.execute("SELECT COUNT(*) FROM web_products").fetchone()[0], "source_revision": source_meta.get("source_revision", "local"),
             "raw_source": source_meta.get("raw_source", ""),
             "raw_snapshot_count": int(source_meta.get("raw_snapshot_count", 0)),
             "application": "FoodRadar", "schema_version": 2,
@@ -372,7 +387,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048):
     dst.close(); src.close()
     info["database_bytes"] = out_path.stat().st_size
     info["build_seconds"] = round(time.perf_counter() - started, 3)
-    info["packed_rows"] = chunks + len(stores) + bucket_count + 1 + len(info) - 2
+    info["packed_rows"] = (chunks + len(stores) + bucket_count + 1 + len(info) - 2) if not static_only else (len(stores) + info["published_product_cards"])
     print(json.dumps(info, ensure_ascii=False, indent=2))
 
 

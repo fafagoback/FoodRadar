@@ -25,7 +25,7 @@ with sqlite3.connect(ROOT/'data'/batch/'serving.db') as db:
     print('FOODRADAR_STORE_HISTORY_AUDIT='+json.dumps(identity_report,ensure_ascii=False),flush=True)
     (ROOT/'data'/batch/'store-identity-report.json').write_text(
         json.dumps(identity_report,ensure_ascii=False,indent=2),encoding='utf-8')
-build_web_db(ROOT/'data'/batch/'serving.db',ROOT/'data'/batch/'packed-serving.db')
+build_web_db(ROOT/'data'/batch/'serving.db',ROOT/'data'/batch/'packed-serving.db',static_only=True)
 
 print('FOODRADAR_WEB_PACK_AND_AUDIT_SECONDS='+str(round(perf_counter()-started,2)),flush=True)
 # The cache is saved only after validated SQLite projection and static-data checks.

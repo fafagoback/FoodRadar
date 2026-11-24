@@ -46,7 +46,10 @@ with sqlite3.connect(source) as before,sqlite3.connect(expanded) as after:
             raise ValueError(f"Published product certification changed after {verified} items")
         verified+=len(x)
         if not x: break
-build_web_db(expanded,packed)
+build_web_db(expanded,packed,static_only=True)
+from verify_packed_local import verify as verify_projection
+projection=verify_projection(packed)
+assert projection["projection"]=="static-only"
 manifest=build(packed,expanded,static)
 checked=verify(static)
 if checked["counts"]!=manifest["counts"]:
