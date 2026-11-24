@@ -54,3 +54,25 @@ class CompactIncrementalTests(unittest.TestCase):
                         rows1=[tuple(json.loads(v) if k==j else v for k,v in enumerate(row)) for row in rows1]
                         rows2=[tuple(json.loads(v) if k==j else v for k,v in enumerate(row)) for row in rows2]
                     self.assertEqual(rows1,rows2,table)
+
+    def test_geographical_shards_roundtrip_preserves_two_shops(self):
+        from compact_checkpoint import create_shards,expand_shards
+        other="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        with tempfile.TemporaryDirectory() as d,contextlib.redirect_stdout(io.StringIO()):
+            root=Path(d)
+            original=root/"original.db"
+            with sqlite3.connect(original) as db:
+                db.row_factory=sqlite3.Row
+                apply_snapshot(db,[document(SID,[PID]),document(other,[PID])],"20261121133219")
+            parts=create_shards(original,root/"shards",shops_per_shard=1)
+            self.assertEqual(len(parts),2)
+            self.assertTrue(all(p["bytes"]<20_000_000 for p in parts))
+            restored=root/"restored.db"
+            totals=expand_shards(root,parts,restored)
+            self.assertEqual(totals["stores"],2)
+            with sqlite3.connect(original) as a,sqlite3.connect(restored) as b:
+                self.assertEqual(a.execute("SELECT COUNT(*) FROM products").fetchone()[0],
+                                 b.execute("SELECT COUNT(*) FROM products").fetchone()[0])
+                self.assertEqual(a.execute("SELECT COUNT(*) FROM product_price_observations").fetchone()[0],
+                                 b.execute("SELECT COUNT(*) FROM product_price_observations").fetchone()[0])
+

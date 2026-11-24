@@ -49,7 +49,7 @@ def _unpack(value):
                            strict_map_key=False)
 
 
-def create(source: str | Path, target: str | Path) -> dict:
+def create(source: str | Path, target: str | Path, *, store_ids=None) -> dict:
     source, target = Path(source), Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -94,7 +94,9 @@ def create(source: str | Path, target: str | Path) -> dict:
     bidx = {b: i for i, b in enumerate(batches)}
     width = (len(batches) + 7) // 8
     counters = {"stores": 0, "products": 0, "observations": 0}
-    for (sid,) in db.execute("SELECT store_uuid FROM stores ORDER BY store_uuid"):
+    identities=(sorted(store_ids) if store_ids is not None else
+                [r[0] for r in db.execute("SELECT store_uuid FROM stores ORDER BY store_uuid")])
+    for sid in identities:
         store = db.execute("SELECT * FROM stores WHERE store_uuid=?", (sid,)).fetchone()
         products = list(db.execute("SELECT * FROM products WHERE store_uuid=? ORDER BY product_uuid", (sid,)))
         ids = {p["product_uuid"]: i for i, p in enumerate(products)}
@@ -128,6 +130,10 @@ def create(source: str | Path, target: str | Path) -> dict:
     expected = {"stores": db.execute("SELECT COUNT(*) FROM stores").fetchone()[0],
                 "products": db.execute("SELECT COUNT(*) FROM products").fetchone()[0],
                 "observations": db.execute("SELECT COUNT(*) FROM product_price_observations").fetchone()[0]}
+    if store_ids is not None:
+        if counters["stores"] != len(identities):
+            raise ValueError("Sharded snapshot omitted stores")
+        expected = counters
     if counters != expected or output.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
         raise ValueError("Compact checkpoint counts or integrity mismatch")
     size = target.stat().st_size
@@ -136,7 +142,7 @@ def create(source: str | Path, target: str | Path) -> dict:
     return {**counters, "bytes": size, "format": "foodradar-compact-v1"}
 
 
-def expand(source: str | Path, target: str | Path) -> dict:
+def expand(source: str | Path, target: str | Path, *, append=False, finalize=True) -> dict:
     """Recreate an ephemeral SQLite projection for legacy ETL and static export.
 
     Not an alternative authoritative Raw store. Original observation hashes can
@@ -144,7 +150,7 @@ def expand(source: str | Path, target: str | Path) -> dict:
     """
     from serving_state import ensure_schema_and_migrations, canonical_hash, refresh_product_search
     source, target = Path(source), Path(target)
-    if target.exists():
+    if target.exists() and not append:
         target.unlink()
     compact = sqlite3.connect(f"file:{source.resolve()}?mode=ro", uri=True)
     compact.execute("PRAGMA query_only=ON")
@@ -236,14 +242,66 @@ def expand(source: str | Path, target: str | Path) -> dict:
                 f"INSERT INTO products({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
                 [[p[k] for k in columns] for p in p_rows])
             products += len(p_rows)
-    if batch_rows:
-        c = [r[1] for r in db.execute("PRAGMA table_info(crawl_batches)")]
-        db.executemany(f"INSERT INTO crawl_batches({','.join(c)}) VALUES({','.join('?' for _ in c)})", batch_rows)
-    db.executemany("INSERT INTO metadata(key,value) VALUES(?,?)", meta_rows)
-    refresh_product_search(db)
+    if not append:
+        if batch_rows:
+            c = [r[1] for r in db.execute("PRAGMA table_info(crawl_batches)")]
+            db.executemany(f"INSERT INTO crawl_batches({','.join(c)}) VALUES({','.join('?' for _ in c)})", batch_rows)
+        db.executemany("INSERT INTO metadata(key,value) VALUES(?,?)", meta_rows)
+    if finalize:
+        refresh_product_search(db)
     db.commit()
     if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
         raise ValueError("Expanded checkpoint corrupted")
     db.close()
     compact.close()
     return {"stores": stores, "products": products, "observations": original_observations}
+
+
+def create_shards(source: str | Path, folder: str | Path, *, shops_per_shard=500) -> list[dict]:
+    """Nationwide-safe store partitions. Every file is individually under 20 MB."""
+    folder=Path(folder)
+    folder.mkdir(parents=True,exist_ok=True)
+    with sqlite3.connect(source) as db:
+        # Group nearby stores together; inside one large city automatically
+        # split into bounded shop ranges. All identities are stable UUIDs.
+        shops=[r[0] for r in db.execute("""SELECT store_uuid FROM stores
+            ORDER BY CAST(COALESCE(latitude,0)*10 AS INTEGER),
+                     CAST(COALESCE(longitude,0)*10 AS INTEGER),store_uuid""")]
+    if not shops:
+        raise ValueError("No shops in compact checkpoint")
+    partitions=[shops[i:i+shops_per_shard] for i in range(0,len(shops),shops_per_shard)]
+    result=[]
+    for part,ids in enumerate(partitions):
+        file=f"part-{part:05d}.db"
+        path=folder/file
+        stats=create(source,path,store_ids=ids)
+        if stats["bytes"]>=20_000_000:
+            raise ValueError("Oversized geographical shard; lower shops_per_shard")
+        import hashlib
+        with path.open("rb") as handle:
+            sha=hashlib.file_digest(handle,"sha256").hexdigest()
+        result.append({"path":"shards/"+file,"sha256":sha,**stats})
+    return result
+
+
+def expand_shards(folder: str | Path, parts: list[dict], target: str | Path) -> dict:
+    """Verify every part before reconstructing the ephemeral SQL projection."""
+    import hashlib
+    folder=Path(folder)
+    if not parts:
+        raise ValueError("Missing compact shard inventory")
+    results={"stores":0,"products":0,"observations":0}
+    for n,part in enumerate(parts):
+        relative=Path(part["path"])
+        if (relative.is_absolute() or ".." in relative.parts
+                or relative.parts[0] != "shards" or len(relative.parts)!=2):
+            raise ValueError("Untrusted compact shard path")
+        path=folder/relative
+        with path.open("rb") as handle:
+            if hashlib.file_digest(handle,"sha256").hexdigest()!=part["sha256"]:
+                raise ValueError("Corrupted compact shard")
+        stats=expand(path,target,append=(n!=0),finalize=(n==len(parts)-1))
+        if any(stats[key]!=part[key] for key in results):
+            raise ValueError("Compact shard count mismatch")
+        for key in results:results[key]+=stats[key]
+    return results

@@ -117,7 +117,7 @@ def manifest_digest(rows):
 
 
 def restore(target, records, config, cache=CACHE, root=ROOT):
-    from compact_checkpoint import expand as expand_compact
+    from compact_checkpoint import expand as expand_compact, expand_shards
     cache=Path(cache)
     meta_path=cache/"manifest.json"
     if not meta_path.is_file():
@@ -130,19 +130,22 @@ def restore(target, records, config, cache=CACHE, root=ROOT):
                        "foodradar-checkpoint-v3"):
             raise ValueError("Unsupported checkpoint version")
         compact=fmt=="foodradar-checkpoint-v3"
+        parts=meta.get("parts") if compact else None
         candidate=cache/("serving.compact.db" if compact else "serving.db")
         count=meta.get("manifest_count")
         expected_hash=meta.get("compact_sha256" if compact else "sqlite_sha256")
-        if (not candidate.is_file() or not expected_hash
-                or meta.get("repo_id") != config["hf_repo_id"]
+        if (meta.get("repo_id") != config["hf_repo_id"]
                 or meta.get("folder") != config["hf_folder"].strip("/")
                 or type(count) is not int or count<1 or count>len(records)
                 or meta.get("manifest_digest") != manifest_digest(records[:count])
-                or not compatible_contract(meta,root)
-                or expected_hash != digest_file(candidate)):
-            raise ValueError("Invalid checkpoint provenance, code contract or SHA-256")
+                or not compatible_contract(meta,root)):
+            raise ValueError("Invalid checkpoint provenance or code contract")
+        if not parts and (not candidate.is_file() or not expected_hash or
+                          expected_hash != digest_file(candidate)):
+            raise ValueError("Invalid checkpoint SHA-256")
         if compact:
-            counts=expand_compact(candidate,target)
+            counts=(expand_shards(cache,parts,target) if parts else
+                    expand_compact(candidate,target))
             if counts["stores"] != meta.get("stores") or counts["products"] != meta.get("products"):
                 raise ValueError("Compact checkpoint identity counts changed")
             if counts["observations"] != meta.get("observations"):
@@ -159,7 +162,8 @@ def restore(target, records, config, cache=CACHE, root=ROOT):
             raise ValueError("Checkpoint/database batch mismatch")
         print("FOODRADAR_CHECKPOINT_RESTORED="+json.dumps({
             "batch":row[0],"manifests":count,"verified_batches":db_count,
-            "compact_bytes":candidate.stat().st_size if compact else None,
+            "compact_bytes":(sum(p["bytes"] for p in parts) if parts else
+                             candidate.stat().st_size if compact else None),
             "historical_hashes_in_hf_raw":compact,
         },ensure_ascii=False),flush=True)
         return row[0],count
@@ -170,7 +174,7 @@ def restore(target, records, config, cache=CACHE, root=ROOT):
         return None
 def save(source, raw_index_path, cache=CACHE, root=ROOT, *, compact=True):
     """Save a verified derived checkpoint. The original HF Raw never changes."""
-    from compact_checkpoint import create as create_compact
+    from compact_checkpoint import create as create_compact, create_shards
     import shutil
     source=Path(source)
     index=json.loads(Path(raw_index_path).read_text(encoding="utf-8"))
@@ -188,10 +192,17 @@ def save(source, raw_index_path, cache=CACHE, root=ROOT, *, compact=True):
     if compact:
         target=cache/"serving.compact.db"
         info=create_compact(source,target)
+        parts=None
         if info["bytes"]>=20_000_000:
-            raise ValueError(f"Compact checkpoint over 20 MB: {info['bytes']}")
+            target.unlink()
+            parts=create_shards(source,cache/"shards",shops_per_shard=500)
+            if (sum(p["stores"] for p in parts)!=info["stores"]
+                    or sum(p["products"] for p in parts)!=info["products"]
+                    or sum(p["observations"] for p in parts)!=info["observations"]):
+                raise ValueError("Nationwide shards lost records")
         metadata={**index,"format":"foodradar-checkpoint-v3",
-                  "compact_sha256":digest_file(target),
+                  "compact_sha256":digest_file(target) if parts is None else None,
+                  "parts":parts,
                   "stores":info["stores"],"products":info["products"],
                   "observations":info["observations"],
                   "expanded_work_db_bytes":source.stat().st_size}
@@ -206,6 +217,7 @@ def save(source, raw_index_path, cache=CACHE, root=ROOT, *, compact=True):
     temp.write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding="utf-8")
     temp.replace(path)
     print("FOODRADAR_CHECKPOINT_PREPARED="+json.dumps({
-        "batch":row[0],"bytes":target.stat().st_size,
+        "batch":row[0],"bytes":(sum(p["bytes"] for p in parts) if compact and parts else target.stat().st_size),
+        "parts":len(parts) if compact and parts else 1,
         "format":metadata["format"],"transient_db_bytes":source.stat().st_size,
     },ensure_ascii=False),flush=True)
