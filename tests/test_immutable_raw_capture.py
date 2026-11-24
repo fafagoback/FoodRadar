@@ -128,12 +128,37 @@ class StoreRetryScopeTests(unittest.TestCase):
 
     def test_structural_partition_failure_never_restarts_store(self):
         result, calls, count, _ = self.run_capture(
-            [self.base(), self.page(True, 1020)], [0])
+            [self.base(), self.page(True, 1020), self.base()], [0])
         self.assertFalse(result["success"])
         self.assertIn("native subsection UUIDs unavailable", result["error"])
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(count, 2)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(count, 3)
         self.assertNotIn("catalog_complete", result)
+
+    def test_missing_child_ids_refresh_metadata_without_recrawling_parent(self):
+        renewed = self.response({"status": "success", "data": {
+            "title": "Test store",
+            "aisles": {"store": [{"catalogSectionUUID": "parent"}]},
+            "sections": [{"uuid": "parent", "subsectionUuids": ["child"]}],
+        }})
+        result, calls, count, _ = self.run_capture(
+            [self.base(), self.page(True, 1020), renewed, self.page()], [0, 0])
+        self.assertTrue(result["success"])
+        self.assertTrue(result["catalog_complete"])
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(count, 4)
+        self.assertEqual(result["catalog_section_reports"][0]["mode"],
+                         "native_children_before_deep_offset")
+
+    def test_metadata_refresh_forbidden_is_not_a_verified_partial(self):
+        result, calls, count, _ = self.run_capture(
+            [self.base(), self.page(True, 1020), self.response({}, 403)], [0])
+        self.assertFalse(result["success"])
+        self.assertIn("Native metadata refresh HTTP 403", result["error"])
+        from catalog_complete import is_recoverable_catalog_failure
+        self.assertFalse(is_recoverable_catalog_failure(result["error"]))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(count, 3)
 
     def test_transient_later_page_retries_only_that_page(self):
         from requests import Timeout

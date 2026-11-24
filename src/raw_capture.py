@@ -128,13 +128,42 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_facto
                         # getStoreV1 is only a preview for large grocery stores.
                         # Save every native catalog page before accepting a complete capture.
                         catalog_started = True
-                        options = {}
+                        def refresh_native_metadata():
+                            global_limiter.wait()
+                            renewed = session.post(
+                                "https://www.ubereats.com/api/getStoreV1",
+                                json={"storeUuid": uuid, "sfNuggetCount": 24},
+                                headers=headers, timeout=12,
+                            )
+                            extra = f"stores/{uuid}-attempt-{attempt:02d}-metadata-refresh-status-{renewed.status_code}.body"
+                            capture_response(root, extra, renewed)
+                            if renewed.status_code == 429:
+                                global_limiter.trigger_backoff(30, "Store metadata refresh HTTP 429",
+                                    retry_after=response_retry_after(renewed))
+                                raise RuntimeError("Native metadata refresh HTTP 429")
+                            if renewed.status_code != 200:
+                                raise RuntimeError(f"Native metadata refresh HTTP {renewed.status_code}")
+                            document = renewed.json()
+                            current = document.get("data") if isinstance(document, dict) else None
+                            if (isinstance(document, dict) and document.get("status") == "failure"
+                                    and isinstance(current, dict) and str(current.get("code")) == "429"):
+                                global_limiter.trigger_backoff(30, "Store metadata refresh application 429")
+                                raise RuntimeError("Native metadata refresh application 429")
+                            if (not isinstance(current, dict) or document.get("status") == "failure"
+                                    or not (current.get("title") or current.get("catalogSectionsMap"))):
+                                raise RuntimeError("Invalid native metadata refresh")
+                            if current.get("storeUuid") not in (None, uuid):
+                                raise RuntimeError("Native metadata refresh store identity mismatch")
+                            global_limiter.record_success()
+                            return current
+
+                        options = {"refresh_native_metadata": refresh_native_metadata}
                         if os.getenv("FOODRADAR_PARALLEL_SECTIONS") == "1":
                             def section_session():
                                 independent = requests.Session()
                                 independent.cookies.update(session.cookies)
                                 return independent
-                            options = {"session_factory": section_session, "section_workers": 3}
+                            options.update(session_factory=section_session, section_workers=3)
                         all_catalog = capture_catalog(
                             session, uuid, data, root, headers, capture_response,
                             store_attempt=attempt, **options)

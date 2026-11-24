@@ -168,7 +168,7 @@ def _catalog_skus(raw_bodies):
 
 
 def capture_catalog(session, store_uuid, base_data, root, headers, capture_response, store_attempt=1,
-                    session_factory=None, section_workers=1):
+                    session_factory=None, section_workers=1, refresh_native_metadata=None):
     """Fetch every native category; split deep failing categories by real subsections.
 
     Uber's getCatalogPresentationV2 can return HTTP 200 + status=failure /
@@ -347,6 +347,26 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         raise ValueError(
             f"Catalog {section_uuid}/{subsection_uuid} exceeded {MAX_CATALOG_PAGES} pages")
 
+    # One additional native metadata read per store at most, shared by all
+    # section threads. It cannot invent child IDs or replace the first body.
+    metadata_lock = threading.Lock()
+    refreshed = None
+    refresh_attempted = False
+
+    def extra_children(section_uuid):
+        nonlocal refreshed, refresh_attempted
+        if refresh_native_metadata is None:
+            return []
+        with metadata_lock:
+            if not refresh_attempted:
+                refresh_attempted = True
+                refreshed = refresh_native_metadata()
+                if (not isinstance(refreshed, dict)
+                        or set(_section_ids(refreshed)) != set(section_uuids)
+                        or (refreshed.get("catalogSectionPagingInfo") or {}).get("hasMore") is True):
+                    raise RuntimeError("Refreshed native category roster changed; refusing mixed capture")
+            return _subsections_for(refreshed, section_uuid) if refreshed else []
+
     def verified_partition(section_index, parent_uuid, subsection_uuid=None, visited=None):
         """Get all native pages without ever requesting offset >= 1000.
 
@@ -371,6 +391,10 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                   if metadata_children and set(item_children) - set(metadata_children)
                   else "getStoreV1_sections" if metadata_children
                   else "catalog_native_item_subsections")
+        if not children:
+            children = extra_children(current_uuid)
+            if children:
+                source = "getStoreV1_refreshed_native_sections"
         if not children:
             raise RuntimeError(
                 f"Catalog {current_uuid} reached deep-offset boundary; "
