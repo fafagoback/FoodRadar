@@ -523,6 +523,20 @@ class CatalogCompleteness(unittest.TestCase):
             self.assertEqual(_item_ids(merge_catalog_pages(base, raw)),
                              {"seen", "new"})
 
+    def test_parent_echo_does_not_mask_native_group_or_payload_child(self):
+        from catalog_complete import _native_subsections_from_catalog
+        def group(group_id, payload_id):
+            return {"catalogSectionUUID": group_id, "payload": {
+                "standardItemsPayload": {"subsectionUuid": payload_id,
+                    "catalogItems": [{"uuid": "seen", "subsectionUuid": "parent"}]}}}
+        body = {"data": {"catalog": [
+            group("group-child", None),
+            group("parent", "payload-child"),
+            group("parent", "parent"),
+        ], "pagingInfo": {"hasMore": True, "offset": 1020}}}
+        self.assertEqual(_native_subsections_from_catalog([body], "parent"),
+                         ["group-child", "payload-child"])
+
     def test_item_sourced_children_missing_parent_skus_still_rejected(self):
         """A real native child UUID does not justify hiding missing parent SKUs."""
         parent = "parent"

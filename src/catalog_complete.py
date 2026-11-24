@@ -142,9 +142,15 @@ def _native_subsections_from_catalog(raw_bodies, parent_uuid):
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                native_id = item.get("subsectionUuid") or group.get("catalogSectionUUID")
-                if (isinstance(native_id, str) and native_id
-                        and native_id != parent_uuid and native_id not in seen):
+                # A product can echo the parent UUID, while its actual native
+                # child is carried by the enclosing group or payload. A parent
+                # echo must not mask a usable child (nor be queried as a leaf).
+                native_id = next((candidate for candidate in (
+                    item.get("subsectionUuid"), group.get("catalogSectionUUID"),
+                    standard.get("subsectionUuid"),
+                ) if isinstance(candidate, str) and candidate
+                     and candidate != parent_uuid), None)
+                if native_id is not None and native_id not in seen:
                     ids.append(native_id)
                     seen.add(native_id)
     return ids

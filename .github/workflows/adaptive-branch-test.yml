@@ -24,3 +24,28 @@ jobs:
           python -m unittest discover -s tests -p 'test_catalog_429_backoff.py' -v
           python -m unittest discover -s tests -p 'test_distributed_crawl.py' -v
           python -m unittest discover -s tests -p 'test_immutable_raw_capture.py' -v
+
+      - run: python -m unittest discover -s tests -p 'test_catalog_complete.py' -v
+      - name: 實際重測三家深分頁失敗店家（唯讀）
+        run: |
+          python - <<'PY'
+          import base64, json, sys, tempfile, uuid
+          from pathlib import Path
+          sys.path.insert(0, "src")
+          from raw_capture import fetch_store_raw
+          config=json.loads(Path("config.json").read_text())
+          ids=["0fd40e62-4a52-49a5-8620-0706906896e1","773cda1c-4917-416a-8527-91a078e1c6ef","94b4166a-5193-4625-9714-9cd8966ad7a6"]
+          with tempfile.TemporaryDirectory() as tmp:
+              results=[]
+              for sid in ids:
+                  token=base64.urlsafe_b64encode(uuid.UUID(sid).bytes).decode().rstrip("=")
+                  row={"store_uuid":sid,"store_url":"https://www.ubereats.com/tw/store/store/"+token,"discovered_points":[{"lat":float(config["latitude"]),"lon":float(config["longitude"]),"county":"台北市"}]}
+                  try:
+                      result=fetch_store_raw(row,Path(tmp)/sid,max_retries=1)
+                      record={"uuid":sid,"complete":result.get("success") is True and result.get("catalog_complete") is True,"error":result.get("error"),"sections":result.get("catalog_section_count"),"finished":result.get("catalog_sections_finished"),"items":result.get("catalog_item_occurrences")}
+                  except Exception as exc:
+                      record={"uuid":sid,"complete":False,"error":str(exc)}
+                  print("FR_TARGET_RETEST="+json.dumps(record,ensure_ascii=False),flush=True)
+                  results.append(record)
+              print("FR_TARGET_RETEST_SUMMARY="+json.dumps({"tested":len(results),"complete":sum(x["complete"] for x in results)}),flush=True)
+          PY
