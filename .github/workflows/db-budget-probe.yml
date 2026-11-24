@@ -3,7 +3,7 @@ run-name: 'FoodRadar｜20MB 資料庫容量實測｜#${{ github.run_number }}'
 on:
   push:
     branches: [diagnostic/db-budget-20mb]
-    paths: ['.github/workflows/db-budget-probe.yml', 'scripts/db_budget_probe.py', 'scripts/db_compact_candidate.py', 'src/**', 'tests/**', 'scripts/audit_canonical_history.py', 'src/compact_checkpoint.py']
+    paths: ['.github/workflows/db-budget-probe.yml', 'scripts/db_budget_probe.py', 'scripts/db_compact_candidate.py', 'src/**', 'tests/**', 'scripts/audit_canonical_history.py', 'src/compact_checkpoint.py', 'scripts/verify_compact_web.py']
 permissions:
   contents: read
   actions: read
@@ -43,6 +43,8 @@ jobs:
           print('PREVIOUS_VERIFIED_CHECKPOINT_MIGRATION=PASS')
           PY
           python scripts/verify_compact_roundtrip.py data/state-checkpoint/serving.db
+          python scripts/verify_compact_web.py data/state-checkpoint/serving.db
+          node tests/web_contract.cjs
       - name: 保存容量報告
         if: always()
         uses: actions/upload-artifact@v4
