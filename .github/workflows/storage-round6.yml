@@ -1,0 +1,49 @@
+name: FoodRadar｜第六輪資料庫儲存研究
+run-name: FoodRadar｜第六輪獨立分店與稀疏欄位實驗
+on:
+  push:
+    branches: [research/storage-20261124]
+    paths:
+      - '.github/workflows/storage-round6.yml'
+      - 'scripts/benchmark_storage_round6.py'
+permissions:
+  contents: write
+concurrency:
+  group: foodradar-storage-benchmark
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝測試套件
+        run: pip install 'msgpack>=1,<2' 'zstandard>=0.23,<1'
+      - name: 唯讀還原既有正式快取
+        uses: actions/cache/restore@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-storage-research-${{ github.run_id }}
+          restore-keys: |
+            foodradar-state-v1-
+          fail-on-cache-miss: true
+      - name: 無損實測與分店交易驗證
+        run: |
+          set -o pipefail
+          python scripts/benchmark_storage_round6.py data/state-checkpoint | tee /tmp/fr6.log
+          grep -q '^FR6_RESULT=' /tmp/fr6.log
+      - name: 保存研究結果與執行日誌
+        if: always()
+        run: |
+          mkdir -p docs/storage-research
+          report=docs/storage-research/round6-${{ github.run_id }}.log
+          if test -f /tmp/fr6.log; then cp /tmp/fr6.log "$report"; else echo '未取得實測結果，請檢查 Actions 日誌' > "$report"; fi
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$report"
+          git commit -m '保存第六輪研究實測紀錄'
+          git push origin HEAD:research/storage-20261124
