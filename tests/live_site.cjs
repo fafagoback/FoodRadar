@@ -216,11 +216,13 @@ const fs = require('node:fs');
 
     // Reported real SKU: near ABA (459 -> 899 -> 449.50). The
     // item can remain searchable; it must not claim a new seven-day discount.
-    const olive = await page.evaluate(async () => {
+    const abaCases = await page.evaluate(async () => {
       const client = await import('./static-catalog.js');
       const products = await client.searchPacked({keyword:'YBARRA',limit:500});
-      const target = products.filter(p => /益百萊/.test(p.product_name || '') &&
-        /1000\s*ml/i.test(p.product_name || '') && /北投/.test(p.store_name || ''));
+      const beef = await client.searchPacked({keyword:'美國冷藏牛腱',limit:500});
+      const target = [...products.filter(p => /益百萊/.test(p.product_name || '') &&
+        /1000\s*ml/i.test(p.product_name || '') && /北投/.test(p.store_name || '')),
+        ...beef.filter(p => /美國冷藏牛腱/.test(p.product_name || '') && /350\s*g/i.test(p.product_name || '') && /北投行義/.test(p.store_name || ''))];
       const output = [];
       for (const p of target) {
         const events = await client.packedHistory(p.store_uuid,p.product_uuid);
@@ -237,7 +239,7 @@ const fs = require('node:fs');
         let blocked=false;
         for(let i=0;i+2<runs.length;i++){
           const [a,b,c]=runs.slice(i,i+3);
-          const near=Math.abs(c.unit-a.unit)<=0.05*a.unit &&
+          const near=Math.abs(c.unit-a.unit)<=0.15*a.unit &&
             (b.unit>Math.max(a.unit,c.unit)||b.unit<Math.min(a.unit,c.unit)) &&
             Math.abs(b.unit-a.unit)>=0.2*a.unit && Math.abs(b.unit-c.unit)>=0.2*c.unit;
           const reversal=(a.unit===c.unit && a.unit!==b.unit)||near;
@@ -245,17 +247,17 @@ const fs = require('node:fs');
              (a.last>=now-14*day || (b.unit>a.unit?b.last>=now-7*day:
                a.last>=now-7*day||c.first>=now-7*day))) blocked=true;
         }
-        output.push({id:p.product_uuid,blocked,discount:p.discount_pct,
+        output.push({id:p.product_uuid,name:p.product_name,blocked,discount:p.discount_pct,
           deal:p.is_price_deal,reference:p.seven_day_reference_price,
           current:p.current_price,points:points.length});
       }
       return output;
     });
-    console.log('OLIVE_OIL_ABA_REGRESSION '+JSON.stringify(olive));
-    for(const item of olive.filter(p=>p.blocked)){
-      assert.equal(Number(item.discount||0),0,'ABA olive oil must not claim a new discount');
-      assert.equal(Number(item.deal||0),0,'ABA olive oil must not enter the deals index');
-      assert.equal(item.reference,null,'ABA olive oil must have no disputed reference');
+    console.log('PRICE_ABA_REGRESSION '+JSON.stringify(abaCases));
+    for(const item of abaCases.filter(p=>p.blocked)){
+      assert.equal(Number(item.discount||0),0,'ABA product must not claim a new discount');
+      assert.equal(Number(item.deal||0),0,'ABA product must not enter the deals index');
+      assert.equal(item.reference,null,'ABA product must have no disputed reference');
     }
 
     // Live search pagination regression. For the audited Raw batch the

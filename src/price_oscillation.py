@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 REVERSAL_DAYS = 14
-RETURN_TOLERANCE_PERCENT = 5
+RETURN_TOLERANCE_PERCENT = 15
 MIN_NEAR_REVERSAL_SWING_PERCENT = 20
 
 

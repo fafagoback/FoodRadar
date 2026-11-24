@@ -92,6 +92,11 @@ class OscillationTests(unittest.TestCase):
             ((500, 900, 520), True),
             ((500, 250, 490), True),
             ((500, 900, 480), True),
+            ((350, 870, 304), True),
+            ((350, 870, Fraction(29750, 100)), True),
+            ((350, 870, Fraction(29749, 100)), False),
+            ((500, 900, 575), True),
+            ((500, 900, Fraction(57501, 100)), False),
             ((500, 900, 400), False),
             ((500, 510, 495), False),
             ((500, 450, 400), False),
@@ -130,6 +135,17 @@ class OscillationTests(unittest.TestCase):
         historical = list(self.db.execute(
             "SELECT payable_total_cents FROM product_price_observations ORDER BY observed_at"))
         self.assertEqual([x[0] for x in historical], [45900,89900,89900,44950])
+
+    def test_beef_shank_350_870_304_suppresses_deal_and_preserves_history(self):
+        prices = [350] * 8 + [870] * 4 + [304]
+        for price in prices:
+            row = self.add(price)
+        self.assertEqual(row["seven_day_is_price_deal"], 0)
+        self.assertEqual(row["seven_day_discount_pct"], 0)
+        self.assertIsNone(row["seven_day_reference_price"])
+        historical = list(self.db.execute(
+            "SELECT payable_total_cents FROM product_price_observations ORDER BY observed_at"))
+        self.assertEqual([x[0] for x in historical], [p * 100 for p in prices])
 
     def test_long_aba_blocks_published_weekly_discount(self):
         for price in [89] * 7 + [179] * 6 + [89]:
