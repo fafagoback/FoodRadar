@@ -358,8 +358,11 @@ jobs:
               if workflow(r) == '.github/workflows/crawl.yml':
                   if r['run_number'] > source['run_number']:
                       continue
-                  raw = name == 'foodradar-shared-feed' or re.fullmatch(r'foodradar-raw-shard-\d+', name)
-                  if raw and raw_saved(rid):
+                  raw = (re.fullmatch(r'foodradar-shared-feed(?:-[0-9a-f]{16})?', name)
+                         or re.fullmatch(r'foodradar-raw-shard-(?:[0-9a-f]{16}-)?\d+', name)
+                         or re.fullmatch(r'fr-task-[0-9a-f]{16}-[0-9a-f-]{36}-[0-9a-f]{32}', name)
+                         or re.fullmatch(r'fr-worker-[0-9a-f]{16}-\d+', name))
+                  if raw and (raw_saved(rid) or (rid != source_id and r['conclusion'] == 'cancelled')):
                       targets.append(a)
                   elif (rid != source_id and r['run_number'] < source['run_number']
                         and not other_deploy and (name == 'foodradar-static-source' or name in crawl_reports)):
@@ -370,22 +373,26 @@ jobs:
                       targets.append(a)
 
           deleted = []
+          grouped = {}
           for a in targets:
-              rid = owner(a)
-              # 再確認沒有正在重跑的任務；新部署出現時停止清理舊來源。
+              grouped.setdefault(owner(a), []).append(a)
+          # 同一已完成 RUN 的逐店暫存包可能很多。每組核對一次，避免對
+          # 每個檔案額外執行兩次 API 請求；不動任何研究分支或目前來源包。
+          for rid, group in grouped.items():
               current = api(f'/actions/runs/{rid}')
               if current['status'] != 'completed' or current['run_attempt'] != runs[rid]['run_attempt']:
                   continue
               if api(f'/actions/runs/{pages_id}')['status'] != 'in_progress':
                   break
-              try:
-                  api(f"/actions/artifacts/{a['id']}", 'DELETE')
-              except HTTPError as error:
-                  if error.code != 404:
-                      raise
-                  continue
-              deleted.append(a)
-              print('已清除', a['id'], a['name'], a['size_in_bytes'], flush=True)
+              for a in group:
+                  try:
+                      api(f"/actions/artifacts/{a['id']}", 'DELETE')
+                  except HTTPError as error:
+                      if error.code != 404:
+                          raise
+                      continue
+                  deleted.append(a)
+                  print('已清除', a['id'], a['name'], a['size_in_bytes'], flush=True)
 
           remaining = list(paginated('/actions/artifacts', 'artifacts'))
           assert not ({a['id'] for a in deleted} & {a['id'] for a in remaining}), '清理後驗證失敗'
