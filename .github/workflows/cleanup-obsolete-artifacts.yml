@@ -1,0 +1,68 @@
+name: FoodRadar｜一次性清理過期用途 Artifact
+run-name: FoodRadar｜清理已被取代的歷史 Artifact
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/cleanup-obsolete-artifacts.yml']
+permissions:
+  actions: write
+  contents: read
+jobs:
+  cleanup:
+    name: 保留最新資料與部署，清除歷史副本
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 盤點、清除並驗證
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error, time
+          base = 'https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY']
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          def req(path, method='GET'):
+              with urllib.request.urlopen(urllib.request.Request(base+path, headers=headers, method=method), timeout=25) as r:
+                  data=r.read()
+                  return json.loads(data) if data else None
+          def paginate(path, key):
+              page=1
+              while True:
+                  items=req(path+('&' if '?' in path else '?')+'per_page=100&page='+str(page))[key]
+                  yield from items
+                  if len(items)<100: break
+                  page+=1
+          runs=list(paginate('/actions/runs','workflow_runs'))
+          # The following runs were audited before this cleanup; never touch any newly started run.
+          old={45340241202,45338816255,45338435159,45338126798,45337750740,45335150305,45334737716,45321102202,45307993586,45307556104,45307507175,45307102889,45306596136,45306585005,45301686585,45301674116,45300931667,45279937227,45276666215,45175868284,45164571943,45149479352,45147785037,45147273823,45147085174,45147085156,45146941902,45146934444,45146934316,45146925369,45146925302,45145350644,45145309777,45145309758,45143210341}
+          keep={45340974044,45341362642}
+          for workflow in ('crawl.yml','pages.yml'):
+              successful=next((r for r in runs if r.get('path','').split('/')[-1]==workflow and r['conclusion']=='success'),None)
+              if successful: keep.add(successful['id'])
+          # Preserve active runs and audited current publication and source. Latest actual crawl's audit reports remain.
+          for rid in (45340974044,45341362642):
+              assert any(r['id']==rid and r['conclusion']=='success' for r in runs), '最新正式版本未確認'
+          all_before=list(paginate('/actions/artifacts','artifacts'))
+          by_id={r['id']:r for r in runs}
+          targets=[]
+          for a in all_before:
+              rid=(a.get('workflow_run') or {}).get('id')
+              if a['expired'] or rid not in old or rid in keep or by_id.get(rid,{}).get('status')!='completed': continue
+              if rid==45338816255 and a['name'] in ('foodradar-run-metrics','foodradar-data-validation'): continue
+              targets.append(a)
+          deleted=[]
+          for a in targets:
+              req('/actions/artifacts/'+str(a['id']),'DELETE')
+              deleted.append(a)
+              print('已刪除',a['id'],a['name'],a['size_in_bytes'])
+          after=list(paginate('/actions/artifacts','artifacts'))
+          remaining={a['id'] for a in after}
+          assert not any(a['id'] in remaining for a in deleted), '刪除驗證失敗'
+          assert any(a['name']=='foodradar-static-source' and (a.get('workflow_run') or {}).get('id')==45340974044 for a in after), '正式來源包遺失'
+          assert any(a['name'].startswith('github-pages') and (a.get('workflow_run') or {}).get('id')==45341362642 for a in after), '正式部署包遺失'
+          result={'before_count':len(all_before),'deleted_count':len(deleted),'deleted_bytes':sum(a['size_in_bytes'] for a in deleted),'remaining_count':len(after),'remaining_bytes':sum(a['size_in_bytes'] for a in after if not a['expired'])}
+          print('FOODRADAR_ARTIFACT_CLEANUP='+json.dumps(result))
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('## 歷史 Artifact 清理完成\n\n'+f"已刪除 {result['deleted_count']} 個檔案，釋放 {result['deleted_bytes']/1048576:.2f} MB；目前保留 {result['remaining_count']} 個檔案，共 {result['remaining_bytes']/1048576:.2f} MB。\n")
+          PY
