@@ -100,7 +100,7 @@ class CompactStore:
         s["store_uuid"]=sid
         s["state_hash"]=canonical_hash({k:s[k] for k in STORE_HASH_FIELDS})
         return s
-    def read_shop(self,sid):
+    def _state(self,sid):
         state,rows=_unpack(self._payload(sid,"shop_state"))
         store={c:self.decode(c,v) for c,v in zip(self.sc,state)}
         store["store_uuid"]=sid
@@ -111,11 +111,15 @@ class CompactStore:
             p["store_uuid"]=sid
             p["state_hash"]=canonical_hash({k:p[k] for k in PRODUCT_HASH_FIELDS})
             p["price_evidence_source_hash"]=None
+            p["menu_quote_history"]="[]"
             products.append(p)
-        quotes=[];histories=defaultdict(list)
+        self.max_shop_products=max(self.max_shop_products,len(products))
+        return store,products
+    def _quotes(self,sid,ids):
+        quotes=[]
         for ordinal,variants in _unpack(self._payload(sid,"price_history")):
-            if not 0<=ordinal<len(products):raise ValueError("Invalid SKU ordinal")
-            pid=products[ordinal]["product_uuid"]
+            if not 0<=ordinal<len(ids):raise ValueError("Invalid SKU ordinal")
+            pid=ids[ordinal]
             for fields,mask in variants:
                 menu,kind,buy,free,received,original,payable=fields
                 if not (menu>0 and received>0 and 0<=kind<len(KINDS)):raise ValueError("Invalid quote")
@@ -125,20 +129,30 @@ class CompactStore:
                     if pos>=len(self.batches):raise ValueError("Unknown compact batch")
                     batch,at=self.batches[pos]
                     quotes.append((batch,sid,pid,at,menu,KINDS[kind],buy,free,received,original,payable,""))
-                    if payable>0:
-                        label="無" if kind==0 else f"買{buy}送{free}" if kind==1 else "直接折價"
-                        histories[pid].append([at,round(float(Fraction(payable,100*received)),2),
-                                               menu/100.0,label,received])
         quotes.sort(key=lambda r:(r[2],r[3],r[0]))
         if len({(q[0],q[2]) for q in quotes})!=len(quotes):
             raise ValueError("Duplicate compact observation")
-        for p in products:
-            cutoff=(datetime.fromisoformat(p["last_seen"])-timedelta(days=7)).isoformat()
-            p["menu_quote_history"]=json.dumps(sorted(
-                [x for x in histories[p["product_uuid"]] if cutoff<=x[0]<=p["last_seen"]],
-                key=lambda x:x[0]),ensure_ascii=False)
-        self.max_shop_products=max(self.max_shop_products,len(products))
         self.max_shop_observations=max(self.max_shop_observations,len(quotes))
+        return quotes
+    def quote_rows(self,sid):
+        _,rows=_unpack(self._payload(sid,"shop_state"))
+        index=self.pc.index("product_uuid")
+        return self._quotes(sid,[text_uuid(r[index]) for r in rows])
+    def read_shop(self,sid,*,derive_history=False):
+        store,products=self._state(sid)
+        quotes=self._quotes(sid,[p["product_uuid"] for p in products])
+        if derive_history:
+            histories=defaultdict(list)
+            for _,_,pid,at,menu,kind,buy,free,received,_,payable,_ in quotes:
+                if payable>0:
+                    label="無" if kind=="NONE" else f"買{buy}送{free}" if kind=="SAME_SKU_BXGY" else "直接折價"
+                    histories[pid].append([at,round(float(Fraction(payable,100*received)),2),
+                                           menu/100.0,label,received])
+            for p in products:
+                cutoff=(datetime.fromisoformat(p["last_seen"])-timedelta(days=7)).isoformat()
+                p["menu_quote_history"]=json.dumps(
+                    [x for x in histories[p["product_uuid"]] if cutoff<=x[0]<=p["last_seen"]],
+                    ensure_ascii=False)
         return store,products,quotes
     def _replace(self,table,sid,value):
         payload=_pack(value);key=binary_uuid(sid)
@@ -172,7 +186,10 @@ class CompactStore:
     def flush(self):
         self.d["__batch_keys"]=[list(x) for x in self.batches]
         for k in sorted(self.dirty):
-            self.conn.execute("INSERT OR REPLACE INTO dictionary VALUES(?,?)",(k,_pack(self.d[k])))
+            payload=_pack(self.d[k])
+            previous=self.conn.execute("SELECT payload FROM dictionary WHERE key=?",(k,)).fetchone()
+            if previous is None or previous[0]!=payload:
+                self.conn.execute("INSERT OR REPLACE INTO dictionary VALUES(?,?)",(k,payload))
         self.conn.commit();self.dirty.clear()
     def update_shop(self,sid,doc,batch,previous,baseline):
         """Apply the same lifecycle code to one shop in a memory-only connection.
@@ -181,7 +198,7 @@ class CompactStore:
         and bounded recent quotes; the new native observations append to the
         compact bitsets. Global weekly rules are recalculated separately.
         """
-        old=self.read_shop(sid) if sid in self.ids else None
+        old=self.read_shop(sid,derive_history=True) if sid in self.ids else None
         with contextlib.closing(sqlite3.connect(":memory:")) as db:
             from working_quotes import initialize
             db.row_factory=sqlite3.Row
@@ -255,7 +272,10 @@ class CompactCollection:
     def ids(self):return sorted(self.lookup)
     def stores(self):
         return (self.lookup[sid].store_header(sid) for sid in self.ids())
-    def shop(self,sid):return self.lookup[sid].read_shop(sid)
+    def shop(self,sid,*,derive_history=False):return self.lookup[sid].read_shop(sid,derive_history=derive_history)
+    def products(self,sid):return self.lookup[sid]._state(sid)[1]
+    def quote_shops(self):
+        for sid in self.ids():yield self.lookup[sid].quote_rows(sid)
     def shops(self):
         for sid in self.ids():yield self.shop(sid)
     def metadata(self):return self.meta
@@ -284,7 +304,7 @@ class CompactCollection:
             part=self.lookup[sid]
             store=part.store_header(sid)
             if store["status"]=="active":
-                store,products,_=part.read_shop(sid)
+                store,products=part._state(sid)
                 store["missing_streak"]+=1
                 if store["missing_streak"]>=DEFAULT_MISSING_THRESHOLD:
                     store["status"]="inactive";counts["store_removed"]+=1
@@ -308,8 +328,13 @@ class CompactCollection:
             part.flush()
     def stats(self):
         counts=Counter()
-        for _,products,quotes in self.shops():
-            counts["stores"]+=1;counts["products"]+=len(products);counts["observations"]+=len(quotes)
+        for sid in self.ids():
+            part=self.lookup[sid]
+            _,rows=_unpack(part._payload(sid,"shop_state"))
+            quotes=_unpack(part._payload(sid,"price_history"))
+            counts["stores"]+=1;counts["products"]+=len(rows)
+            counts["observations"]+=sum(int.from_bytes(mask,"little").bit_count()
+                    for _,variants in quotes for _,mask in variants)
         return dict(counts)
     def metrics(self):
         return {"compact_bytes":sum(p.path.stat().st_size for p in self.parts),

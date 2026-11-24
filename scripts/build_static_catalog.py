@@ -169,7 +169,7 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None):
             from canonical_history import quote_points,points_from_rows
             if direct is not None:
                 native_rows=((q[1],q[2],q[3],q[4],q[5],q[6],q[7],q[8],q[10])
-                             for _,_,quotes in direct.shops() for q in quotes)
+                             for quotes in direct.quote_shops() for q in quotes)
                 history_points=points_from_rows(native_rows)
             else:
                 history_points=quote_points(source)

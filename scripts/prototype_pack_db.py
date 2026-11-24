@@ -167,7 +167,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
                 (cutoff,latest_time))))
     for store_id, store in enumerate(stores):
         sid = store["store_uuid"]
-        products = (sorted(direct.shop(sid)[1],key=lambda p:(p["first_seen"],p["product_uuid"]))
+        products = (sorted(direct.products(sid),key=lambda p:(p["first_seen"],p["product_uuid"]))
                     if direct is not None else list(src.execute(
                         "SELECT * FROM products WHERE store_uuid=? ORDER BY first_seen,product_uuid", (sid,))))
         events = [] if static_only else list(src.execute("SELECT * FROM events WHERE store_uuid=? ORDER BY id", (sid,)))
