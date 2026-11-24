@@ -55,6 +55,38 @@ class DirectCompactTest(unittest.TestCase):
         self.assertEqual(orig["files"],new["files"])
         self.assertEqual(orig["summary"],new["summary"])
         self.assertEqual(orig["counts"],new["counts"])
+    def test_remove_images_from_existing_encoded_checkpoint(self):
+        from compact_checkpoint import _pack, _unpack
+        with tempfile.TemporaryDirectory() as tmp:
+            part=CompactStore(Path(tmp)/"direct.db",empty=True)
+            try:
+                value=doc(SIDS[0],100)
+                item=value["hasMenu"]["hasMenuSection"][0]["hasMenuItem"][0]
+                item["catalog_web"]={"image_url":"https://example.org/test.png","is_available":True,"section_uuid":"category"}
+                part.update_shop(SIDS[0],value,"20261120133219","",True)
+                # Inject the legacy physical format, not a new write.
+                ci=part.pc.index("catalog_web")
+                header,rows=_unpack(part._payload(SIDS[0],"shop_state"))
+                k=part.token("catalog_key","image_url")
+                v=part.token("catalog:image_url",json.dumps("https://example.org/test.png"))
+                rows[0][ci].append([k,v])
+                part._replace("shop_state",SIDS[0],[header,rows]);part.flush()
+                before=part.read_shop(SIDS[0])
+                history=part._payload(SIDS[0],"price_history")
+                self.assertEqual(part.remove_image_urls(),1)
+                self.assertEqual(part.remove_image_urls(),0)
+                after=part.read_shop(SIDS[0])
+                expected=before[1][0]
+                catalog=json.loads(expected["catalog_web"]);catalog.pop("image_url")
+                expected["catalog_web"]=json.dumps(catalog,ensure_ascii=False)
+                self.assertEqual(after,before)
+                self.assertEqual(part._payload(SIDS[0],"price_history"),history)
+                self.assertNotIn("image_url",part.d["catalog_key"])
+                self.assertNotIn("catalog:image_url",part.d)
+                part.update_shop(SIDS[0],value,"20261121133219","20261120133219",False)
+                self.assertNotIn("image_url",json.loads(part.read_shop(SIDS[0])[1][0]["catalog_web"]))
+            finally:part.close()
+
     def test_incremental_and_missing_excluded_new_store(self):
         with tempfile.TemporaryDirectory() as tmp,contextlib.redirect_stdout(io.StringIO()):
             root=Path(tmp);legacy=root/"legacy.db"

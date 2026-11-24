@@ -187,6 +187,7 @@ def restore(target, records, config, cache=CACHE, root=ROOT, *, lean=False):
             db_count=db.execute("SELECT COUNT(*) FROM crawl_batches").fetchone()[0]
         if not row or row[0]!=meta.get("batch_id") or db_count!=meta.get("verified_batches"):
             raise ValueError("Checkpoint/database batch mismatch")
+        for part in state.parts:part.remove_image_urls()
         print("FOODRADAR_CHECKPOINT_RESTORED="+json.dumps({
             "batch":row[0],"manifests":count,"verified_batches":db_count,
             "compact_bytes":(sum(p["bytes"] for p in parts) if parts else
@@ -271,6 +272,30 @@ def compatible_direct_contract(meta,root=ROOT):
     fmt=meta.get("format")
     if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==direct_contract_digest(root):
         return True
+    # Explicit reviewed image-only migration from already verified compact state.
+    # Accept only the exact old observation contract and exact new code blobs.
+    if fmt=="foodradar-checkpoint-v4":
+        try:
+            historical=("f674d805e55db21ef1d21cfba8f4a15d73ba50e7","ab8fcab771f67a037b0eed331c2ca6a0c90ffbe2")
+            old_ok=any(meta.get("contract_digest")==_historical_digest(root,ref,DIRECT_CONTRACTS)
+                       for ref in historical)
+            reviewed_image={
+                "src/compact_direct.py":"2012dc9f908d28ad84b380d07017aa3eab3a100b",
+                "src/serving_state.py":"8dc5e0c3f9a09b6134769c7b6bb585de9290efce",
+            }
+            if old_ok:
+                unchanged=True
+                for file in DIRECT_CONTRACTS:
+                    data=(Path(root)/file).read_bytes()
+                    if file in reviewed_image:
+                        blob=b"blob "+str(len(data)).encode()+b"\0"+data
+                        unchanged &= hashlib.sha1(blob).hexdigest()==reviewed_image[file]
+                    else:
+                        unchanged &= data==subprocess.check_output(["git","show",f"ab8fcab771f67a037b0eed331c2ca6a0c90ffbe2:{file}"],
+                            cwd=root,stderr=subprocess.DEVNULL,timeout=15)
+                if unchanged:return True
+        except (OSError,subprocess.SubprocessError):
+            pass
     # Exact storage-only cleanup: the old full-replay alternative and
     # reporting constants were removed. The direct observation path is unchanged.
     anchor="f674d805e55db21ef1d21cfba8f4a15d73ba50e7"

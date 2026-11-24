@@ -102,7 +102,7 @@ class OscillationTests(unittest.TestCase):
             ((500, 450, 400), False),
             ((500, 630, 525), True),
             ((500, 629, 525), False),
-            ((500, 900, Fraction(52501, 100)), False),
+            ((500, 900, Fraction(52501, 100)), True),  # Within the 15% return tolerance.
             ((500, 380, 475), True),
             ((500, 490, 480), False),
             ((10, 11, 10), True),

@@ -254,7 +254,6 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
                         "store_id": sid, "store_uuid": sid, "store_name": store["name"],
                         "product_name": product["product_name"], "category_name": product["category"],
                         "description": product["description"],
-                        "image_url": catalog_web.get("image_url"),
                         "display_original_price": (catalog_web["display_original_price_cents"] / 100.0
                             if isinstance(catalog_web.get("display_original_price_cents"), int) else None),
                         "native_promo_type": catalog_web.get("native_promo_type"),

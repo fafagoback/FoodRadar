@@ -57,6 +57,42 @@ class CompactStore:
         self.writes=0
         self.flush()
 
+    def remove_image_urls(self):
+        """Migrate verified legacy encoded rows in place; never touch price history."""
+        keys=self.d.get("catalog_key",[])
+        if "image_url" not in keys:
+            if "catalog:image_url" in self.d:
+                raise ValueError("Orphan image dictionary")
+            return 0
+        index=keys.index("image_url")
+        ci=self.pc.index("catalog_web")
+        before=self.path.stat().st_size
+        removed=0
+        # Read one shop at a time; all other encoded values stay exactly equal.
+        with self.conn:
+            for sid in sorted(self.ids):
+                header,rows=_unpack(self._payload(sid,"shop_state"))
+                changed=False
+                for row in rows:
+                    old=row[ci]
+                    new=[[k-int(k>index),v] for k,v in old if k!=index]
+                    removed+=len(old)-len(new)
+                    if new!=old:
+                        row[ci]=new;changed=True
+                if changed:self._replace("shop_state",sid,[header,rows])
+            self.d["catalog_key"]=keys[:index]+keys[index+1:]
+            self.d.pop("catalog:image_url",None)
+            self.tokens.pop("catalog_key",None)
+            self.tokens.pop("catalog:image_url",None)
+            self.dirty.discard("catalog:image_url")
+            self.conn.execute("DELETE FROM dictionary WHERE key='catalog:image_url'")
+            self.conn.execute("UPDATE dictionary SET payload=? WHERE key='catalog_key'",(_pack(self.d["catalog_key"]),))
+        self.conn.execute("VACUUM")
+        if self.conn.execute("PRAGMA quick_check").fetchone()[0]!="ok":
+            raise ValueError("Image removal integrity check failed")
+        print("FOODRADAR_IMAGE_REMOVAL="+json.dumps({"before_bytes":before,"after_bytes":self.path.stat().st_size,"removed_references":removed}),flush=True)
+        return removed
+
     def close(self):
         self.conn.close()
     def metadata(self):
@@ -88,7 +124,7 @@ class CompactStore:
             value=json.loads(val or "{}")
             if not isinstance(value,dict):raise ValueError("Unexpected catalog data")
             return [[self.token("catalog_key",k),self.token("catalog:"+k,json.dumps(v,ensure_ascii=False,separators=(",",":")))]
-                    for k,v in sorted(value.items())]
+                    for k,v in sorted(value.items()) if k!="image_url"]
         return self.token(col,val)
     def _payload(self,sid,table):
         row=self.conn.execute(f"SELECT payload FROM {table} WHERE store=?",(binary_uuid(sid),)).fetchone()

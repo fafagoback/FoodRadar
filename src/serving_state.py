@@ -540,7 +540,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     if isinstance(val, str) and val and val not in merged[bucket]:
                         merged[bucket].append(val)
                 for field, val in native_fields.items():
-                    if field not in ("section_uuid", "subsection_uuid") and val is not None:
+                    if field not in ("section_uuid", "subsection_uuid", "image_url") and val is not None:
                         # In case of repeated SKUs, prefer first nonempty fact.
                         if merged.get(field) is None:
                             merged[field] = val

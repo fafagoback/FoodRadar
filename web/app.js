@@ -1277,7 +1277,6 @@ function renderPromotions() {
           </div>
 
           <div class="flex items-center gap-3">
-            ${p.image_url ? `<img src="${escapeHtml(p.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" class="w-14 h-14 rounded-lg object-cover border border-slate-100 dark:border-slate-800 shrink-0">` : ''}
             <h4 class="text-base font-bold text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors line-clamp-2">
               ${escapeHtml(p.product_name)}
             </h4>
@@ -1731,7 +1730,6 @@ function renderGlobalProducts() {
           </div>
 
           <div class="flex items-center gap-2 mb-2">
-            ${p.image_url ? `<img src="${escapeHtml(p.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" class="w-12 h-12 object-cover rounded-lg border border-slate-100 dark:border-slate-800 shrink-0">` : ''}
             <h4 class="text-sm font-bold text-slate-900 dark:text-white line-clamp-2 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors" title="${escapeHtml(p.product_name)}">
               ${escapeHtml(p.product_name)}
             </h4>
