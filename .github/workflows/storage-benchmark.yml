@@ -1,5 +1,5 @@
-name: FoodRadar｜第十二輪自動結構搜尋
-run-name: FoodRadar｜位元組平面轉置與混合字典實測
+name: FoodRadar｜第十三輪自動結構搜尋
+run-name: FoodRadar｜低初始化成本與頁面結構實測
 on:
   push:
     branches: [research/storage-20261124]
@@ -44,16 +44,16 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p docs/storage-research
-          python scripts/benchmark_storage_round12.py data/state-checkpoint | tee /tmp/fr12.log
-          grep -q '^FR12_RESULT=' /tmp/fr12.log
+          python scripts/benchmark_storage_round13.py data/state-checkpoint | tee /tmp/fr13.log
+          grep -q '^FR13_RESULT=' /tmp/fr13.log
       - name: 保存本輪研究紀錄
         if: always() && steps.deadline.outputs.active == 'true'
         run: |
           mkdir -p docs/storage-research
-          if test -f /tmp/fr12.log; then cp /tmp/fr12.log docs/storage-research/round12-${{ github.run_id }}.log; else echo '未取得測試日誌' > docs/storage-research/round12-${{ github.run_id }}.log; fi
-          tail -c 50000 docs/storage-research/round12-${{ github.run_id }}.log >> "$GITHUB_STEP_SUMMARY"
+          if test -f /tmp/fr13.log; then cp /tmp/fr13.log docs/storage-research/round13-${{ github.run_id }}.log; else echo '未取得測試日誌' > docs/storage-research/round13-${{ github.run_id }}.log; fi
+          tail -c 50000 docs/storage-research/round13-${{ github.run_id }}.log >> "$GITHUB_STEP_SUMMARY"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add docs/storage-research
-          git commit -m '保存第十二輪結構搜尋進度'
+          git commit -m '保存第十三輪結構搜尋進度'
           git push origin HEAD:research/storage-20261124
