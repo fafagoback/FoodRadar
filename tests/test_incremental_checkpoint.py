@@ -90,5 +90,38 @@ class CheckpointTests(unittest.TestCase):
                           {'hf_repo_id':'wrong/repo','hf_folder':'Raw'},self.cache))
 
 
+class DirectCaptureMigrationTests(unittest.TestCase):
+    def test_reviewed_capture_upgrade_only(self):
+        from state_checkpoint import compatible_direct_contract, DIRECT_CAPTURE_MIGRATIONS, DIRECT_CONTRACTS
+        old,new=DIRECT_CAPTURE_MIGRATIONS[0]
+        root=ROOT
+        def historical(path, ref, files):
+            if tuple(files)==DIRECT_CONTRACTS:
+                if ref==old: return "reviewed-old"
+                if ref==new: return "reviewed-new"
+            return "other"
+        with patch("state_checkpoint._historical_digest",side_effect=historical):
+            with patch("state_checkpoint.direct_contract_digest",return_value="reviewed-new"):
+                self.assertTrue(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":"reviewed-old"},root))
+                self.assertFalse(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":"unknown"},root))
+            with patch("state_checkpoint.direct_contract_digest",return_value="unreviewed-code"):
+                self.assertFalse(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":"reviewed-old"},root))
+
+    def test_real_reviewed_contract_digests(self):
+        import subprocess
+        from state_checkpoint import compatible_direct_contract, DIRECT_CAPTURE_MIGRATIONS, DIRECT_CONTRACTS, _historical_digest, direct_contract_digest
+        old,new=DIRECT_CAPTURE_MIGRATIONS[0]
+        try:
+            previous=_historical_digest(ROOT,old,DIRECT_CONTRACTS)
+            reviewed=_historical_digest(ROOT,new,DIRECT_CONTRACTS)
+        except (OSError,subprocess.SubprocessError):
+            self.skipTest("Historical commits not available in shallow checkout")
+        if direct_contract_digest(ROOT)!=reviewed:
+            self.skipTest("Current code contract is not the reviewed capture upgrade")
+        self.assertNotEqual(previous,reviewed)
+        self.assertTrue(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":previous},ROOT))
+
+
+
 if __name__=='__main__':
     unittest.main()

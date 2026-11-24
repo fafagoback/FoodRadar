@@ -267,10 +267,29 @@ def direct_contract_digest(root=ROOT):
         h.update((Path(root)/file).read_bytes())
     return h.hexdigest()
 
+# Reviewed capture-only migration: the old verified compact DB was produced
+# by 48b1356. The three changed contract files affect live transport/retries
+# only; archived Raw decoding, price evidence, DB layout and mutation are
+# unchanged. Require exact hashes for BOTH endpoints, not a generic bypass.
+DIRECT_CAPTURE_MIGRATIONS = (
+    ("48b1356a58c07d4aa0825346f3e32ad4edf47ce8",
+     "1219b24c4239e5a923b1b141acc9d0e169743890"),
+)
+
 def compatible_direct_contract(meta,root=ROOT):
     fmt=meta.get("format")
-    if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==direct_contract_digest(root):
+    current=direct_contract_digest(root) if fmt=="foodradar-checkpoint-v4" else None
+    if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==current:
         return True
+    if fmt=="foodradar-checkpoint-v4":
+        for old,new in DIRECT_CAPTURE_MIGRATIONS:
+            try:
+                if (current==_historical_digest(root,new,DIRECT_CONTRACTS)
+                    and meta.get("contract_digest")==_historical_digest(root,old,DIRECT_CONTRACTS)):
+                    print("FOODRADAR_CHECKPOINT_CAPTURE_ONLY_MIGRATION="+old+".."+new,flush=True)
+                    return True
+            except (OSError,subprocess.SubprocessError):
+                continue
     # Explicit reviewed image-only migration from already verified compact state.
     # Accept only the exact old observation contract and exact new code blobs.
     if fmt=="foodradar-checkpoint-v4":
