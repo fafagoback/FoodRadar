@@ -1,0 +1,35 @@
+name: FoodRadar｜瀏覽器實際商品瀏覽診斷
+on:
+  push:
+    branches: ['diagnostic/catalog-1020-20261124']
+    paths: ['scripts/browser_catalog_diagnostic.py', '.github/workflows/browser_catalog_diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  browse:
+    name: 瀏覽店家 ${{ matrix.store }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝瀏覽器控制套件
+        run: |
+          python -m pip install playwright
+          google-chrome --version
+      - name: 實際開啟網頁、點擊分類、向下瀏覽
+        run: python scripts/browser_catalog_diagnostic.py ${{ matrix.store }}
+      - name: 保存畫面及原生網路請求證據
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-store-${{ matrix.store }}
+          path: browser-evidence/
+          retention-days: 3
+          if-no-files-found: warn
