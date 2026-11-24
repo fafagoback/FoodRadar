@@ -76,7 +76,10 @@ class DirectCompactTest(unittest.TestCase):
                     self.assertTrue(all(actual.get(k,0)==v for k,v in expected.items()),(actual,expected))
                     self.assertEqual(collection.refresh_weekly(batch),week)
                 self.compare(collection,legacy,root)
-                self.assertEqual(collection.metrics()["full_expanded_database_bytes"],0)
+                # Prove absence of the retired database, rather than a hard-coded zero.
+                self.assertFalse((root/"serving.db").exists())
+                self.assertFalse((root/"raw-only-reconstructed.db").exists())
+                self.assertFalse((root/"packed-serving.db").exists())
             finally:collection.close()
 
 if __name__=="__main__":unittest.main()

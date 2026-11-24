@@ -268,19 +268,33 @@ def direct_contract_digest(root=ROOT):
     return h.hexdigest()
 
 def compatible_direct_contract(meta,root=ROOT):
-    if meta.get("format")=="foodradar-checkpoint-v4":
-        return meta.get("contract_digest")==direct_contract_digest(root)
-    if meta.get("format")!="foodradar-checkpoint-v3":
+    fmt=meta.get("format")
+    if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==direct_contract_digest(root):
+        return True
+    # Exact storage-only cleanup: the old full-replay alternative and
+    # reporting constants were removed. The direct observation path is unchanged.
+    anchor="f674d805e55db21ef1d21cfba8f4a15d73ba50e7"
+    reviewed={
+        "src/pipeline.py":"69b5fcb595db1bcef6e92df0f670595c46cf5955",
+        "src/compact_direct.py":"a9034a15304d3957330ea9b7be55787f4c8b947d",
+    }
+    if fmt=="foodradar-checkpoint-v4":
+        previous=anchor
+        previous_files=DIRECT_CONTRACTS
+    elif fmt=="foodradar-checkpoint-v3":
+        previous=DIRECT_V3_ANCHOR
+        previous_files=CONTRACTS
+    else:
         return False
     try:
-        if meta.get("contract_digest")!=_historical_digest(root,DIRECT_V3_ANCHOR,CONTRACTS):
+        if meta.get("contract_digest")!=_historical_digest(root,previous,previous_files):
             return False
         for file in DIRECT_CONTRACTS:
             data=(Path(root)/file).read_bytes()
-            if file in DIRECT_V3_REVIEWED:
+            if file in reviewed:
                 blob=b"blob "+str(len(data)).encode()+b"\0"+data
-                if hashlib.sha1(blob).hexdigest()!=DIRECT_V3_REVIEWED[file]:return False
-            elif data!=subprocess.check_output(["git","show",f"{DIRECT_V3_ANCHOR}:{file}"],
+                if hashlib.sha1(blob).hexdigest()!=reviewed[file]:return False
+            elif data!=subprocess.check_output(["git","show",f"{anchor}:{file}"],
                     cwd=root,stderr=subprocess.DEVNULL,timeout=15):return False
         return True
     except (OSError,subprocess.SubprocessError):
@@ -360,12 +374,12 @@ def save_direct(state,raw_index_path,cache=CACHE,root=ROOT):
     single=len(parts)==1 and parts[0]["path"]=="serving.compact.db"
     metadata={**index,"format":"foodradar-checkpoint-v4",**counts,
               "compact_sha256":parts[0]["sha256"] if single else None,
-              "parts":None if single else parts,"expanded_work_db_bytes":0}
+              "parts":None if single else parts}
     temp=cache/"manifest.tmp"
     temp.write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding="utf-8")
     temp.replace(cache/"manifest.json")
     (cache/"serving.db").unlink(missing_ok=True)
     print("FOODRADAR_CHECKPOINT_PREPARED="+json.dumps({
         "batch":index["batch_id"],"bytes":sum(p["bytes"] for p in parts),
-        "parts":len(parts),"format":metadata["format"],"transient_db_bytes":0,
+        "parts":len(parts),"format":metadata["format"],
         **state.metrics()},ensure_ascii=False),flush=True)

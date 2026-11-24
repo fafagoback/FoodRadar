@@ -131,7 +131,6 @@ def main(kind):
         direct=read("action-reports/metrics/direct-db-report.json")
         if direct:
             add("精簡資料庫總容量",mb(direct.get("compact_bytes")))
-            add("完整展開的中間資料庫",mb(direct.get("full_expanded_database_bytes")))
             add("單店暫存記憶體資料庫峰值",mb(direct.get("max_shop_scratch_bytes")))
             add("資料庫與網站完整處理秒數",direct.get("seconds"))
         succeeded = os.environ.get("INGEST_RESULT") == "success" and isinstance(m, dict)

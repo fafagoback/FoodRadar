@@ -19,7 +19,7 @@ from audit_deal_pipeline import report as audit_deals
 def main():
     started=perf_counter()
     state=restore_history(json.loads((ROOT/"config.json").read_text(encoding="utf-8")),
-        rebuild_all=os.environ.get("FOODRADAR_REBUILD_VALID_PRICE_HISTORY")=="1",direct=True)
+        rebuild_all=os.environ.get("FOODRADAR_REBUILD_VALID_PRICE_HISTORY")=="1")
     try:
         batch=state.meta["latest_batch"]
         dest=ROOT/"data"/batch

@@ -342,8 +342,7 @@ class CompactCollection:
                 "max_shop_scratch_bytes":max(p.max_scratch_bytes for p in self.parts),
                 "max_shop_products":max(p.max_shop_products for p in self.parts),
                 "max_shop_observations":max(p.max_shop_observations for p in self.parts),
-                "modified_payloads":sum(p.writes for p in self.parts),
-                "full_expanded_database_bytes":0}
+                "modified_payloads":sum(p.writes for p in self.parts)}
     def rebuild_partitions(self,folder):
         """Drop unused dictionary tokens; split by actual bytes when needed.
 
