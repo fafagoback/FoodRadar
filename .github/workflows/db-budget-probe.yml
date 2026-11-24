@@ -1,0 +1,35 @@
+name: FoodRadar｜20MB 資料庫容量實測
+run-name: 'FoodRadar｜20MB 資料庫容量實測｜#${{ github.run_number }}'
+on:
+  push:
+    branches: [diagnostic/db-budget-20mb]
+    paths: ['.github/workflows/db-budget-probe.yml', 'scripts/db_budget_probe.py']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: foodradar-db-budget-probe
+  cancel-in-progress: true
+jobs:
+  measure:
+    name: 使用第439次正式快取唯讀實測
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 取得測試程式
+        uses: actions/checkout@v4
+      - name: 讀取第439次完整快取
+        uses: actions/cache/restore@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-state-v1-45307993586-1
+          fail-on-cache-miss: true
+      - name: 檢查容量並實測正規化價格紀錄
+        run: python scripts/db_budget_probe.py data/state-checkpoint/serving.db
+      - name: 保存容量報告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-budget-report
+          path: db-budget-report.json
+          retention-days: 1
