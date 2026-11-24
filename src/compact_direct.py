@@ -30,7 +30,8 @@ class CompactStore:
         if empty and self.path.exists():
             raise ValueError("Refusing to overwrite compact state")
         self.conn=sqlite3.connect(self.path)
-        self.conn.execute("PRAGMA journal_mode=DELETE")
+        self.conn.execute("PRAGMA journal_mode=MEMORY")
+        self.conn.execute("PRAGMA temp_store=MEMORY")
         if empty:
             self.conn.executescript(COMPACT_SCHEMA)
             with contextlib.closing(sqlite3.connect(":memory:")) as db:
