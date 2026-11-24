@@ -108,10 +108,9 @@ def restore_history(config, rebuild_all=False):
     from concurrent.futures import ThreadPoolExecutor
     from time import perf_counter
     from huggingface_hub import HfApi, hf_hub_download
-    import tarfile
     import sqlite3
     from serving_state import apply_snapshot, refresh_product_search
-    from raw_capture import documents_from_hf_raw
+    from raw_capture import documents_from_hf_raw, open_seekable_raw_archive
     from menu_core import canonical_store_uuid
     from verified_weekly import update_verified_weekly
     from state_checkpoint import restore as restore_checkpoint, contract_digest, manifest_digest
@@ -181,7 +180,7 @@ def restore_history(config, rebuild_all=False):
             totals['download_seconds'] += dl
             t = perf_counter()
             quarantined = []
-            with tarfile.open(downloaded,'r:gz') as archive:
+            with open_seekable_raw_archive(downloaded) as archive:
                 docs = documents_from_hf_raw(
                     archive, meta, quarantined_store_uuids=quarantined)
             decode = perf_counter()-t

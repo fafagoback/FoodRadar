@@ -147,41 +147,54 @@ def build(packed_db, serving_db, output):
         store_hash = write_blob(blobs, compressor, store_rows)
         catalog_hash = write_blob(blobs, compressor, minis)
 
-        # Keep historical events separate from browse/product cards.
+        # Canonical native quotes preserve the exact payable-price series.
+        # The old generic events are redundant for all browser price graphs.
         history = defaultdict(dict)
-        for row in source.execute("""SELECT store_uuid,product_uuid,event_time,event_type,
-               old_state,new_state FROM events WHERE product_uuid IS NOT NULL
-               ORDER BY store_uuid,product_uuid,event_time,id"""):
-            key = (row["store_uuid"], row["product_uuid"])
-            if key not in history_keys:
-                continue
-            bid = bucket(key[0], HISTORY_BUCKETS)
-            compound = key[0] + "\x1f" + key[1]
-            history[bid].setdefault(compound, []).append({
-                "event_time": row["event_time"], "event_type": row["event_type"],
-                "old_state": row["old_state"], "new_state": row["new_state"],
-            })
-        for row in source.execute("""SELECT store_uuid,product_uuid,menu_quote_history
-               FROM products WHERE menu_quote_history != '[]'"""):
-            key = (row["store_uuid"], row["product_uuid"])
-            if key not in history_keys:
-                continue
-            bid = bucket(key[0], HISTORY_BUCKETS)
-            compound = key[0] + "\x1f" + key[1]
-            try:
-                quotes = json.loads(row["menu_quote_history"] or "[]")
-            except (TypeError, ValueError):
-                quotes = []
-            for quote in quotes:
-                if not isinstance(quote, list) or len(quote) < 2:
+        has_quotes = source.execute("""SELECT 1 FROM sqlite_master
+             WHERE type='table' AND name='product_price_observations'""").fetchone()
+        if has_quotes:
+            import sys
+            sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
+            from canonical_history import quote_points
+            for sid, pid, quote in quote_points(source):
+                if (sid,pid) not in history_keys:
                     continue
-                at, unit = quote[:2]
-                if not at or not isinstance(unit, (int, float)) or unit <= 0:
+                at,unit,raw,promo,qty=quote
+                bid=bucket(sid,HISTORY_BUCKETS)
+                history[bid].setdefault(sid+"\x1f"+pid,[]).append(
+                    _price_event(at,raw,unit,promo,qty))
+        else:
+            # Historical offline fixtures without V2 price observations still
+            # test backwards compatibility with the original event archive.
+            for row in source.execute("""SELECT store_uuid,product_uuid,event_time,event_type,
+                   old_state,new_state FROM events WHERE product_uuid IS NOT NULL
+                   ORDER BY store_uuid,product_uuid,event_time,id"""):
+                key=(row["store_uuid"],row["product_uuid"])
+                if key not in history_keys:
                     continue
-                raw, promo, qty = (quote[2:5] + [None] * 3)[:3]
-                evidence = len(quote) >= 5 and isinstance(raw, (int, float)) and raw > 0 and bool(str(promo or "").strip())
-                history[bid].setdefault(compound, []).append(
-                    _price_event(at, raw, unit, promo, qty, unit_only=not evidence))
+                bid=bucket(key[0],HISTORY_BUCKETS)
+                history[bid].setdefault(key[0]+"\x1f"+key[1],[]).append({
+                    "event_time":row["event_time"],"event_type":row["event_type"],
+                    "old_state":row["old_state"],"new_state":row["new_state"],
+                })
+            for row in source.execute("""SELECT store_uuid,product_uuid,menu_quote_history
+                   FROM products WHERE menu_quote_history != '[]'"""):
+                key=(row["store_uuid"],row["product_uuid"])
+                if key not in history_keys:
+                    continue
+                bid=bucket(key[0],HISTORY_BUCKETS)
+                compound=key[0]+"\x1f"+key[1]
+                for quote in json.loads(row["menu_quote_history"] or "[]"):
+                    if not isinstance(quote,list) or len(quote)<2:
+                        continue
+                    at,unit=quote[:2]
+                    if not at or not isinstance(unit,(int,float)) or unit<=0:
+                        continue
+                    raw,promo,qty=(quote[2:5]+[None]*3)[:3]
+                    evidence=(len(quote)>=5 and isinstance(raw,(int,float))
+                              and raw>0 and bool(str(promo or "").strip()))
+                    history[bid].setdefault(compound,[]).append(
+                        _price_event(at,raw,unit,promo,qty,unit_only=not evidence))
         history_hashes = {
             str(bid): write_blob(blobs, compressor, entries)
             for bid, entries in sorted(history.items())

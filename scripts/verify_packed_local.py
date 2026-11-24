@@ -8,6 +8,31 @@ import msgpack
 import zstandard
 
 
+def verify_static_projection(conn, meta, path):
+    """Audit all static cards and store IDs; no obsolete Turso bundle checks."""
+    seen=set()
+    for (sid,) in conn.execute("SELECT store_uuid FROM store_directory"):
+        if sid in seen:raise ValueError("Duplicate storefront in directory")
+        seen.add(sid)
+    expected=meta.get("published_product_cards")
+    rows=0
+    for sid,pid,card,checksum in conn.execute(
+            "SELECT store_uuid,product_uuid,card,checksum FROM web_products ORDER BY store_uuid,product_uuid"):
+        if sid not in seen or hashlib.sha256(card.encode("utf-8")).hexdigest()!=checksum:
+            raise ValueError("Invalid store reference or product card checksum")
+        values=json.loads(card)
+        if values.get("store_uuid")!=sid or values.get("product_uuid")!=pid:
+            raise ValueError("Wrong product identity in card")
+        rows+=1
+    if rows!=expected or len(seen)!=meta["source_counts"]["stores"]:
+        raise ValueError("Static projection source/card counts mismatch")
+    index_names={r[1] for r in conn.execute("PRAGMA index_list(web_products)")}
+    if "sqlite_autoindex_web_products_1" not in index_names:
+        raise ValueError("Missing indexed product identity")
+    return {"store_directory":len(seen),"web_products":rows,"bytes":Path(path).stat().st_size,
+            "projection":"static-only","checksum_round_trip":"passed","metadata":meta}
+
+
 def verify(path):
     conn = sqlite3.connect(f'{Path(path).resolve().as_uri()}?mode=ro', uri=True)
     try:
@@ -17,6 +42,8 @@ def verify(path):
         for key in ('definition_version', 'source_revision', 'latest_batch'):
             if not meta.get(key):
                 raise ValueError(f'Missing release metadata: {key}')
+        if meta.get("projection")=="static-only":
+            return verify_static_projection(conn,meta,path)
         dec = zstandard.ZstdDecompressor()
         counts = {}
         product_counts = {}

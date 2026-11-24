@@ -10,7 +10,14 @@ from pathlib import Path
 from prototype_pack_db import build, verify
 
 
-def build_web_db(source, target):
+def build_web_db(source, target, *, static_only=False):
+    if static_only:
+        # Pages needs only indexed product cards and directory, never historic
+        # Turso bundles or a second 2GB SQLite backup of the source state.
+        build(str(source),str(target),static_only=True)
+        from verify_packed_local import verify as verify_projection
+        verify_projection(target)
+        return
     projection = Path(target).with_name('web-projection.db')
     projection.unlink(missing_ok=True)
     src = sqlite3.connect(source)
