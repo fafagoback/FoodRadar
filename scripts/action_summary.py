@@ -86,8 +86,8 @@ def main(kind):
             add("近七日新增商品數", integer(summary["newProducts"]))
         if "promotions" in summary:
             add("促銷商品數", integer(summary["promotions"]))
-    title = {"ci": "01｜品質測試", "crawl": "02｜資料爬取與更新",
-             "pages": "03｜網站部署"}[kind]
+    title = {"ci": "品質測試", "crawl": "01｜資料爬取與更新",
+             "pages": "02｜網站部署"}[kind]
     add("本次執行編號", os.environ.get("GITHUB_RUN_NUMBER"))
     add("執行紀錄", "[開啟此次執行](https://github.com/" +
         os.environ.get("GITHUB_REPOSITORY", "fafagoback/FoodRadar") +
@@ -122,6 +122,16 @@ def main(kind):
             add("本次抓取店家數", integer(total))
             add("成功抓取店家數", integer(good))
             add("抓取失敗店家數", integer(m.get("failed_stores")))
+            if m.get("complete") is True:
+                add("本輪店家完整性", "全部驗證通過")
+            elif m.get("partial_replayable") is True:
+                add("本輪店家完整性", "部分店家未通過：隔離失敗店家，保留既有可信資料")
+                messages.append("本輪只允許更新已完整驗證的店家；未通過的店家不採用本次商品或價格，不算作成功抓取。")
+            else:
+                add("本輪店家完整性", "未通過發布條件")
+            for failure in (m.get("failed_store_details") or [])[:20]:
+                if isinstance(failure, dict):
+                    add("未驗證店家 " + str(failure.get("uuid", "")), failure.get("error"))
             add("店家抓取成功率", ratio(good, total))
             add("原始網路回應數", integer(m.get("raw_responses")))
             add("實際請求次數", integer(m.get("sum_api_requests")))
