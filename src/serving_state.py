@@ -228,7 +228,14 @@ def refresh_product_search(conn: sqlite3.Connection, latest_observation_at: str 
 
 
 def ensure_schema_and_migrations(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+    from working_quotes import is_normalized
+    if is_normalized(conn):
+        # The compatible observation view has its own integer-key indexes.
+        schema=SCHEMA.replace("""CREATE INDEX IF NOT EXISTS idx_v2_quotes_product_time
+ ON product_price_observations(store_uuid,product_uuid,observed_at DESC);""","")
+        conn.executescript(schema)
+    else:
+        conn.executescript(SCHEMA)
     store_columns = {row[1] for row in conn.execute("PRAGMA table_info(stores)")}
     for name in ("latitude", "longitude"):
         if name not in store_columns:
@@ -380,7 +387,14 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
     update_stores_batch: list[tuple] = []
     insert_products_batch: list[tuple] = []
     update_products_batch: list[tuple] = []
-    events_batch: list[tuple] = []
+    # Browser history is canonical native quotes; HF keeps the immutable
+    # originals. The Actions-only normalized projection never needs duplicate
+    # whole-row event JSON. Legacy CLI and diagnostics retain their event API.
+    from working_quotes import is_normalized
+    class DerivedEventSink(list):
+        def append(self, value):
+            pass
+    events_batch: list[tuple] = DerivedEventSink() if is_normalized(conn) else []
     changed_store_keys: set[str] = set()
     seen_product_rows: list[tuple[str, str]] = []
     changed_product_rows: list[tuple[str, str]] = []

@@ -7,12 +7,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "data" / "state-checkpoint"
-CONTRACTS = ("src/pipeline.py", "src/serving_state.py", "src/raw_capture.py",
+LEGACY_CONTRACTS = ("src/pipeline.py", "src/serving_state.py", "src/raw_capture.py",
              "src/menu_core.py", "src/catalog_complete.py", "src/json_to_db.py",
              "src/raw_price_enrichment.py", "src/verified_prices.py",
              "src/price_observation.py",
              "src/snapshot_validation.py", "src/promotion_evidence.py",
              "src/catalog_web_fields.py")
+CONTRACTS = LEGACY_CONTRACTS + ("src/working_quotes.py", "src/compact_checkpoint.py")
 
 
 def digest_file(path):
@@ -62,6 +63,32 @@ def compatible_contract(meta, root):
     if meta.get("format") in ("foodradar-checkpoint-v2", "foodradar-checkpoint-v3"):
         if meta.get("contract_digest") == current:
             return True
+        if meta.get("format") == "foodradar-checkpoint-v3":
+            # Only the exact audited storage-only migration may reuse v3.
+            previous = "92f415b05121a93e53bd7ebabd2d1143da1c6479"
+            reviewed = {
+                "src/pipeline.py":"5d2a821c179600e78a8ba7927a88e5626ac6d364",
+                "src/serving_state.py":"5b6b721211ffaf819b638b8550cdd4028b1a7351",
+                "src/working_quotes.py":"1f16a712a5ef922653323ca24d0ead70abdefaeb",
+                "src/compact_checkpoint.py":"16b78e61fb5d7168bc6742bdf4ccf493e1a160f9",
+            }
+            try:
+                if meta.get("contract_digest") != _historical_digest(root,previous,LEGACY_CONTRACTS):
+                    return False
+                for file in CONTRACTS:
+                    data=(Path(root)/file).read_bytes()
+                    if file in reviewed:
+                        blob=b"blob "+str(len(data)).encode()+b"\0"+data
+                        if hashlib.sha1(blob).hexdigest()!=reviewed[file]:
+                            return False
+                    elif data!=subprocess.check_output(
+                            ["git","show",f"{previous}:{file}"],cwd=root,
+                            stderr=subprocess.DEVNULL,timeout=15):
+                        return False
+                print("FOODRADAR_WORKING_DB_MIGRATION=PASS",flush=True)
+                return True
+            except (OSError,subprocess.SubprocessError):
+                return False
         if meta.get("format") != "foodradar-checkpoint-v2":
             return False
         # The exact previous deployed contract differs only in how a verified
@@ -116,7 +143,7 @@ def manifest_digest(rows):
     return h.hexdigest()
 
 
-def restore(target, records, config, cache=CACHE, root=ROOT):
+def restore(target, records, config, cache=CACHE, root=ROOT, *, lean=False):
     from compact_checkpoint import expand as expand_compact, expand_shards
     cache=Path(cache)
     meta_path=cache/"manifest.json"
@@ -144,8 +171,8 @@ def restore(target, records, config, cache=CACHE, root=ROOT):
                           expected_hash != digest_file(candidate)):
             raise ValueError("Invalid checkpoint SHA-256")
         if compact:
-            counts=(expand_shards(cache,parts,target) if parts else
-                    expand_compact(candidate,target))
+            counts=(expand_shards(cache,parts,target,lean=lean) if parts else
+                    expand_compact(candidate,target,lean=lean))
             if counts["stores"] != meta.get("stores") or counts["products"] != meta.get("products"):
                 raise ValueError("Compact checkpoint identity counts changed")
             if counts["observations"] != meta.get("observations"):

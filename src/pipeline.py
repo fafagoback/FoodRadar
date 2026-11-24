@@ -140,10 +140,13 @@ def restore_history(config, rebuild_all=False):
     previous.parent.mkdir(parents=True, exist_ok=True)
     temporary_db = ROOT/'data/raw-only-reconstructed.db'
     temporary_db.unlink(missing_ok=True)
-    checkpoint = None if rebuild_all else restore_checkpoint(temporary_db, records, config)
+    checkpoint = None if rebuild_all else restore_checkpoint(temporary_db, records, config,lean=True)
     batch, prefix_count = checkpoint if checkpoint else ('', 0)
     conn = sqlite3.connect(temporary_db)
     conn.row_factory = sqlite3.Row
+    if not checkpoint:
+        from working_quotes import initialize
+        initialize(conn)
     replayed, skipped_incomplete = [], []
     quarantined_batches = []
     latest_excluded_store_uuids = []
@@ -286,8 +289,6 @@ def restore_history(config, rebuild_all=False):
             encoding='utf-8')
         print('FOODRADAR_RAW_QUARANTINE_SUMMARY=' +
               json.dumps(quarantine_report, ensure_ascii=False), flush=True)
-        with sqlite3.connect(destination/'serving.db') as copy:
-            conn.backup(copy)
         evidence={
             'format': ('foodradar-raw-verified-incremental-v1' if checkpoint
                        else 'foodradar-immutable-raw-only-rebuild-v1'),
@@ -312,6 +313,14 @@ def restore_history(config, rebuild_all=False):
         }
         (destination/'raw-manifest-index.json').write_text(
             json.dumps(raw_index,ensure_ascii=False,indent=2),encoding='utf-8')
+        # The reconstructed DB and release DB are the same disposable file.
+        # Close before the atomic same-filesystem rename; no second large
+        # backup or transient duplicate on the Actions runner.
+        conn.close()
+        os.replace(temporary_db,destination/'serving.db')
+        print("FOODRADAR_WORK_DB_BYTES="+json.dumps({
+            "bytes":(destination/'serving.db').stat().st_size,
+            "duplicate_bytes":0}),flush=True)
         previous.write_text(batch,encoding='utf-8')
         print('FOODRADAR_RAW_ONLY_REBUILT='+json.dumps(evidence,ensure_ascii=False),flush=True)
         timings={'manifest_index_seconds':index_seconds,

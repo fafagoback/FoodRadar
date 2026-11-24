@@ -142,7 +142,7 @@ def create(source: str | Path, target: str | Path, *, store_ids=None) -> dict:
     return {**counters, "bytes": size, "format": "foodradar-compact-v1"}
 
 
-def expand(source: str | Path, target: str | Path, *, append=False, finalize=True) -> dict:
+def expand(source: str | Path, target: str | Path, *, append=False, finalize=True, lean=False) -> dict:
     """Recreate an ephemeral SQLite projection for legacy ETL and static export.
 
     Not an alternative authoritative Raw store. Original observation hashes can
@@ -173,6 +173,12 @@ def expand(source: str | Path, target: str | Path, *, append=False, finalize=Tru
     db = sqlite3.connect(target)
     db.execute("PRAGMA journal_mode=OFF")
     db.execute("PRAGMA synchronous=OFF")
+    if lean:
+        from working_quotes import initialize, BulkQuoteWriter
+        initialize(db)
+        writer=BulkQuoteWriter(db)
+    else:
+        writer=None
     ensure_schema_and_migrations(db)
     batch_rows = dictionaries["__crawl_batches"]
     meta_rows = dictionaries["__metadata"]
@@ -216,12 +222,16 @@ def expand(source: str | Path, target: str | Path, *, append=False, finalize=Tru
                     if pos >= len(batches):
                         raise ValueError("Price mask exceeds verified batch keys")
                     batch, at = batches[pos]
-                    db.execute("""INSERT INTO product_price_observations
-                        (batch_id,store_uuid,product_uuid,observed_at,menu_price_cents,
-                         promotion_type,buy_quantity,free_quantity,received_quantity,
-                         original_total_cents,payable_total_cents,source_hash)
-                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (batch,sid,pid,at,menu,KINDS[kind],buy,free,received,original,payable,""))
+                    observation=(batch,sid,pid,at,menu,KINDS[kind],buy,free,
+                                 received,original,payable,"")
+                    if writer:
+                        writer.write(observation)
+                    else:
+                        db.execute("""INSERT INTO product_price_observations
+                          (batch_id,store_uuid,product_uuid,observed_at,menu_price_cents,
+                           promotion_type,buy_quantity,free_quantity,received_quantity,
+                           original_total_cents,payable_total_cents,source_hash)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",observation)
                     label = "無" if kind == 0 else (
                         f"買{buy}送{free}" if kind == 1 else "直接折價")
                     if payable > 0:
@@ -284,7 +294,7 @@ def create_shards(source: str | Path, folder: str | Path, *, shops_per_shard=500
     return result
 
 
-def expand_shards(folder: str | Path, parts: list[dict], target: str | Path) -> dict:
+def expand_shards(folder: str | Path, parts: list[dict], target: str | Path, *, lean=False) -> dict:
     """Verify every part before reconstructing the ephemeral SQL projection."""
     import hashlib
     folder=Path(folder)
@@ -300,7 +310,7 @@ def expand_shards(folder: str | Path, parts: list[dict], target: str | Path) -> 
         with path.open("rb") as handle:
             if hashlib.file_digest(handle,"sha256").hexdigest()!=part["sha256"]:
                 raise ValueError("Corrupted compact shard")
-        stats=expand(path,target,append=(n!=0),finalize=(n==len(parts)-1))
+        stats=expand(path,target,append=(n!=0),finalize=(n==len(parts)-1),lean=lean)
         if any(stats[key]!=part[key] for key in results):
             raise ValueError("Compact shard count mismatch")
         for key in results:results[key]+=stats[key]

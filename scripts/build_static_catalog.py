@@ -151,7 +151,7 @@ def build(packed_db, serving_db, output):
         # The old generic events are redundant for all browser price graphs.
         history = defaultdict(dict)
         has_quotes = source.execute("""SELECT 1 FROM sqlite_master
-             WHERE type='table' AND name='product_price_observations'""").fetchone()
+             WHERE type IN ('table','view') AND name='product_price_observations'""").fetchone()
         if has_quotes:
             import sys
             sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
