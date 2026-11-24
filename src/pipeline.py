@@ -250,10 +250,9 @@ def restore_history(config, rebuild_all=False):
         t=perf_counter()
         if processed or not checkpoint:
             refresh_product_search(conn)
-            audit=update_verified_weekly(conn,batch)
-        else:
-            audit={'qualified_comparisons':'unchanged',
-                   'deals':conn.execute('SELECT COUNT(*) FROM products WHERE seven_day_is_price_deal=1').fetchone()[0]}
+        # A republish must never reuse cached discount flags. The verified
+        # observations, not a prior price-rule projection, are authoritative.
+        audit=update_verified_weekly(conn,batch)
         price_seconds=perf_counter()-t
         print('HF_RAW_FINAL_VERIFIED_WEEKLY='+json.dumps({
             'batch':batch,**audit,'seconds':round(price_seconds,2)

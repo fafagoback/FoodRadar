@@ -17,7 +17,7 @@ concurrency:
 jobs:
   ingest-gate:
     name: 確認爬蟲實際成功發布資料
-    if: ${{ github.event_name == 'workflow_run' }}
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     outputs:
@@ -95,6 +95,8 @@ jobs:
           test -s pages-static-source/current.json
           test -d pages-static-source/blobs
       - name: 建立網站用的靜態地理查詢資料
+        env:
+          GITHUB_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           pip install 'zstandard>=0.23,<1'
           python scripts/configure_web.py
@@ -222,7 +224,7 @@ jobs:
   report:
     name: 產生中文網站部署與驗收總報告
     needs: [ingest-gate, deploy, acceptance]
-    if: always()
+    if: ${{ always() && github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

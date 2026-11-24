@@ -6,6 +6,13 @@ on:
     paths:
       - 'scripts/build_static_catalog.py'
       - 'src/price_oscillation.py'
+      - 'src/pipeline.py'
+      - 'src/state_checkpoint.py'
+      - 'scripts/prepare_hf_release.py'
+      - 'scripts/prototype_pack_db.py'
+      - 'scripts/prepare_pages.py'
+      - 'tests/live_site.cjs'
+      - '.github/workflows/pages.yml'
       - 'src/raw_capture.py'
       - 'src/catalog_complete.py'
       - 'tests/test_immutable_raw_capture.py'
@@ -14,7 +21,7 @@ on:
       - 'tests/test_price_oscillation.py'
       - '.github/workflows/crawl.yml'
   # 每天台灣時間 06:30、18:30 自動更新（UTC 前一天 22:30、當天 10:30）。
-  # 只保留每日排程與手動操作；程式碼 push 不啟動爬蟲。
+  # 規則程式 push 只重算既有 Raw 並重發，不啟動 15 台爬蟲。
   schedule:
     - cron: '30 10,22 * * *'
   workflow_dispatch:

@@ -214,6 +214,50 @@ const fs = require('node:fs');
       }
     }
 
+    // Reported real SKU: near ABA (459 -> 899 -> 449.50). The
+    // item can remain searchable; it must not claim a new seven-day discount.
+    const olive = await page.evaluate(async () => {
+      const client = await import('./static-catalog.js');
+      const products = await client.searchPacked({keyword:'YBARRA',limit:500});
+      const target = products.filter(p => /益百萊/.test(p.product_name || '') &&
+        /1000\s*ml/i.test(p.product_name || '') && /北投/.test(p.store_name || ''));
+      const output = [];
+      for (const p of target) {
+        const events = await client.packedHistory(p.store_uuid,p.product_uuid);
+        const points = events.map(e => {
+          const s=JSON.parse(e.new_state || e.old_state || '{}');
+          return {at:Date.parse(e.event_time),unit:Number(s.effective_price || 0)};
+        }).filter(x=>Number.isFinite(x.at) && x.unit>0).sort((a,b)=>a.at-b.at);
+        const runs=[];
+        for(const x of points) {
+          if(runs.length && runs.at(-1).unit===x.unit) runs.at(-1).last=x.at;
+          else runs.push({unit:x.unit,first:x.at,last:x.at});
+        }
+        const day=86400000, now=points.at(-1)?.at || 0;
+        let blocked=false;
+        for(let i=0;i+2<runs.length;i++){
+          const [a,b,c]=runs.slice(i,i+3);
+          const near=Math.abs(c.unit-a.unit)<=0.05*a.unit &&
+            (b.unit>Math.max(a.unit,c.unit)||b.unit<Math.min(a.unit,c.unit)) &&
+            Math.abs(b.unit-a.unit)>=0.2*a.unit && Math.abs(b.unit-c.unit)>=0.2*c.unit;
+          const reversal=(a.unit===c.unit && a.unit!==b.unit)||near;
+          if(reversal && c.first-a.last<=14*day &&
+             (a.last>=now-14*day || (b.unit>a.unit?b.last>=now-7*day:
+               a.last>=now-7*day||c.first>=now-7*day))) blocked=true;
+        }
+        output.push({id:p.product_uuid,blocked,discount:p.discount_pct,
+          deal:p.is_price_deal,reference:p.seven_day_reference_price,
+          current:p.current_price,points:points.length});
+      }
+      return output;
+    });
+    console.log('OLIVE_OIL_ABA_REGRESSION '+JSON.stringify(olive));
+    for(const item of olive.filter(p=>p.blocked)){
+      assert.equal(Number(item.discount||0),0,'ABA olive oil must not claim a new discount');
+      assert.equal(Number(item.deal||0),0,'ABA olive oil must not enter the deals index');
+      assert.equal(item.reference,null,'ABA olive oil must have no disputed reference');
+    }
+
     // Live search pagination regression. For the audited Raw batch the
     // canonical Costco count is 63; later batches may legitimately vary.
     const expectedCostco = manifest.batch === '20261102133219' ? 63 :
