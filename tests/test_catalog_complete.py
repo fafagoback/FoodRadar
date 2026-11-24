@@ -594,6 +594,84 @@ class CatalogCompleteness(unittest.TestCase):
             self.assertEqual(_item_ids(merge_catalog_pages(base, raw)), {"a", "b"})
 
 
+
+    def test_shared_child_is_requested_and_published_once(self):
+        base = {"aisles": {"s": [{"catalogSectionUUID": "parent-a"},
+                                 {"catalogSectionUUID": "parent-b"}]},
+                "sections": [{"uuid": "parent-a", "subsectionUuids": ["shared"]},
+                             {"uuid": "parent-b", "subsectionUuids": ["shared"]}]}
+        class SharedChildSession:
+            def __init__(self):
+                self.calls = []
+            def post(self, url, json, headers, timeout):
+                filt = json["storeFilters"]
+                part = (filt["subsectionUuids"] or filt["sectionUuids"])[0]
+                self.calls.append(part)
+                return Response({"status": "success", "data": {
+                    "catalog": [{"payload": {"standardItemsPayload": {
+                        "catalogItems": [sample_item("sku", "Product", 1000)]}}}],
+                    "pagingInfo": {"hasMore": part != "shared",
+                                   "offset": 1020 if part != "shared" else 0}}})
+        session = SharedChildSession()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = capture_catalog(session, "store", base, Path(tmp), {},
+                                     lambda a,b,c: None)
+        self.assertEqual(session.calls, ["parent-a", "shared", "parent-b"])
+        self.assertEqual(result["catalog_reused_partitions"], 1)
+        self.assertEqual(result["catalog_unique_skus"], 1)
+        self.assertEqual(len(result["catalog_responses"]), 1)
+        self.assertFalse(result["catalog_independent_inventory_verified"])
+
+    def test_failed_alternative_cannot_confirm_empty_category(self):
+        from unittest.mock import patch
+        class EmptyAlternativeFailure:
+            def __init__(self):
+                self.calls = []
+            def post(self, url, json, headers, timeout):
+                alt = "sectionTypes" in json["storeFilters"]
+                self.calls.append(alt)
+                if alt:
+                    return Response({"status": "failure", "data": {
+                        "catalog": [], "pagingInfo": {"hasMore": False}}})
+                return Response({"status": "success", "data": {
+                    "catalog": [], "pagingInfo": {"hasMore": False}}})
+        session = EmptyAlternativeFailure()
+        with tempfile.TemporaryDirectory() as tmp, patch("catalog_complete.time.sleep"), \
+                patch("catalog_complete.global_limiter.wait"):
+            with self.assertRaisesRegex(RuntimeError, "native failure"):
+                capture_catalog(session, "store",
+                    {"aisles": {"s": [{"catalogSectionUUID": "parent"}]}},
+                    Path(tmp), {}, lambda a,b,c: None)
+        self.assertEqual(session.calls, [False, True] * 3)
+
+    def test_partial_category_enumeration_is_not_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "category enumeration unverified"):
+                capture_catalog(Session(), "store", {
+                    "aisles": {"s": [{"catalogSectionUUID": "known"}]},
+                    "catalogSectionPagingInfo": {"hasMore": True}},
+                    Path(tmp), {}, lambda a,b,c: None)
+
+    def test_empty_intermediate_page_does_not_change_query_mode(self):
+        class EmptyFirst:
+            def __init__(self):
+                self.calls = []
+            def post(self, url, json, headers, timeout):
+                off = json["pagingInfo"]["offset"]
+                self.calls.append((off, "sectionTypes" in json["storeFilters"]))
+                items = [] if off == 0 else [sample_item("sku", "Product", 1000)]
+                return Response({"data": {"catalog": [{"payload": {
+                    "standardItemsPayload": {"catalogItems": items}}}],
+                    "pagingInfo": {"hasMore": off == 0, "offset": 60}}})
+        session = EmptyFirst()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = capture_catalog(session, "store",
+                {"aisles": {"s": [{"catalogSectionUUID": "parent"}]}},
+                Path(tmp), {}, lambda a,b,c: None)
+        self.assertEqual(session.calls, [(0, False), (60, False)])
+        self.assertEqual(result["catalog_unique_skus"], 1)
+
+
 def _item_ids(native):
     ids=set()
     for group in native.get("catalogSectionsMap",{}).values():

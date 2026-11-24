@@ -45,6 +45,8 @@ def _section_ids(data):
 
 def _catalog_entries(body):
     data = body.get("data") if isinstance(body, dict) else None
+    if isinstance(body, dict) and body.get("status") == "failure":
+        raise ValueError("getCatalogPresentationV2 returned native failure")
     if not isinstance(data, dict) or "catalog" not in data:
         raise ValueError("getCatalogPresentationV2 is missing its catalog field")
     paging = data.get("pagingInfo")
@@ -172,15 +174,33 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     Never fabricate a category, response, or a completed status.
     """
     section_uuids = _section_ids(base_data)
+    paging = base_data.get("catalogSectionPagingInfo") or {}
+    if paging.get("hasMore") is True:
+        raise ValueError("Store reports additional category pages; category enumeration unverified")
     if not section_uuids:
-        paging = base_data.get("catalogSectionPagingInfo") or {}
-        if paging.get("hasMore"):
-            raise ValueError("Store reports more menu pages but exposes no category IDs")
         return {"catalog_responses": [], "catalog_complete": True,
                 "catalog_section_count": 0, "catalog_sections_finished": 0,
                 "catalog_section_reports": [], "catalog_item_occurrences": 0}
 
+    # A child-only request does not contain its parent's UUID. Within this
+    # store/session, reuse exactly the same native request partition. Never
+    # cache across stores, sessions, batches or promotion rechecks.
+    partition_cache = {}
+    reused_partitions = 0
+
     def collect(section_index, section_uuid, subsection_uuid=None, stop_before_offset=None):
+        nonlocal reused_partitions
+        key = (("child", subsection_uuid) if subsection_uuid is not None
+               else ("parent", section_uuid), stop_before_offset)
+        if key in partition_cache:
+            reused_partitions += 1
+            return partition_cache[key]
+        result = collect_uncached(section_index, section_uuid, subsection_uuid,
+                                  stop_before_offset)
+        partition_cache[key] = result
+        return result
+
+    def collect_uncached(section_index, section_uuid, subsection_uuid=None, stop_before_offset=None):
         records, bodies, seen_offsets = [], [], set()
         offset, page, use_collection_type = 0, 0, False
         while page < MAX_CATALOG_PAGES:
@@ -244,7 +264,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                     data, entries = _catalog_entries(body)
                     global_limiter.record_success()
                     n = _item_count(entries)
-                    if page == 0 and n == 0 and not use_collection_type:
+                    if page == 0 and n == 0 and not data["pagingInfo"]["hasMore"] and not use_collection_type:
                         filters["sectionTypes"] = ["COLLECTION"]
                         try:
                             global_limiter.wait()
@@ -262,7 +282,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                                 _check_rate_limit(alt, alt_body, attempt)
                                 alt_data, alt_entries = _catalog_entries(alt_body)
                                 global_limiter.record_success()
-                                if _item_count(alt_entries) > 0:
+                                if _item_count(alt_entries) > 0 or alt_data["pagingInfo"]["hasMore"]:
                                     body, data, entries = alt_body, alt_data, alt_entries
                                     relative, n = alt_relative, _item_count(alt_entries)
                                     use_collection_type = True
@@ -270,13 +290,12 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                                     filters.pop("sectionTypes", None)
                             else:
                                 _check_rate_limit(alt, None, attempt)
-                                filters.pop("sectionTypes", None)
-                        except _UpstreamRateLimit:
-                            # Retry the entire page rather than silently accepting
-                            # an unverified empty category when alternate mode is throttled.
-                            raise
+                                raise ValueError(f"Empty catalog alternative HTTP {alt.status_code}")
                         except (requests.RequestException, ValueError):
+                            # A failed alternate request is not proof of an empty
+                            # category. Restore the original query before retry.
                             filters.pop("sectionTypes", None)
+                            raise
                     records.append({"path": relative, "section_uuid": section_uuid,
                                     "subsection_uuid": subsection_uuid,
                                     "section_index": section_index, "page": page,
@@ -327,13 +346,13 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             stop_before_offset=1000)
         if terminal:
             return records, bodies, "section" if subsection_uuid is None else "subsection", 0
-        children = _subsections_for(base_data, current_uuid)
-        source = "getStoreV1_sections"
-        if not children:
-            # An API response can expose only a subset of the store's section
-            # descriptors. Real child UUIDs may still be available in items.
-            children = _native_subsections_from_catalog(bodies, current_uuid)
-            source = "catalog_native_item_subsections"
+        metadata_children = _subsections_for(base_data, current_uuid)
+        item_children = _native_subsections_from_catalog(bodies, current_uuid)
+        children = list(dict.fromkeys(metadata_children + item_children))
+        source = ("getStoreV1_plus_catalog_native_item_subsections"
+                  if metadata_children and set(item_children) - set(metadata_children)
+                  else "getStoreV1_sections" if metadata_children
+                  else "catalog_native_item_subsections")
         if not children:
             raise RuntimeError(
                 f"Catalog {current_uuid} reached deep-offset boundary; "
@@ -353,32 +372,6 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             child_bodies.extend(cb)
         child_skus = _catalog_skus(child_bodies)
         missing = parent_skus - child_skus
-        # getStoreV1 may list only a subset of real native children. If that
-        # list fails to cover already observed parent SKUs, extract *additional*
-        # actual UUIDs from the parent HTTP item payload. These are evidence,
-        # not guessed or fabricated partition IDs.
-        if missing and source == "getStoreV1_sections":
-            extra = [
-                uuid for uuid in _native_subsections_from_catalog(bodies, current_uuid)
-                if uuid not in children and uuid not in visited and uuid != current_uuid
-            ]
-            if extra:
-                print("CATALOG_NATIVE_CHILD_GAP_RECOVERY=" + json.dumps({
-                    "store_uuid": store_uuid,
-                    "section_uuid": current_uuid,
-                    "metadata_child_count": len(children),
-                    "item_native_extra_child_count": len(extra),
-                    "missing_parent_skus_before": len(missing),
-                }), flush=True)
-                for child in extra:
-                    cr, cb, _, _ = verified_partition(
-                        section_index, parent_uuid, child, visited | {current_uuid})
-                    child_records.extend(cr)
-                    child_bodies.extend(cb)
-                child_skus = _catalog_skus(child_bodies)
-                missing = parent_skus - child_skus
-                children = children + extra
-                source = "getStoreV1_plus_catalog_native_item_subsections"
         if missing:
             raise RuntimeError(
                 f"Subsections for {current_uuid} omitted {len(missing)} "
@@ -399,14 +392,23 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         return child_records, child_bodies, "native_children_before_deep_offset", len(children)
 
     responses, section_reports = [], []
+    response_paths, unique_skus = set(), set()
     for section_index, section_uuid in enumerate(section_uuids):
         records, bodies, mode, children_count = verified_partition(
             section_index, section_uuid)
-        responses.extend(records)
+        for record in records:
+            if record["path"] not in response_paths:
+                responses.append(record)
+                response_paths.add(record["path"])
+        section_skus = _catalog_skus(bodies)
+        unique_skus.update(section_skus)
         section_reports.append({
             "section_uuid": section_uuid,
             "pages": len(records),
             "item_occurrences": sum(x["item_count"] for x in records),
+            "unique_skus": len(section_skus),
+            "coverage_evidence": ("observed_parent_subset_and_terminal_children"
+                                  if children_count else "terminal_pagination"),
             "mode": mode,
             "subsections": children_count,
             "terminal_has_more": False})
@@ -418,6 +420,11 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         "catalog_section_count": len(section_uuids),
         "catalog_sections_finished": len(section_reports),
         "catalog_section_reports": section_reports,
+        "catalog_unique_skus": len(unique_skus),
+        "catalog_reused_partitions": reused_partitions,
+        # Terminal pagination and observed parent coverage do not prove
+        # completeness against an independent upstream inventory.
+        "catalog_independent_inventory_verified": False,
         "catalog_item_occurrences": sum(x["item_count"] for x in responses),
     }
 
