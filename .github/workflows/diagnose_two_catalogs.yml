@@ -1,0 +1,33 @@
+name: FoodRadar｜兩間店 1020 獨立診斷
+on:
+  push:
+    branches: ['diagnostic/catalog-1020-20261124']
+    paths: ['scripts/diagnose_two_catalogs.py', '.github/workflows/diagnose_two_catalogs.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: 目標店家 ${{ matrix.store }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝診斷依賴
+        run: pip install -r requirements.txt
+      - name: 實際呼叫 Uber 菜單及搜尋 API
+        run: python scripts/diagnose_two_catalogs.py ${{ matrix.store }}
+      - name: 保存原始回應及診斷報告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-store-${{ matrix.store }}
+          path: diagnostic-results/
+          retention-days: 3
+          if-no-files-found: warn
