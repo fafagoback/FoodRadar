@@ -22,10 +22,11 @@ def main():
     if any(m.get("run_id") != os.environ["GITHUB_RUN_ID"] or
            m.get("source_sha") != os.environ["GITHUB_SHA"] for m in manifests):
         raise SystemExit("工作機報告不屬於本次執行")
-    if any(s.get("success") is not True for m in manifests for s in m["stores"]):
-        print("本輪仍有未完成店家，不更新設定")
-        return
-    best = average_best([m.get("thread_learning") or {} for m in manifests])
+    # The workflow calls this only after reconciliation passes. An isolated
+    # deterministic catalog gap does not invalidate other workers' measured
+    # concurrency. Exclude reports without a valid stable sample, not the run.
+    reports = [m.get("thread_learning") or {} for m in manifests]
+    best = average_best(reports)
     if best is None:
         print("樣本不足，保留原始設定")
         return
