@@ -1,5 +1,5 @@
 name: FoodRadar｜一次性實際資料庫容量實驗
-run-name: FoodRadar｜無損去重及儲存結構實驗
+run-name: FoodRadar｜共用壓縮字典與讀取效能實驗
 on:
   push:
     branches: [main]
@@ -34,7 +34,7 @@ jobs:
       - name: 逐筆比對及壓縮效能實驗
         run: |
           set -o pipefail
-          python scripts/benchmark_exact_storage.py data/state-checkpoint | tee /tmp/fr-benchmark.log
+          python scripts/benchmark_shared_dictionary.py data/state-checkpoint | tee /tmp/fr-benchmark.log
       - name: 彙整實驗結果
         if: always()
         run: |
