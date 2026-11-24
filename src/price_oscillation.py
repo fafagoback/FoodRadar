@@ -1,30 +1,28 @@
-"""Prevent A-B-A price oscillations from inventing seven-day discounts.
+"""Block untrustworthy seven-day discounts after an exact A-B-A reversal.
 
-A reversal is evidence of an unstable price comparison, not proof that
-either the high or the low Uber quote is wrong. Never alter the observations.
-This detector needs only the last fourteen days of already-verified prices:
-seven days for current comparisons and seven for detecting reversals whose
-first leg has just left the comparison window.
+Fourteen days determine price instability; seven days determine the deal
+baseline. Read both windows together to prevent old disputed highs from
+reappearing as legitimate discounts when the first A leaves the window.
 """
 from __future__ import annotations
 
 from datetime import timedelta
 
+REVERSAL_DAYS = 14
 
-def has_disputed_high_in_week(observations, now, days=7):
-    """Return True if a completed A-B-A still affects the current price window.
 
-    observations: [(timezone-aware datetime, exact per-unit price), ...].
-    Consecutive identical values form a run; A-B-B-A is also A-B-A.
-    The reversal must occur within seven days (last A to first returning A).
-    Mark *high-price observations involved in the reversal* as disputed for
-    discount eligibility only. No claim is made about which price is correct.
-    The return run contributes its first observation, not every later stable
-    repetition, so a genuinely sustained price can eventually qualify.
+def has_disputed_high_in_week(observations, now, days=7, reversal_days=REVERSAL_DAYS):
+    """Block a complete reversal within 14 days or a still-disputed weekly high.
+
+    Prices are exact verified unit costs. Repeated equal prices form one run.
+    No price is labelled incorrect or deleted. A reversal must complete within
+    reversal_days, measured from the last initial A to the first returning A.
+    A complete recent reversal blocks the SKU even if the high is no longer
+    a candidate; older reversals also block while their high is in the week.
     """
-    if not observations:
-        return False
     cutoff = now - timedelta(days=days)
+    reversal_cutoff = now - timedelta(days=reversal_days)
+    maximum_span = timedelta(days=reversal_days)
     runs = []
     for at, value in sorted(observations, key=lambda point: point[0]):
         if at > now or value <= 0:
@@ -37,18 +35,20 @@ def has_disputed_high_in_week(observations, now, days=7):
     for first, middle, last in zip(runs, runs[1:], runs[2:]):
         if first["value"] != last["value"] or first["value"] == middle["value"]:
             continue
-        if last["times"][0] - first["times"][-1] > timedelta(days=days):
+        initial = first["times"][-1]
+        returned = last["times"][0]
+        if returned - initial > maximum_span:
             continue
+        if initial >= reversal_cutoff:
+            return True
         high = max(first["value"], middle["value"])
-        # Historical high-price evidence inside the current seven-day window
-        # may be disputed even when the reversal's first A is outside it.
         candidates = []
         if first["value"] == high:
             candidates.extend(first["times"])
         if middle["value"] == high:
             candidates.extend(middle["times"])
         if last["value"] == high:
-            candidates.append(last["times"][0])
+            candidates.append(returned)
         if any(cutoff <= at <= now for at in candidates):
             return True
     return False

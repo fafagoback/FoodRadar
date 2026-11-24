@@ -68,7 +68,35 @@ class OscillationTests(unittest.TestCase):
         distant = [(start, Fraction(10)),
                    (start+timedelta(days=1), Fraction(50)),
                    (start+timedelta(days=10), Fraction(10))]
-        self.assertFalse(has_disputed_high_in_week(distant, distant[-1][0]))
+        self.assertTrue(has_disputed_high_in_week(distant, distant[-1][0]))
+        outside = [(start, Fraction(10)),
+                   (start+timedelta(days=7), Fraction(50)),
+                   (start+timedelta(days=15), Fraction(10))]
+        self.assertFalse(has_disputed_high_in_week(outside, outside[-1][0]))
+
+    def test_fourteen_day_window_and_weekly_carryover(self):
+        start = datetime(2026, 11, 1, 6, 30, tzinfo=TW)
+        def blocked(points, day):
+            return has_disputed_high_in_week(
+                [(start+timedelta(days=d), Fraction(p)) for d,p in points],
+                start+timedelta(days=day))
+        self.assertTrue(blocked([(0,89),(7,179),(14,89)],14))
+        self.assertTrue(blocked([(0,89),(11,179),(14,89),(17,89)],17))
+        self.assertFalse(blocked([(0,89),(11,179),(14,89),(19,89)],19))
+        self.assertFalse(blocked([(0,459),(4,899),(7,449)],7))
+
+    def test_long_aba_blocks_published_weekly_discount(self):
+        for price in [89] * 7 + [179] * 6 + [89]:
+            row = self.add(price)
+        self.assertEqual(row["seven_day_is_price_deal"], 0)
+        self.assertEqual(row["seven_day_discount_pct"], 0)
+        self.assertIsNone(row["seven_day_reference_price"])
+
+    def test_recent_aba_blocks_even_after_old_high_expires(self):
+        for price in [10,50,10] + [10] * 8 + [40,10]:
+            row = self.add(price)
+        self.assertEqual(row["seven_day_is_price_deal"], 0)
+        self.assertIsNone(row["seven_day_reference_price"])
 
     def test_abba_and_repeated_price_hopping(self):
         for price in [20,100,100,20,20,100,20]:
@@ -76,13 +104,13 @@ class OscillationTests(unittest.TestCase):
         self.assertEqual(row["seven_day_is_price_deal"], 0)
         self.assertIsNone(row["seven_day_reference_price"])
 
-    def test_suppression_expires_when_disputed_high_leaves_seven_days(self):
-        values = [10,50,10] + [10] * 10
+    def test_suppression_expires_after_reversal_window_and_weekly_high(self):
+        values = [10,50,10] + [10] * 14
         for price in values:
             row = self.add(price)
         self.assertEqual(row["seven_day_is_price_deal"], 0)
         self.assertEqual(row["seven_day_discount_pct"], 0)
-        # Without a high baseline inside the rolling window, comparison resumes.
+        # Once both reversal and disputed-high windows have expired, resume.
         self.assertEqual(row["seven_day_reference_price"], 10)
 
 

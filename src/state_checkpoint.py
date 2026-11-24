@@ -9,7 +9,7 @@ CACHE = ROOT / "data" / "state-checkpoint"
 CONTRACTS = ("src/pipeline.py", "src/serving_state.py", "src/raw_capture.py",
              "src/menu_core.py", "src/catalog_complete.py", "src/json_to_db.py",
              "src/raw_price_enrichment.py", "src/verified_prices.py",
-             "src/verified_weekly.py", "src/price_observation.py",
+             "src/verified_weekly.py", "src/price_oscillation.py", "src/price_observation.py",
              "src/snapshot_validation.py", "src/promotion_evidence.py",
              "src/catalog_web_fields.py")
 

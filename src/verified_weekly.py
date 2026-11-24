@@ -1,7 +1,7 @@
 """Verified seven-day price projection, with one canonical history-window reader.
 
-A completed A-B-A reversal suspends seven-day discount claims while its
-disputed high still participates in the rolling comparison window. We do not
+A completed A-B-A reversal within 14 days suspends seven-day discount claims;
+older reversals also block while their disputed high remains in the baseline. We do not
 change raw Uber quotes, platform promotions, or ordinary product search.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from fractions import Fraction
 from itertools import groupby
 
-from price_oscillation import has_disputed_high_in_week
+from price_oscillation import REVERSAL_DAYS, has_disputed_high_in_week
 
 TW = timezone(timedelta(hours=8))
 UPDATE_BATCH_SIZE = 2048
@@ -46,7 +46,7 @@ def iter_weekly_price_evidence(conn, latest_batch_id, days=7):
     """
     now = datetime.strptime(latest_batch_id, "%Y%m%d%H%M%S").replace(tzinfo=TW)
     cutoff = now - timedelta(days=days)
-    lookback = now - timedelta(days=2 * days)
+    lookback = now - timedelta(days=days + REVERSAL_DAYS)
     now_iso = now.isoformat()
 
     cursor = conn.execute("""SELECT store_uuid,product_uuid,batch_id,observed_at,
