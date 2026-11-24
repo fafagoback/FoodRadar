@@ -27,7 +27,7 @@ class OscillationTests(unittest.TestCase):
         batch = (datetime(2026, 11, 1, 6, 30, tzinfo=TW)
                  + timedelta(days=self.day)).strftime("%Y%m%d%H%M%S")
         self.day += 1
-        apply_snapshot(self.db, [document(native(value * 100))], batch)
+        apply_snapshot(self.db, [document(native(int(value * 100)))], batch)
         update_verified_weekly(self.db, batch)
         return self.db.execute("SELECT * FROM products WHERE product_uuid=?", (PID,)).fetchone()
 
@@ -83,7 +83,53 @@ class OscillationTests(unittest.TestCase):
         self.assertTrue(blocked([(0,89),(7,179),(14,89)],14))
         self.assertTrue(blocked([(0,89),(11,179),(14,89),(17,89)],17))
         self.assertFalse(blocked([(0,89),(11,179),(14,89),(19,89)],19))
-        self.assertFalse(blocked([(0,459),(4,899),(7,449)],7))
+        self.assertTrue(blocked([(0,459),(4,899),(7,449)],7))
+
+    def test_near_aba_exact_percentage_boundaries(self):
+        start = datetime(2026, 11, 1, 6, 30, tzinfo=TW)
+        cases = [
+            ((459, 899, Fraction(899, 2)), True),
+            ((500, 900, 520), True),
+            ((500, 250, 490), True),
+            ((500, 900, 480), True),
+            ((500, 900, 400), False),
+            ((500, 510, 495), False),
+            ((500, 450, 400), False),
+            ((500, 630, 525), True),
+            ((500, 629, 525), False),
+            ((500, 900, Fraction(52501, 100)), False),
+            ((500, 380, 475), True),
+            ((500, 490, 480), False),
+            ((10, 11, 10), True),
+        ]
+        for values, expected in cases:
+            with self.subTest(values=values):
+                points = [(start + timedelta(days=i), Fraction(v))
+                          for i, v in enumerate(values)]
+                self.assertEqual(has_disputed_high_in_week(points, points[-1][0]),
+                                 expected)
+
+    def test_near_aba_window_and_carryover(self):
+        start = datetime(2026, 11, 1, 6, 30, tzinfo=TW)
+        def blocked(points, day):
+            return has_disputed_high_in_week(
+                [(start + timedelta(days=d), Fraction(p)) for d, p in points],
+                start + timedelta(days=day))
+        self.assertTrue(blocked([(0,459),(7,899),(14,449.5)],14))
+        self.assertFalse(blocked([(0,459),(7,899),(15,449.5)],15))
+        self.assertTrue(blocked([(0,459),(11,899),(14,449.5)],17))
+        self.assertFalse(blocked([(0,459),(11,899),(14,449.5)],19))
+        self.assertTrue(blocked([(0,500),(11,250),(14,490)],17))
+
+    def test_near_aba_suppresses_real_sqlite_projection_without_losing_history(self):
+        for price in [459, 899, 899, Fraction(899, 2)]:
+            row = self.add(price)
+        self.assertEqual(row["seven_day_is_price_deal"], 0)
+        self.assertEqual(row["seven_day_discount_pct"], 0)
+        self.assertIsNone(row["seven_day_reference_price"])
+        historical = list(self.db.execute(
+            "SELECT payable_total_cents FROM product_price_observations ORDER BY observed_at"))
+        self.assertEqual([x[0] for x in historical], [45900,89900,89900,44950])
 
     def test_long_aba_blocks_published_weekly_discount(self):
         for price in [89] * 7 + [179] * 6 + [89]:
