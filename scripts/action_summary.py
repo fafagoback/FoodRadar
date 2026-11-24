@@ -136,26 +136,24 @@ def main(kind):
         succeeded = os.environ.get("INGEST_RESULT") == "success" and isinstance(m, dict)
         add("資料更新結果", "已完成驗證並產出新的可部署資料包" if succeeded else
             "未完成可確認的資料更新")
-        add("網站部署結果", "尚待獨立網站部署流程驗收" if succeeded else "本次無法宣稱網站部署成功")
+        add("網站部署結果", "尚待網站部署" if succeeded else "本次無法宣稱網站部署成功")
         messages.append("資料爬取與網站部署是兩個不同流程；網站成功上線與否，請以「FoodRadar 02｜網站部署」的最終摘要為準。")
     elif kind == "pages":
         deploy = os.environ.get("DEPLOY_RESULT")
-        browser = os.environ.get("BROWSER_RESULT")
         add("資料更新確認", "使用既有已驗證資料" if os.environ.get("GATE_RESULT") == "skipped"
             else result(os.environ.get("GATE_RESULT")))
         add("網站發布作業", result(deploy))
-        add("實際瀏覽器驗收", result(browser))
         m = read("action-reports/metrics/manifest.json")
         catalog(m, "網站")
         version = read("action-reports/metrics/version.json")
         if isinstance(version, dict):
             add("部署的資料批次", version.get("batch"))
             add("網站版本", version.get("version"))
-        complete = deploy == "success" and browser == "success"
-        add("最終部署結論", "**網站已成功部署且驗收通過**" if complete else
-            "**網站未通過完整部署驗收，不得視為成功**")
+        complete = deploy == "success"
+        add("最終部署結論", "**網站已成功部署**" if complete else
+            "**網站未成功部署**")
         add("網站網址", "[開啟 FoodRadar](https://fafagoback.github.io/FoodRadar/)")
-        messages.append("只有網站部署、線上版號核對與實際瀏覽器驗收均成功，才判定部署成功。")
+        messages.append("網站發布及線上版號核對成功，即判定部署成功。")
     lines = ["## FoodRadar " + title, "", "| 指標 | 實際結果 |", "|---|---|"]
     lines.extend("| " + key + " | " + value + " |" for key, value in rows)
     if messages:

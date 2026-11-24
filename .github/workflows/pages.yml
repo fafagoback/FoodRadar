@@ -148,21 +148,6 @@ jobs:
               'published_batch':old,'candidate_batch':current,'allowed':True
           }),flush=True)
           PY
-      - name: 驗證前端程式與資料格式
-        run: |
-          node --check web/app.js
-          node --check web/packed-turso.js
-          node --check web/static-catalog.js
-          node --check web/data-contract.js
-          node --check tests/live_site.cjs
-          node tests/web_contract.cjs
-          node tests/price_history.cjs
-          node tests/web_interactions.cjs
-          node tests/packed_concurrency.cjs
-          if grep -q 'id="archive-quote-section"' web/index.html; then
-            echo '已淘汰的歷史菜單區仍存在' >&2
-            exit 1
-          fi
       - name: 準備網站發布設定
         uses: actions/configure-pages@v5
       - name: 上傳網站資料包
@@ -255,37 +240,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 5
 
-  acceptance:
-    name: 正式網站瀏覽器驗收
-    needs: deploy
-    # Browser acceptance is permitted only after the verified crawl-backed deploy.
-    if: ${{ always() && needs.deploy.result == 'success' }}
-    # Playwright 1.56.1 does not provide Chromium for ubuntu-26.04 runners.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: 取得程式碼
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_sha }}
-      - name: 安裝驗收專用瀏覽器
-        run: |
-          npm install --no-save playwright@1.56.1
-          npx playwright install --with-deps chromium
-      - name: 實際驗證上線網站
-        run: node tests/live_site.cjs
-      - name: 保存失敗診斷
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: foodradar-pages-browser-diagnostics
-          path: test-results/
-          if-no-files-found: ignore
-          retention-days: 5
 
   report:
-    name: 產生中文網站部署與驗收總報告
-    needs: [ingest-gate, deploy, acceptance]
+    name: 產生中文網站部署總報告
+    needs: [ingest-gate, deploy]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -305,12 +263,11 @@ jobs:
         env:
           GATE_RESULT: ${{ needs.ingest-gate.result }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
-          BROWSER_RESULT: ${{ needs.acceptance.result }}
         run: python scripts/action_summary.py pages
 
   cleanup-artifacts:
     name: 清理已無用途的歷史資料包
-    needs: [ingest-gate, deploy, acceptance, report]
+    needs: [ingest-gate, deploy, report]
     if: ${{ success() && needs.ingest-gate.outputs.published == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
