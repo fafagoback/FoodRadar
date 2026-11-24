@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -240,7 +241,8 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                        "pagingInfo": {"enabled": True, "offset": offset},
                        "source": "NV_L2_CATALOG"}
             body, data, n, relative = None, None, 0, None
-            for attempt in range(1, 7):
+            rate_retries = max(6, min(12, int(os.getenv("FOODRADAR_CATALOG_429_RETRIES", "6"))))
+            for attempt in range(1, rate_retries + 1):
                 try:
                     global_limiter.wait()
                     resp = active_session.post(CATALOG_API, json=payload,
@@ -323,7 +325,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                 except (requests.RequestException, ValueError) as exc:
                     # Keep normal transient errors at three tries, but give
                     # rate-limited requests enough global cooldown to recover.
-                    retries = 6 if isinstance(exc, _UpstreamRateLimit) else 3
+                    retries = rate_retries if isinstance(exc, _UpstreamRateLimit) else 3
                     if attempt >= retries:
                         raise RuntimeError(
                             f"Catalog {section_uuid}/{subsection_uuid}, "

@@ -18,6 +18,10 @@ on:
       - '.github/workflows/pages.yml'
       - 'src/raw_capture.py'
       - 'src/catalog_complete.py'
+      - 'src/distributed_crawl.py'
+      - 'src/adaptive_threads.py'
+      - 'src/crawl_batches.py'
+      - 'scripts/save_crawl_settings.py'
       - 'tests/test_immutable_raw_capture.py'
       - 'src/verified_weekly.py'
       - 'scripts/audit_deal_pipeline.py'
@@ -123,9 +127,13 @@ jobs:
   discover_once:
     name: 統一掃描單一座標，產出 15 台共用店家清單
     needs: prepare_run
-    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
+    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      batch_count: ${{ steps.plan.outputs.batch_count }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      initial_threads: ${{ steps.plan.outputs.initial_threads }}
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
@@ -133,12 +141,25 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
       - name: 安裝程式所需套件
         run: pip install -r requirements-crawl.txt
       - name: 單次 Feed 掃描與儲存原始 HTTP
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/distributed_crawl.py discover
+      - name: 建立 GitHub 共用分批佇列及讀取最佳執行緒
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          count=$(jq -er '.owner_count' data/discovery/discovery.json)
+          matrix=$(jq -cn --argjson count "$count" '{shard:[range(0;$count)]}')
+          value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er '.optimal_threads | select(type == "number" and . >= 1 and . <= 12 and . == floor)')
+          printf 'batch_count=%s\nmatrix=%s\ninitial_threads=%s\n' "$count" "$matrix" "$value" >> "$GITHUB_OUTPUT"
+          echo "已建立 $count 個分批任務，最多 15 台同時處理，初始執行緒 $value" >> "$GITHUB_STEP_SUMMARY"
       - name: 上傳全機器共用店家清單
         uses: actions/upload-artifact@v4
         with:
@@ -148,16 +169,15 @@ jobs:
           retention-days: 3
 
   crawl_shard:
-    name: "分工爬取工作機 ${{ matrix.shard }}／14"
+    name: "動態排程｜任務批次 ${{ matrix.shard }}"
     needs: discover_once
-    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
+    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+      matrix: ${{ fromJSON(needs.discover_once.outputs.matrix) }}
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
@@ -165,6 +185,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
       - name: 安裝程式所需套件
         run: pip install -r requirements-crawl.txt
       - name: 下載同一份店家清單
@@ -172,16 +194,13 @@ jobs:
         with:
           name: foodradar-shared-feed
           path: data/discovery
-      - name: 讀取 Repo 共用最佳執行緒
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er '.optimal_threads | select(type == "number" and . >= 1 and . <= 12 and . == floor)')
-          echo "FOODRADAR_INITIAL_THREADS=$value" >> "$GITHUB_ENV"
       - name: 多店並行、自動調整執行緒並完整爬取
         env:
-          FOODRADAR_PARALLEL_SECTIONS: '0'
-        run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count 15 --discovery-file data/discovery/discovery.json
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+        run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count ${{ needs.discover_once.outputs.batch_count }} --discovery-file data/discovery/discovery.json
       - name: 上傳分工原始資料給第 16 台（不寫 HF / DB）
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -190,10 +209,12 @@ jobs:
           path: data/shard-${{ matrix.shard }}/
           if-no-files-found: error
           retention-days: 3
+          overwrite: true
+          compression-level: 1
 
   ingest:
     name: 第十六台｜彙整驗證與發布靜態資料
-    needs: [prepare_run, crawl_shard]
+    needs: [prepare_run, discover_once, crawl_shard]
     if: "${{ !cancelled() && needs.prepare_run.result == 'success' && (needs.crawl_shard.result == 'success' || (needs.crawl_shard.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -213,6 +234,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
       - name: 安裝程式所需套件
         run: pip install -r requirements.txt
       # 任何手動資料庫更新前，都重新驗證核心程式。
@@ -234,8 +257,8 @@ jobs:
             exit 1
           fi
 
-      - name: 下載 15 台工作機的原始檔案
-        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
+      - name: 下載所有已完成任務批次的原始檔案
+        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
         uses: actions/download-artifact@v4
         with:
           pattern: foodradar-raw-shard-*
@@ -243,10 +266,10 @@ jobs:
           merge-multiple: false
 
       - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
-        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
+        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
         env:
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
-        run: python src/distributed_crawl.py merge --count 15 --input-dir data/parts --upload
+        run: python src/distributed_crawl.py merge --count ${{ needs.discover_once.outputs.batch_count }} --input-dir data/parts --upload --strict
 
       - name: 恢復經驗證的 SQLite 加速快取（不影響 HF Raw）
         if: ${{ inputs.mode != 'full-rebuild' }}
@@ -308,6 +331,7 @@ jobs:
         if: ${{ success() && needs.crawl_shard.result == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
         run: python scripts/save_crawl_settings.py
       - name: 保存本次實際執行指標
         if: ${{ !cancelled() }}

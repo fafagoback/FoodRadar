@@ -17,6 +17,7 @@ jobs:
       - run: python -m compileall -q src scripts
       - run: |
           python -m unittest discover -s tests -p 'test_adaptive_threads.py' -v
+          python -m unittest discover -s tests -p 'test_crawl_batches.py' -v
           python -m unittest discover -s tests -p 'test_adaptive_pacing.py' -v
           python -m unittest discover -s tests -p 'test_retry_after.py' -v
           python -m unittest discover -s tests -p 'test_catalog_429_backoff.py' -v

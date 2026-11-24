@@ -66,6 +66,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
     exhausted page or structural partition error. Keep the failed capture
     for audit and let the existing release gate decide whether to publish.
     """
+    max_retries = max(max_retries, min(12, int(os.getenv("FOODRADAR_STORE_RETRIES", str(max_retries)))))
     uuid = normalize_store_uuid(store["store_uuid"], store["store_url"])
     if not re.fullmatch(r"[0-9a-f-]{36}", uuid):
         return {"store_uuid": uuid, "error": "Invalid store UUID"}

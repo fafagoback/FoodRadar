@@ -13,9 +13,12 @@ def gh(*args):
 
 def main():
     files = sorted(Path("data/parts").glob("foodradar-raw-shard-*/shard.json"))
-    if len(files) != 15:
-        raise SystemExit("需要 15 份工作機報告")
+    count = int(os.environ.get("FOODRADAR_BATCH_COUNT", "15"))
+    if len(files) != count:
+        raise SystemExit(f"需要 {count} 份工作機報告")
     manifests = [json.loads(p.read_text()) for p in files]
+    if {m.get("shard_index") for m in manifests} != set(range(count)):
+        raise SystemExit("工作機批次編號缺少或重複")
     if any(m.get("run_id") != os.environ["GITHUB_RUN_ID"] or
            m.get("source_sha") != os.environ["GITHUB_SHA"] for m in manifests):
         raise SystemExit("工作機報告不屬於本次執行")

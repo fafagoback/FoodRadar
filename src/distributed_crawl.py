@@ -1,4 +1,4 @@
-"""15 independent GitHub runners capture disjoint store partitions; runner 16 verifies and publishes.
+"""GitHub schedules disjoint microbatches with at most 15 concurrent runners; a single merger verifies and publishes.
 
 The original Feed, Store and Catalog HTTP bodies are not normalized or modified.
 Each runner discovers the *same* single configured coordinate, then deterministically
@@ -26,7 +26,8 @@ from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
 from catalog_complete import is_recoverable_catalog_failure
 from promo_api_recheck import verify_suspicious_store
-from adaptive_threads import run_adaptive, valid_threads, DEFAULT_THREADS
+from adaptive_threads import run_adaptive, valid_threads, DEFAULT_THREADS, average_best
+from crawl_batches import plan_batches, MAX_BATCHES, MAX_PARALLEL
 
 ROOT = Path(__file__).resolve().parents[1]
 TW = timezone(timedelta(hours=8))
@@ -215,7 +216,7 @@ def discover(config: dict, raw: Path, index: int):
 
 
 def save_shared_discovery(config: dict, root: Path = ROOT):
-    """Discover once at the configured coordinate; all 15 workers share this file."""
+    """Discover once at the configured coordinate; every matrix batch shares this file."""
     folder = root / "data" / "discovery"
     if folder.exists():
         raise FileExistsError(f"Refusing to overwrite existing discovery: {folder}")
@@ -228,16 +229,17 @@ def save_shared_discovery(config: dict, root: Path = ROOT):
     }
     weights = latest_raw_workload_weights(config)
     previous_promotions = latest_raw_promotion_baseline(config)
-    ownership = weighted_owners(stores, 15, weights)
-    loads = [0] * 15
+    ownership, batch_count, estimates = plan_batches(stores, weights)
+    loads = [0] * batch_count
     for sid, owner in ownership.items():
-        loads[owner] += weights.get(sid, 400)
+        loads[owner] += estimates[sid]
     print("FOODRADAR_WEIGHTED_SHARDS=" + json.dumps({
-        "method": "recent_capture_cost_lpt" if weights else "sha256_fallback",
+        "method": "native_matrix_weighted_microbatches", "max_parallel": MAX_PARALLEL, "batches": batch_count,
         "estimated_loads": loads, "stores": len(stores),
     }), flush=True)
     manifest = {
-        "ownership": ownership, "owner_count": 15,
+        "ownership": ownership, "owner_count": batch_count,
+        "workload_weights": estimates,
         "format": "foodradar-shared-feed-v1",
         "run_id": os.getenv("GITHUB_RUN_ID", "local"),
         "source_sha": os.getenv("GITHUB_SHA", "local"),
@@ -291,9 +293,10 @@ def load_shared_discovery(path: Path, config: dict, raw: Path, shard: int):
     ownership = manifest.get("ownership")
     if ownership is not None and (
             not isinstance(ownership, dict)
-            or manifest.get("owner_count") != 15
+            or type(manifest.get("owner_count")) is not int
+            or not 1 <= manifest["owner_count"] <= MAX_BATCHES
             or set(ownership) != set(stores)
-            or any(type(index) is not int or not 0 <= index < 15
+            or any(type(index) is not int or not 0 <= index < manifest["owner_count"]
                    for index in ownership.values())):
         raise ValueError("Shared feed ownership map is missing or invalid")
     if shard == 0:
@@ -306,8 +309,8 @@ def load_shared_discovery(path: Path, config: dict, raw: Path, shard: int):
 
 def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
                   discovery_file: Path | None = None):
-    if count != 15 or not 0 <= index < count:
-        raise ValueError("Expected 15 shards with indices 0..14")
+    if not 1 <= count <= MAX_BATCHES or not 0 <= index < count:
+        raise ValueError("Invalid matrix batch count or index")
     if not 0 <= config["max_pages"] <= 100:
         raise ValueError("Invalid max_pages")
     path = root / "data" / f"shard-{index}"
@@ -331,8 +334,12 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
         if (owners[sid] if owners is not None else shard_for_uuid(sid, count)) == index)
     baseline = {}
     if discovery_file is not None:
-        baseline = json.loads(discovery_file.read_text(encoding="utf8")).get(
-            "previous_promotion_stats") or {}
+        shared = json.loads(discovery_file.read_text(encoding="utf8"))
+        if owners is not None and shared.get("owner_count") != count:
+            raise ValueError("Matrix count differs from verified discovery")
+        weights = shared.get("workload_weights") or {}
+        assigned.sort(key=lambda sid: (-weights.get(sid, 400), sid))
+        baseline = shared.get("previous_promotion_stats") or {}
         if not isinstance(baseline, dict):
             raise ValueError("Invalid previous promotion baseline in shared discovery")
     captured = []
@@ -401,7 +408,7 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
         "shared_discovery_digest": discovery_digest,
         "shared_owners": owners,
         "discovered_store_uuids": sorted(discovered),
-        "assigned_store_uuids": assigned,
+        "assigned_store_uuids": sorted(assigned),
         "stores": captured,
         "thread_learning": thread_learning,
         "responses": checksums,
@@ -508,9 +515,9 @@ def _recover_missing_store_captures(missing, shard_paths, config, root, run_id):
 
 def merge_shards(config: dict, input_dir: Path, count: int = 15,
                  root: Path = ROOT, upload_raw: bool = True,
-                 repair_missing: bool = False):
-    if count != 15:
-        raise ValueError("Expected exactly 15 independent capture artifacts")
+                 repair_missing: bool = False, strict: bool = False):
+    if not 1 <= count <= MAX_BATCHES:
+        raise ValueError("Invalid matrix batch count")
     metadata = []
     all_discovered = set()
     all_captured = {}
@@ -587,7 +594,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         if (len(shared_digests) != 1
                 or any(x != shared_rosters[0] for x in shared_rosters)
                 or any(x != shared_ownership_maps[0] for x in shared_ownership_maps)):
-            raise ValueError("15 workers used different discovery lists or checksums")
+            raise ValueError("Matrix workers used different discovery lists or checksums")
     owner_missing = sorted(all_discovered - set(all_captured))
     unexpected = sorted(set(all_captured) - all_discovered)
     recovered = {}
@@ -629,13 +636,16 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
     failures = [s for s in stores if s.get("success") is not True]
     successes = [s for s in stores if s.get("success") is True]
     partial_replayable = bool(
-        failures and len(stores) >= 50 and len(successes) >= 50
+        not strict and failures and len(stores) >= 50 and len(successes) >= 50
         and len(failures) <= max(1, int(len(stores) * 0.05))
         and all(is_recoverable_catalog_failure(s.get("error"))
                 for s in failures))
     complete = not failures
     report = {
-        "batch": batch, "runners": count, "feed_union": len(all_discovered),
+        "batch": batch, "runners": count, "max_parallel_runners": min(count, MAX_PARALLEL),
+        "learned_initial_threads": average_best([m.get("thread_learning") or {} for m in metadata]),
+        "learning_samples": sum((m.get("thread_learning") or {}).get("optimal_threads") is not None for m in metadata),
+        "feed_union": len(all_discovered),
         "captured_stores": len(stores), "verified_stores": len(successes),
         "owner_discovery_gap": len(owner_missing),
         "owner_gap_recaptured": len(recovered),
@@ -683,6 +693,7 @@ def main():
     merge.add_argument("--count", type=int, default=15)
     merge.add_argument("--upload", action="store_true")
     merge.add_argument("--repair-missing", action="store_true")
+    merge.add_argument("--strict", action="store_true")
     args = parser.parse_args()
     cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     if args.command == "discover":
@@ -691,7 +702,7 @@ def main():
         capture_shard(cfg, args.index, args.count, discovery_file=args.discovery_file)
     else:
         merge_shards(cfg, args.input_dir, args.count, upload_raw=args.upload,
-                     repair_missing=args.repair_missing)
+                     repair_missing=args.repair_missing, strict=args.strict)
 
 
 if __name__ == "__main__":
