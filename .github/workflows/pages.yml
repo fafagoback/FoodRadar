@@ -18,7 +18,7 @@ permissions:
   id-token: write
 concurrency:
   group: foodradar-pages-deployment
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   ingest-gate:
     name: 確認爬蟲實際成功發布資料
@@ -200,13 +200,13 @@ jobs:
           PY
 
       - name: 保存部署報告用的真實資料
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p action-reports/metrics
           if [ -s web/version.json ]; then cp web/version.json action-reports/metrics/version.json; fi
           if [ -s web/data/manifest.json ]; then cp web/data/manifest.json action-reports/metrics/manifest.json; fi
       - name: 上傳網站部署指標
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: foodradar-deploy-metrics
@@ -245,7 +245,7 @@ jobs:
   report:
     name: 產生中文網站部署與驗收總報告
     needs: [ingest-gate, deploy, acceptance]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
