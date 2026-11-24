@@ -116,7 +116,7 @@ def manifest_digest(rows):
     return h.hexdigest()
 
 
-def restore(target, records, config, cache=CACHE, root=ROOT):
+def restore(target, records, config, cache=CACHE, root=ROOT, *, lean=False):
     from compact_checkpoint import expand as expand_compact, expand_shards
     cache=Path(cache)
     meta_path=cache/"manifest.json"
@@ -144,8 +144,8 @@ def restore(target, records, config, cache=CACHE, root=ROOT):
                           expected_hash != digest_file(candidate)):
             raise ValueError("Invalid checkpoint SHA-256")
         if compact:
-            counts=(expand_shards(cache,parts,target) if parts else
-                    expand_compact(candidate,target))
+            counts=(expand_shards(cache,parts,target,lean=lean) if parts else
+                    expand_compact(candidate,target,lean=lean))
             if counts["stores"] != meta.get("stores") or counts["products"] != meta.get("products"):
                 raise ValueError("Compact checkpoint identity counts changed")
             if counts["observations"] != meta.get("observations"):
