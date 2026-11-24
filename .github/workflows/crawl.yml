@@ -21,6 +21,7 @@ on:
       - 'src/distributed_crawl.py'
       - 'src/adaptive_threads.py'
       - 'src/crawl_batches.py'
+      - 'src/crawl_transport.py'
       - 'scripts/save_crawl_settings.py'
       - 'tests/test_immutable_raw_capture.py'
       - 'src/verified_weekly.py'
@@ -134,6 +135,7 @@ jobs:
       batch_count: ${{ steps.plan.outputs.batch_count }}
       matrix: ${{ steps.plan.outputs.matrix }}
       initial_threads: ${{ steps.plan.outputs.initial_threads }}
+      epoch: ${{ steps.plan.outputs.epoch }}
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
@@ -158,12 +160,13 @@ jobs:
           count=$(jq -er '.owner_count' data/discovery/discovery.json)
           matrix=$(jq -cn --argjson count "$count" '{shard:[range(0;$count)]}')
           value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er '.optimal_threads | select(type == "number" and . >= 1 and . <= 12 and . == floor)')
-          printf 'batch_count=%s\nmatrix=%s\ninitial_threads=%s\n' "$count" "$matrix" "$value" >> "$GITHUB_OUTPUT"
+          epoch=$(sha256sum data/discovery/discovery.json | cut -c1-16)
+          printf 'batch_count=%s\nmatrix=%s\ninitial_threads=%s\nepoch=%s\n' "$count" "$matrix" "$value" "$epoch" >> "$GITHUB_OUTPUT"
           echo "已建立 $count 個分批任務，最多 15 台同時處理，初始執行緒 $value" >> "$GITHUB_STEP_SUMMARY"
       - name: 上傳全機器共用店家清單
         uses: actions/upload-artifact@v4
         with:
-          name: foodradar-shared-feed
+          name: foodradar-shared-feed-${{ steps.plan.outputs.epoch }}
           path: data/discovery/
           if-no-files-found: error
           retention-days: 3
@@ -192,7 +195,7 @@ jobs:
       - name: 下載同一份店家清單
         uses: actions/download-artifact@v4
         with:
-          name: foodradar-shared-feed
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
           path: data/discovery
       - name: 多店並行、自動調整執行緒並完整爬取
         env:
@@ -201,21 +204,100 @@ jobs:
           FOODRADAR_CATALOG_429_RETRIES: '10'
           FOODRADAR_STORE_RETRIES: '9'
         run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count ${{ needs.discover_once.outputs.batch_count }} --discovery-file data/discovery/discovery.json
-      - name: 上傳分工原始資料給第 16 台（不寫 HF / DB）
-        if: ${{ !cancelled() }}
+      - name: 上傳已產出完整任務清單的原始資料
+        if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
-          name: foodradar-raw-shard-${{ matrix.shard }}
+          name: foodradar-raw-shard-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}
           path: data/shard-${{ matrix.shard }}/
           if-no-files-found: error
           retention-days: 3
           overwrite: true
           compression-level: 1
 
+  plan_recovery:
+    name: 確認中斷工作機尚未保存的任務
+    needs: [discover_once, crawl_shard]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.crawl_shard.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.missing.outputs.matrix }}
+      missing_count: ${{ steps.missing.outputs.missing_count }}
+    steps:
+      - name: 只分派不存在成果的批次
+        id: missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EPOCH: ${{ needs.discover_once.outputs.epoch }}
+          BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .name' > "$RUNNER_TEMP/fr-artifacts"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          found=set((Path(os.environ["RUNNER_TEMP"])/"fr-artifacts").read_text().splitlines())
+          prefix="foodradar-raw-shard-"+os.environ["EPOCH"]+"-"
+          missing=[i for i in range(int(os.environ["BATCH_COUNT"])) if prefix+str(i) not in found]
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              f.write("matrix="+json.dumps({"shard":missing},separators=(",",":"))+"\n")
+              f.write("missing_count="+str(len(missing))+"\n")
+          print("待接手批次："+str(missing))
+          PY
+
+  recover_shard:
+    name: "故障接手｜未保存批次 ${{ matrix.shard }}"
+    needs: [discover_once, plan_recovery]
+    if: ${{ !cancelled() && needs.plan_recovery.result == 'success' && needs.plan_recovery.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_recovery.outputs.matrix) }}
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件
+        run: pip install -r requirements-crawl.txt
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 多店並行、自動調整執行緒並完整爬取
+        env:
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+        run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count ${{ needs.discover_once.outputs.batch_count }} --discovery-file data/discovery/discovery.json
+      - name: 上傳已產出完整任務清單的原始資料
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-raw-shard-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}
+          path: data/shard-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
   ingest:
     name: 第十六台｜彙整驗證與發布靜態資料
-    needs: [prepare_run, discover_once, crawl_shard]
-    if: "${{ !cancelled() && needs.prepare_run.result == 'success' && (needs.crawl_shard.result == 'success' || (needs.crawl_shard.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
+    needs: [prepare_run, discover_once, crawl_shard, plan_recovery, recover_shard]
+    if: "${{ !cancelled() && needs.prepare_run.result == 'success' && (needs.crawl_shard.result == 'success' || (needs.crawl_shard.result == 'failure' && needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success')) || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -235,7 +317,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: requirements-crawl.txt
+          cache-dependency-path: requirements.txt
       - name: 安裝程式所需套件
         run: pip install -r requirements.txt
       # 任何手動資料庫更新前，都重新驗證核心程式。
@@ -261,16 +343,38 @@ jobs:
         if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
         uses: actions/download-artifact@v4
         with:
-          pattern: foodradar-raw-shard-*
+          pattern: foodradar-raw-shard-${{ needs.discover_once.outputs.epoch }}-*
           path: data/parts
           merge-multiple: false
+      - name: 下載本次驗證過的原始店家清單
+        if: ${{ needs.discover_once.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 整理本次唯一批次資料夾
+        if: ${{ needs.discover_once.result == 'success' }}
+        env:
+          EPOCH: ${{ needs.discover_once.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          for p in data/parts/foodradar-raw-shard-"$EPOCH"-*; do
+            [[ -d "$p" ]] || exit 1
+            mv "$p" "data/parts/foodradar-raw-shard-${p##*-}"
+          done
 
       - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
         if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
         env:
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
-        run: python src/distributed_crawl.py merge --count ${{ needs.discover_once.outputs.batch_count }} --input-dir data/parts --upload --strict
+        run: python src/distributed_crawl.py merge --count ${{ needs.discover_once.outputs.batch_count }} --input-dir data/parts --upload --strict --discovery-file data/discovery/discovery.json
 
+      - name: 保存所有工作機平均最佳執行緒至 Repo
+        if: ${{ success() && needs.discover_once.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
+        run: python scripts/save_crawl_settings.py
       - name: 恢復經驗證的 SQLite 加速快取（不影響 HF Raw）
         if: ${{ inputs.mode != 'full-rebuild' }}
         uses: actions/cache/restore@v4
@@ -327,12 +431,6 @@ jobs:
             data/**/shard-reconciliation.json
           if-no-files-found: ignore
           retention-days: 5
-      - name: 保存所有工作機平均最佳執行緒至 Repo
-        if: ${{ success() && needs.crawl_shard.result == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
-        run: python scripts/save_crawl_settings.py
       - name: 保存本次實際執行指標
         if: ${{ !cancelled() }}
         run: python scripts/action_summary.py capture

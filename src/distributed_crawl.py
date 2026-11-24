@@ -28,6 +28,7 @@ from catalog_complete import is_recoverable_catalog_failure
 from promo_api_recheck import verify_suspicious_store
 from adaptive_threads import run_adaptive, valid_threads, DEFAULT_THREADS, average_best
 from crawl_batches import plan_batches, MAX_BATCHES, MAX_PARALLEL
+from crawl_transport import TransportPool
 
 ROOT = Path(__file__).resolve().parents[1]
 TW = timezone(timedelta(hours=8))
@@ -343,11 +344,12 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
         if not isinstance(baseline, dict):
             raise ValueError("Invalid previous promotion baseline in shared discovery")
     captured = []
+    transport = TransportPool()
     def capture_one(store_uuid):
         item = discovered[store_uuid]
         started = time.monotonic()
         try:
-            result = fetch_store_raw(item, raw)
+            result = fetch_store_raw(item, raw, session_factory=transport.session)
         except Exception as exc:
             result = {
                 "store_uuid": store_uuid, "store_url": item["store_url"],
@@ -390,7 +392,10 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
     initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
     if not valid_threads(initial):
         raise ValueError("Invalid FOODRADAR_INITIAL_THREADS")
-    thread_learning = run_adaptive(assigned, capture_one, global_limiter, initial, completed_one)
+    try:
+        thread_learning = run_adaptive(assigned, capture_one, global_limiter, initial, completed_one)
+    finally:
+        transport.close()
     captured.sort(key=lambda row: row["store_uuid"])
     print("FOODRADAR_THREAD_LEARNING=" + json.dumps(thread_learning), flush=True)
     checksums = {
@@ -515,7 +520,8 @@ def _recover_missing_store_captures(missing, shard_paths, config, root, run_id):
 
 def merge_shards(config: dict, input_dir: Path, count: int = 15,
                  root: Path = ROOT, upload_raw: bool = True,
-                 repair_missing: bool = False, strict: bool = False):
+                 repair_missing: bool = False, strict: bool = False,
+                 discovery_file: Path | None = None):
     if not 1 <= count <= MAX_BATCHES:
         raise ValueError("Invalid matrix batch count")
     metadata = []
@@ -595,6 +601,16 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
                 or any(x != shared_rosters[0] for x in shared_rosters)
                 or any(x != shared_ownership_maps[0] for x in shared_ownership_maps)):
             raise ValueError("Matrix workers used different discovery lists or checksums")
+    if discovery_file is not None:
+        expected_digest = hashlib.sha256(discovery_file.read_bytes()).hexdigest()
+        if shared_digests != {expected_digest}:
+            raise ValueError("Worker results do not match current discovery digest")
+        expected = json.loads(discovery_file.read_bytes())
+        if (run_ids != {expected.get("run_id")} or source_shas != {expected.get("source_sha")}
+                or set(expected["ownership"]) != all_discovered
+                or expected["owner_count"] != count
+                or shared_ownership_maps[0] != expected["ownership"]):
+            raise ValueError("Worker results do not match current discovery assignment")
     owner_missing = sorted(all_discovered - set(all_captured))
     unexpected = sorted(set(all_captured) - all_discovered)
     recovered = {}
@@ -694,6 +710,7 @@ def main():
     merge.add_argument("--upload", action="store_true")
     merge.add_argument("--repair-missing", action="store_true")
     merge.add_argument("--strict", action="store_true")
+    merge.add_argument("--discovery-file", type=Path, default=None)
     args = parser.parse_args()
     cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     if args.command == "discover":
@@ -702,7 +719,8 @@ def main():
         capture_shard(cfg, args.index, args.count, discovery_file=args.discovery_file)
     else:
         merge_shards(cfg, args.input_dir, args.count, upload_raw=args.upload,
-                     repair_missing=args.repair_missing, strict=args.strict)
+                     repair_missing=args.repair_missing, strict=args.strict,
+                     discovery_file=args.discovery_file)
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ def capture_response(directory: Path, filename: str, response) -> str:
     return path.as_posix()
 
 
-def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
+def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_factory=None) -> dict:
     """Capture immutable HTTP bodies; retry store metadata only before paging.
 
     capture_catalog owns the per-page retry budget, including 429 cooldown.
@@ -70,7 +70,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
     uuid = normalize_store_uuid(store["store_uuid"], store["store_url"])
     if not re.fullmatch(r"[0-9a-f-]{36}", uuid):
         return {"store_uuid": uuid, "error": "Invalid store UUID"}
-    session = requests.Session()
+    session = (session_factory or requests.Session)()
     if not attach_delivery_location(session, store):
         session.close()
         return {"store_uuid": uuid, "error": "Missing feed delivery coordinate"}
