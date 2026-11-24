@@ -20,18 +20,21 @@ def _url_identity(url):
     return match.group(1) if match else ""
 
 
-def audit_stores(db):
+def audit_stores(db=None, *, direct=None):
     """Count unique UUIDs, recent identities, and high-confidence possible duplicates.
 
     Physical duplicates are only *flagged*: two brands can share an address,
     and multiple Uber IDs may legitimately represent distinct virtual shops.
     """
-    db.row_factory = sqlite3.Row
-    records = [dict(r) for r in db.execute(
-        "SELECT store_uuid,name,address,latitude,longitude,order_url,"
-        "first_seen,last_seen,status FROM stores"
-    )]
-    metadata = dict(db.execute("SELECT key,value FROM metadata"))
+    if direct is not None:
+        records=list(direct.stores());metadata=direct.metadata()
+    else:
+        db.row_factory = sqlite3.Row
+        records = [dict(r) for r in db.execute(
+            "SELECT store_uuid,name,address,latitude,longitude,order_url,"
+            "first_seen,last_seen,status FROM stores"
+        )]
+        metadata = dict(db.execute("SELECT key,value FROM metadata"))
     latest = str(metadata.get("latest_batch") or "").strip('"')
     try:
         latest_date = __import__("datetime").datetime.strptime(latest, "%Y%m%d%H%M%S").date().isoformat()

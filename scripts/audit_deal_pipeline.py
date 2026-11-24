@@ -17,23 +17,32 @@ sys.path.insert(0, str(ROOT / "src"))
 from verified_weekly import TW, _two_decimals, iter_weekly_price_evidence
 
 
-def report(path):
-    with sqlite3.connect(path) as conn:
-        conn.row_factory = sqlite3.Row
-        batch = conn.execute(
-            "SELECT value FROM metadata WHERE key='latest_batch'").fetchone()[0]
+def report(path=None, *, direct=None):
+    from contextlib import nullcontext
+    with (sqlite3.connect(path) if direct is None else nullcontext(None)) as conn:
+        if direct is not None:
+            from compact_direct import QuoteWindow
+            batch=direct.metadata()["latest_batch"]
+        else:
+            conn.row_factory = sqlite3.Row
+            batch = conn.execute(
+                "SELECT value FROM metadata WHERE key='latest_batch'").fetchone()[0]
         now_iso = datetime.strptime(
             batch, "%Y%m%d%H%M%S").replace(tzinfo=TW).isoformat()
 
         # Merge-join two ordered cursors: one SKU's evidence in memory at once.
-        evidence = iter(iter_weekly_price_evidence(conn, batch))
+        evidence = iter((candidate for _,_,quotes in direct.shops()
+                         for candidate in iter_weekly_price_evidence(QuoteWindow(quotes),batch))
+                        if direct is not None else iter_weekly_price_evidence(conn,batch))
         candidate = next(evidence, None)
         inspected = compared = suppressed = matched_deals = 0
         errors = []
-        products = conn.execute("""SELECT p.*, s.is_open AS store_is_open,
+        products = ((dict(p,store_is_open=s["is_open"],store_status=s["status"],store_last_seen=s["last_seen"])
+                     for s,products,_ in direct.shops() for p in products)
+                    if direct is not None else conn.execute("""SELECT p.*, s.is_open AS store_is_open,
                 s.status AS store_status, s.last_seen AS store_last_seen
             FROM products p JOIN stores s ON s.store_uuid=p.store_uuid
-            ORDER BY p.store_uuid,p.product_uuid""")
+            ORDER BY p.store_uuid,p.product_uuid"""))
 
         for row in products:
             key = (row["store_uuid"], row["product_uuid"])

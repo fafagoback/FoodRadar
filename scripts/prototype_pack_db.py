@@ -113,30 +113,42 @@ def source_digest(conn, table, order):
     return count, h.hexdigest()
 
 
-def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static_only=False):
+def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static_only=False, direct=None):
     started = time.perf_counter()
-    src = sqlite3.connect(source)
-    src.row_factory = sqlite3.Row
-    out_path = Path(output)
-    if out_path.exists():
-        out_path.unlink()
-    dst = sqlite3.connect(output)
-    schema=(SCHEMA if not static_only else "\n".join(
-        line for line in SCHEMA.splitlines()
-        if not line.lstrip().startswith("CREATE INDEX")))
-    dst.executescript(schema)
+    if direct is not None:
+        if not static_only:raise ValueError("Compact source only supports static publishing")
+        from direct_projection import DirectProjection
+        projection=DirectProjection()
+        src=dst=out_path=None
+    else:
+        src = sqlite3.connect(source)
+        src.row_factory = sqlite3.Row
+        out_path = Path(output)
+        if out_path.exists():
+            out_path.unlink()
+        dst = sqlite3.connect(output)
+        schema=(SCHEMA if not static_only else "\n".join(
+            line for line in SCHEMA.splitlines()
+            if not line.lstrip().startswith("CREATE INDEX")))
+        dst.executescript(schema)
     compressor = zstd.ZstdCompressor(level=level)
     postings = [defaultdict(list) for _ in range(bucket_count)] if not static_only else []
-    sc, pc, ec = (columns(src, t) for t in ("stores", "products", "events"))
+    sc, pc, ec = (columns(src, t) for t in ("stores", "products", "events")) if direct is None else ([],[],[])
     product_gid = 0
     max_raw = max_blob = chunks = 0
 
     # Bundles remain lossless archives of normalized current/events data. Only
     # active rows are added to the serving search postings below.
     # Append-only first_seen order prevents new identities from shifting existing IDs.
-    stores = list(src.execute("SELECT * FROM stores ORDER BY first_seen,store_uuid"))
-    baseline_time = src.execute('SELECT MIN(processed_at) FROM crawl_batches').fetchone()[0]
-    latest_time = src.execute('SELECT MAX(processed_at) FROM crawl_batches').fetchone()[0]
+    if direct is not None:
+        stores=sorted(direct.stores(),key=lambda s:(s["first_seen"],s["store_uuid"]))
+        batch_rows=direct.batch_rows()
+        baseline_time=min((r[1] for r in batch_rows),default=None)
+        latest_time=max((r[1] for r in batch_rows),default=None)
+    else:
+        stores = list(src.execute("SELECT * FROM stores ORDER BY first_seen,store_uuid"))
+        baseline_time = src.execute('SELECT MIN(processed_at) FROM crawl_batches').fetchone()[0]
+        latest_time = src.execute('SELECT MAX(processed_at) FROM crawl_batches').fetchone()[0]
     if not latest_time:
         raise ValueError("No completed crawl batch: cannot publish current prices")
     from datetime import datetime, timedelta
@@ -145,14 +157,19 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
     active_comparable_products = active_platform_promotions = active_30pct_drops = 0
     seven_day_reference_products = 0
     archive_reference_products = archive_30pct_candidates = 0
-    verified_history_days = sorted(set(
-        str(t)[:10] for (t,) in src.execute(
-            """SELECT processed_at FROM crawl_batches
-               WHERE processed_at>=? AND processed_at<=? AND products_seen>0""",
-            (cutoff,latest_time))))
+    if direct is not None:
+        verified_history_days=sorted({str(r[1])[:10] for r in batch_rows if cutoff<=r[1]<=latest_time and r[3]>0})
+    else:
+        verified_history_days = sorted(set(
+            str(t)[:10] for (t,) in src.execute(
+                """SELECT processed_at FROM crawl_batches
+                   WHERE processed_at>=? AND processed_at<=? AND products_seen>0""",
+                (cutoff,latest_time))))
     for store_id, store in enumerate(stores):
         sid = store["store_uuid"]
-        products = list(src.execute("SELECT * FROM products WHERE store_uuid=? ORDER BY first_seen,product_uuid", (sid,)))
+        products = (sorted(direct.shop(sid)[1],key=lambda p:(p["first_seen"],p["product_uuid"]))
+                    if direct is not None else list(src.execute(
+                        "SELECT * FROM products WHERE store_uuid=? ORDER BY first_seen,product_uuid", (sid,))))
         events = [] if static_only else list(src.execute("SELECT * FROM events WHERE store_uuid=? ORDER BY id", (sid,)))
         product_arrays = []
         store_terms = tokens(store["name"]) | tokens(store["city"]) | tokens(store["locality"]) | tokens(store["address"])
@@ -160,8 +177,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
             if local_index >= (1 << 20):
                 raise ValueError(f"store {sid} exceeds the packed 20-bit product index capacity")
             product_gid += 1
-            arr = row_array(product, pc)
             if not static_only:
+                arr = row_array(product, pc)
                 product_arrays.append([(store_id << 20) | local_index, arr])
             # A closed shop or unavailable delivery cannot erase its last menu.
             searchable = (store["status"] == "active"
@@ -293,13 +310,15 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
                     serialized = json.dumps(card,ensure_ascii=False,separators=(",",":"))
                     search_text = " ".join((normalize(store["name"]),normalize(product["product_name"]),
                                             normalize(product["category"]),normalize(store["locality"]),normalize(store["address"])))
-                    dst.execute("""INSERT INTO web_products VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(
+                    card_row=(
                         sid,product["product_uuid"],serialized,hashlib.sha256(serialized.encode()).hexdigest(),
                         search_text,store["city"],product["category"],week_pct if drop else 0,
                         float(product["seven_day_discount_amount"] or 0) if drop else 0,effective,
                         store["rating"],int(new_item),int((platform or drop) and is_current_price),
                         int(drop and is_current_price),int(platform and is_current_price),
-                        store["latitude"],store["longitude"]))
+                        store["latitude"],store["longitude"])
+                    if direct is not None:projection.add_card(card_row)
+                    else:dst.execute("""INSERT INTO web_products VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",card_row)
             for term in sorted(terms) if not static_only else ():
                 bid = int.from_bytes(hashlib.blake2s(term.encode(), digest_size=4).digest(), "big") % bucket_count
                 # One integer identifies store and product without a row-per-product
@@ -313,9 +332,11 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
         chunk_count = max(len(pchunks), len(echunks)) if not static_only else 0
         if store['status'] == 'active':
             active_stores += 1
-        dst.execute("INSERT INTO store_directory VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        store_row=(
             store_id, sid, store["name"], store["city"], store["locality"], store["rating"], store["review_count"], chunk_count,
-            store['latitude'],store['longitude'],store['address'],store['order_url'],store['first_seen'],store['last_seen'],store['status'],store['is_open']))
+            store['latitude'],store['longitude'],store['address'],store['order_url'],store['first_seen'],store['last_seen'],store['status'],store['is_open'])
+        if direct is not None:projection.add_store(store_row)
+        else:dst.execute("INSERT INTO store_directory VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",store_row)
         for chunk_no in range(chunk_count):
             value = {
                 "v": 1, "store_columns": sc if chunk_no == 0 else None,
@@ -346,11 +367,17 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
     store_order = '(SELECT first_seen FROM stores s WHERE s.store_uuid=products.store_uuid),store_uuid,first_seen,product_uuid'
     event_order = '(SELECT first_seen FROM stores s WHERE s.store_uuid=events.store_uuid),store_uuid,id'
     if static_only:
-        digests = {table: {"count": src.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
-                           "sha256": None} for table in TABLES}
+        if direct is not None:
+            counts={"stores":len(stores),"products":product_gid,"events":0,
+                    "crawl_batches":len(batch_rows),"metadata":len(direct.metadata())}
+            digests={table:{"count":count,"sha256":None} for table,count in counts.items()}
+            checksum_rows=projection.checksums()
+        else:
+            digests = {table: {"count": src.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
+                               "sha256": None} for table in TABLES}
+            checksum_rows=dst.execute("SELECT store_uuid,product_uuid,checksum FROM web_products ORDER BY store_uuid,product_uuid")
         revision = hashlib.sha256()
-        for sid,pid,checksum in dst.execute(
-                "SELECT store_uuid,product_uuid,checksum FROM web_products ORDER BY store_uuid,product_uuid"):
+        for sid,pid,checksum in checksum_rows:
             revision.update((sid+"\x1f"+pid+"\x1f"+checksum+"\n").encode("utf-8"))
         revision.update(str(latest_time).encode("utf-8"))
         data_revision = revision.hexdigest()
@@ -359,8 +386,8 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
             count, digest = source_digest(src, table, order)
             digests[table] = {"count": count, "sha256": digest}
         data_revision = hashlib.sha256(json.dumps(digests, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    source_meta = dict(src.execute("select key,value from metadata"))
-    info = {"definition_version": "foodradar-native-price-v2", "data_revision": data_revision, "projection": ("static-only" if static_only else "full-audit"), "published_product_cards": dst.execute("SELECT COUNT(*) FROM web_products").fetchone()[0], "source_revision": source_meta.get("source_revision", "local"),
+    source_meta = direct.metadata() if direct is not None else dict(src.execute("select key,value from metadata"))
+    info = {"definition_version": "foodradar-native-price-v2", "data_revision": data_revision, "projection": ("static-only" if static_only else "full-audit"), "published_product_cards": projection.count if direct is not None else dst.execute("SELECT COUNT(*) FROM web_products").fetchone()[0], "source_revision": source_meta.get("source_revision", "local"),
             "raw_source": source_meta.get("raw_source", ""),
             "raw_snapshot_count": int(source_meta.get("raw_snapshot_count", 0)),
             "application": "FoodRadar", "schema_version": 2,
@@ -381,6 +408,10 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
             "format": 1, "source": str(source), "buckets": bucket_count, "chunks": chunks,
             "products": product_gid, "max_raw_bundle": max_raw, "max_compressed_bundle": max_blob,
             "source_tables": digests}
+    if direct is not None:
+        projection.metadata=info
+        projection.validate()
+        return projection
     for key, value in info.items():
         dst.execute("INSERT INTO metadata VALUES(?,?)", (key, json.dumps(value, ensure_ascii=False, separators=(",", ":"))))
     dst.commit()
