@@ -274,6 +274,11 @@ def direct_contract_digest(root=ROOT):
 DIRECT_CAPTURE_MIGRATIONS = (
     ("48b1356a58c07d4aa0825346f3e32ad4edf47ce8",
      "1219b24c4239e5a923b1b141acc9d0e169743890"),
+    # Capture request provenance, targeted promo verification, and bounded
+    # metadata refresh change future capture only; replay of existing Raw,
+    # persisted observations, and compact layout are byte-contract identical.
+    ("ec8967d99c608519b8e99892fa331afacf532ab8",
+     "f9556966d9469bbe8fb4d5130bde62f46dcb708b"),
 )
 
 def compatible_direct_contract(meta,root=ROOT):
