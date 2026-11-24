@@ -58,160 +58,193 @@ def explicit_children(obj):
     return {x for x in found if re.fullmatch(r"[0-9a-fA-F-]{36}", x)}
 
 def main(index):
-    sid, parent = CASES[index]
+    sid, old_parent = CASES[index]
     out = ROOT / "diagnostic-results" / str(index)
     out.mkdir(parents=True, exist_ok=True)
     cfg = json.loads((ROOT / "config.json").read_text())
-    report = {"store_uuid": sid, "failed_section_uuid": parent, "methods": {},
-              "full_store_verified": False, "requests": 0}
+    report = {"store_uuid": sid, "old_failed_section": old_parent, "requests": 0,
+              "sections": [], "search": [], "all_current_sections_complete": False}
     session = requests.Session()
     assert attach_delivery_location(session, {"discovered_points": [
         {"lat": cfg["latitude"], "lon": cfg["longitude"], "county": "台北市"}]})
+    limit = 550
     def call(api, payload, label):
-        if report["requests"] >= 750:
-            raise StopProbe("diagnostic request budget reached")
+        if report["requests"] >= limit:
+            raise StopProbe("request budget reached")
+        # Sequential bounded read-only requests. Do not retry access refusals.
+        import time
+        time.sleep(0.30)
         report["requests"] += 1
-        response = session.post(BASE + api, json=payload, headers=HEADERS, timeout=20)
-        p = out / (f"{report['requests']:04d}-{label}.json")
-        p.write_bytes(response.content)
-        if response.status_code in (403, 429):
-            raise StopProbe(f"upstream HTTP {response.status_code}; stop without bypass")
+        r = session.post(BASE + api, json=payload, headers=HEADERS, timeout=20)
+        (out / (f"{report['requests']:04d}-{label}.json")).write_bytes(r.content)
         try:
-            body = response.json()
+            body = r.json()
         except ValueError:
             body = {}
         data = body.get("data") or {} if isinstance(body, dict) else {}
         data = data if isinstance(data, dict) else {}
-        if str(data.get("code")) in ("403", "429"):
-            raise StopProbe("upstream application access/rate limit; stop")
-        return response, body, data
-    def catalog(segmented, offset, child=None, collection=False):
+        if r.status_code in (403, 429) or str(data.get("code")) in ("403", "429"):
+            raise StopProbe("upstream access/rate limit; stop without retry")
+        return r, body, data
+    def catalog(parent, offset, *, segmented=False, collection=False, paging=True, page_size=None, child=None):
         filters = {"storeUuid": sid, "sectionUuids": None if child else [parent],
                    "subsectionUuids": [child] if child else None}
-        if segmented:
-            filters["shouldReturnSegmentedControlData"] = True
-        if collection:
-            filters["sectionTypes"] = ["COLLECTION"]
-        return call("getCatalogPresentationV2", {"storeFilters": filters,
-                    "pagingInfo": {"enabled": True, "offset": offset},
-                    "sortAndFilters": None, "source": "NV_L2_CATALOG"},
-                    "segmented" if segmented else "baseline")
-    try:
-        r, body, base = call("getStoreV1", {"storeUuid": sid, "sfNuggetCount": 24}, "store")
-        if r.status_code != 200 or body.get("status") == "failure" or not base.get("title"):
-            raise StopProbe("store unavailable: HTTP " + str(r.status_code))
-        report["name"] = base.get("title")
-        report["sections"] = _section_ids(base)
-        report["preview_skus"] = len({i["uuid"] for i in map_items(base)})
-        report["parent_currently_listed"] = parent in report["sections"]
-        log("STORE_META", {k: v for k, v in report.items() if k != "methods"})
-        native_children = set(_subsections_for(base, parent))
-        samples = {}
-        known = {}
-        for segmented in (False, True):
-            for offset in (0, 960):
-                r, b, d = catalog(segmented, offset)
-                label = ("segmented" if segmented else "baseline") + "_" + str(offset)
-                try:
-                    _, groups = _catalog_entries(b)
-                    rows = items(groups)
-                    ids = {i["uuid"] for i in rows}
-                    paging = d["pagingInfo"]
-                    for i in rows:
-                        known[i["uuid"]] = i
-                    if segmented:
-                        native_children.update(_native_subsections_from_catalog([b], parent))
-                        for k, v in d.items():
-                            if "segment" in k.lower() or "subsection" in k.lower():
-                                native_children.update(explicit_children(v))
-                    samples[label] = {"http": r.status_code, "skus": len(ids),
-                                      "hasMore": paging["hasMore"], "next_offset": paging.get("offset"),
-                                      "data_keys": list(d), "application_code": d.get("code"),
-                                      "segment_fields": [k for k in d if "segment" in k.lower()]}
-                except (ValueError, TypeError, KeyError) as e:
-                    samples[label] = {"http": r.status_code, "error": str(e),
-                                      "application_code": d.get("code"), "data_keys": list(d)}
-                log("PAGE_PROBE", {"name": report["name"], "variant": label, **samples[label]})
-        native_children.discard(parent)
-        report["methods"]["segmented"] = {"samples": samples, "explicit_child_ids": sorted(native_children)}
-        log("SEGMENTED_RESULT", report["methods"]["segmented"])
-        # Search is a diagnostic, never a certificate of full catalog coverage.
-        queries = list(dict.fromkeys([str(i.get("title") or "").strip() for i in list(known.values())[:3]] +
-                                     ["洗髮", "牙膏", "清潔", "保健"]))
-        search_results = []
-        for q in filter(None, queries):
-            r, b, d = call("getInStoreSearchV1", {"diningMode": "DELIVERY",
-                    "sectionUUIDs": None, "storeUUIDs": [sid], "userQuery": q,
-                    "isGrocery": False, "entrypointContext": "IN_STORE_SEARCH"}, "search")
-            rows = map_items(d)
-            new = {i["uuid"] for i in rows} - set(known)
-            common = [i for i in rows if i["uuid"] in known]
-            comparisons = 0
-            mismatches = 0
-            for i in common:
-                try:
-                    a, z = quote_from_native_item(known[i["uuid"]]), quote_from_native_item(i)
-                    if a is not None and z is not None:
-                        comparisons += 1
-                        mismatches += int(a != z)
-                except (ValueError, TypeError, KeyError):
-                    pass
-            result = {"query": q, "http": r.status_code, "code": d.get("code"),
-                      "skus": len({i["uuid"] for i in rows}), "outside_sample": len(new),
-                      "common_sample": len(common), "quote_comparisons": comparisons,
-                      "quote_mismatches": mismatches}
-            search_results.append(result)
-            log("SEARCH_RESULT", result)
-        report["methods"]["search"] = search_results
-        # Try the whole existing collector, with the native segmented flag.
-        # The only additional child identifiers are explicit values from native responses.
-        if report["parent_currently_listed"]:
-            modified = copy.deepcopy(base)
-            if native_children:
-                modified.setdefault("sections", []).append(
-                    {"uuid": parent, "subsectionUuids": sorted(native_children)})
-            class Wrapped:
-                def post(self, url, json, headers, timeout):
-                    payload = copy.deepcopy(json)
-                    payload["storeFilters"]["shouldReturnSegmentedControlData"] = True
-                    r, _, _ = call("getCatalogPresentationV2", payload, "full")
-                    return r
+        if segmented: filters["shouldReturnSegmentedControlData"] = True
+        if collection: filters["sectionTypes"] = ["COLLECTION"]
+        pi = {"enabled": paging, "offset": offset}
+        if page_size is not None: pi["pageSize"] = page_size
+        r, b, d = call("getCatalogPresentationV2", {"storeFilters": filters,
+                    "pagingInfo": pi, "sortAndFilters": None, "source": "NV_L2_CATALOG"},
+                    "catalog")
+        if r.status_code != 200 or b.get("status") == "failure":
+            raise ValueError(f"HTTP {r.status_code}, app {d.get('code')}")
+        _, groups = _catalog_entries(b)
+        return b, d, items(groups)
+    def walk(parent, **kwargs):
+        offset, seen = 0, set()
+        rows, bodies = {}, []
+        for page in range(150):
+            if offset >= 1000:
+                return rows, bodies, False, f"offset {offset} at boundary"
+            if offset in seen:
+                return rows, bodies, False, f"offset {offset} repeats"
+            seen.add(offset)
             try:
-                raw = out / "full-catalog"
-                result = capture_catalog(Wrapped(), sid, modified, raw, HEADERS, capture_response)
-                bodies = [json.loads((raw / p["path"]).read_bytes()) for p in result["catalog_responses"]]
-                skus = _catalog_skus(bodies)
-                preview = {i["uuid"] for i in map_items(base)}
-                missing = preview - skus
-                # Terminal coverage and preview agreement are necessary, not proof of a
-                # universal independent store item total.
-                report["methods"]["full"] = {
-                    "catalog_complete": result["catalog_complete"],
-                    "sections_finished": result["catalog_sections_finished"],
-                    "sections_total": result["catalog_section_count"],
-                    "unique_catalog_skus": len(skus), "preview_skus_missing": len(missing),
-                    "preview_union_skus": len(skus | preview), "pages": len(bodies),
-                    "independent_total_available": False}
-                report["full_store_verified"] = bool(result["catalog_complete"] and
-                    result["catalog_sections_finished"] == result["catalog_section_count"] and
-                    not missing and skus)
-            except (ValueError, RuntimeError, requests.RequestException, StopProbe) as e:
-                report["methods"]["full"] = {"catalog_complete": False, "error": str(e)}
-        else:
-            report["methods"]["full"] = {"catalog_complete": False,
-                 "error": "historically failed section not currently in native store menu; cannot reproduce"}
+                b, d, rr = catalog(parent, offset, **kwargs)
+                # Match production's COLLECTION fallback for an empty first page.
+                if page == 0 and not rr and not kwargs.get("collection"):
+                    alt = {**kwargs, "collection": True}
+                    ab, ad, ar = catalog(parent, offset, **alt)
+                    if ar:
+                        b, d, rr = ab, ad, ar
+                        kwargs = alt
+                bodies.append(b)
+                rows.update({i["uuid"]: i for i in rr})
+                p = d["pagingInfo"]
+                if p["hasMore"] is False:
+                    return rows, bodies, True, ""
+                nxt = p.get("offset")
+                if type(nxt) is not int or nxt <= offset:
+                    return rows, bodies, False, f"invalid offset {nxt}"
+                offset = nxt
+            except (requests.RequestException, ValueError, TypeError, KeyError) as e:
+                return rows, bodies, False, str(e)
+        return rows, bodies, False, "page budget reached"
+    def describe_sample(parent, label, **kwargs):
+        try:
+            b, d, rr = catalog(parent, 0, **kwargs)
+            p = d["pagingInfo"]
+            return {"method": label, "skus": len({i["uuid"] for i in rr}),
+                    "has_more": p["hasMore"], "next_offset": p.get("offset"),
+                    "segment_fields": [k for k in d if "segment" in k.lower()],
+                    "native_child_count": len(explicit_children(d) - {parent})}
+        except (requests.RequestException, ValueError, TypeError, KeyError) as e:
+            return {"method": label, "error": str(e)}
+    all_rows = {}
+    try:
+        r, b, base = call("getStoreV1", {"storeUuid": sid, "sfNuggetCount": 24}, "store")
+        if r.status_code != 200 or b.get("status") == "failure" or not base.get("title"):
+            raise StopProbe("store unavailable")
+        report["name"] = base["title"]
+        sections = _section_ids(base)
+        preview = {i["uuid"]: i for i in map_items(base)}
+        report["expected_sections"] = len(sections)
+        report["preview_skus"] = len(preview)
+        report["old_parent_still_listed"] = old_parent in sections
+        log("CURRENT_STORE", {k:v for k,v in report.items() if k not in ("sections","search")})
+        for parent in sections:
+            start = report["requests"]
+            rows, bodies, terminal, reason = walk(parent)
+            sr = {"uuid": parent, "baseline_skus": len(rows), "baseline_terminal": terminal,
+                  "baseline_error": reason, "methods": [], "terminal": terminal}
+            report["sections"].append(sr)
+            # Retain original per-section evidence; only unresolved sections get extra tests.
+            selected = rows
+            if not terminal:
+                sr["methods"] = [
+                    describe_sample(parent, "segmented", segmented=True),
+                    describe_sample(parent, "pageSize250", page_size=250),
+                    describe_sample(parent, "unpaged", paging=False),
+                    describe_sample(parent, "collection", collection=True)]
+                # Discover the genuine native child IDs in both metadata and current pages.
+                children = set(_subsections_for(base, parent))
+                children.update(_native_subsections_from_catalog(bodies, parent))
+                segrows, segbodies, segterminal, segreason = walk(parent, segmented=True)
+                children.update(_native_subsections_from_catalog(segbodies, parent))
+                for sb in segbodies:
+                    d = sb.get("data") or {}
+                    for k,v in d.items():
+                        if "segment" in k.lower() or "subsection" in k.lower():
+                            children.update(explicit_children(v))
+                children.discard(parent)
+                sr["segmented_walk"] = {"skus": len(segrows), "terminal": segterminal,
+                                        "error": segreason, "missing_baseline": len(set(rows)-set(segrows))}
+                sr["native_children"] = sorted(children)
+                if segterminal and set(rows) <= set(segrows):
+                    selected, sr["terminal"] = segrows, True
+                    sr["accepted_method"] = "segmented"
+                elif children:
+                    # Test native partitions separately; require terminal pagination for each
+                    # and coverage of every SKU already observed in the parent.
+                    childrows, cr = {}, []
+                    for child in sorted(children):
+                        rr, bb, tt, ee = walk(parent, child=child, segmented=True)
+                        childrows.update(rr)
+                        cr.append({"uuid": child, "skus": len(rr), "terminal": tt, "error": ee})
+                    missing = (set(rows)|set(segrows)) - set(childrows)
+                    sr["child_walk"] = {"children": cr, "unique_skus": len(childrows),
+                                        "missing_observed_parent": len(missing)}
+                    if all(c["terminal"] for c in cr) and not missing and childrows:
+                        selected, sr["terminal"] = childrows, True
+                        sr["accepted_method"] = "native_children"
+                # Do not use unpaged or search samples as proof of complete coverage.
+            all_rows.update(selected)
+            sr["selected_skus"] = len(selected)
+            sr["requests"] = report["requests"] - start
+            log("SECTION_RESULT", sr)
+        report["all_current_sections_complete"] = bool(sections) and all(x["terminal"] for x in report["sections"])
+        report["unique_catalog_skus"] = len(all_rows)
+        report["preview_missing"] = len(set(preview)-set(all_rows))
+        # Independently query titles actually present in the catalog and several broad
+        # terms. Compare UUIDs, store price quotes, and search-only SKUs.
+        titles = [str(i.get("title") or "").strip() for i in list(all_rows.values())[:4]]
+        queries = list(dict.fromkeys(["洗髮","牙膏","清潔","保健"] + titles))
+        search_only = set()
+        for q in filter(None, queries):
+            r,b,d = call("getInStoreSearchV1", {"diningMode":"DELIVERY","sectionUUIDs":None,
+                  "storeUUIDs":[sid],"userQuery":q,"isGrocery":False,
+                  "entrypointContext":"IN_STORE_SEARCH"}, "search")
+            rr = {i["uuid"]:i for i in map_items(d)}
+            common = set(rr)&set(all_rows)
+            extra = set(rr)-set(all_rows)
+            search_only.update(extra)
+            good, mismatch, invalid = 0,0,0
+            for k in common:
+                try:
+                    a,z = quote_from_native_item(rr[k]),quote_from_native_item(all_rows[k])
+                    if a is None or z is None:
+                        invalid += 1
+                    elif a == z: good += 1
+                    else: mismatch += 1
+                except (ValueError,TypeError,KeyError):
+                    invalid += 1
+            sr = {"query":q,"http":r.status_code,"skus":len(rr),"overlap":len(common),
+                  "search_only":len(extra),"matching_quotes":good,"mismatching_quotes":mismatch,
+                  "invalid_quotes":invalid}
+            report["search"].append(sr)
+            log("SEARCH_AUDIT", sr)
+        report["search_only_unique"] = len(search_only)
+        report["all_current_sections_and_preview_verified"] = report["all_current_sections_complete"] and not report["preview_missing"]
+        report["independent_total_available"] = False
     except (StopProbe, requests.RequestException, ValueError, TypeError, KeyError) as e:
         report["error"] = str(e)
     finally:
         session.close()
-        (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf8")
-        log("FINAL_DIAGNOSTIC", report)
-        summary = os.getenv("GITHUB_STEP_SUMMARY")
+        (out/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf8")
+        log("FINAL_DIAGNOSTIC",report)
+        summary=os.getenv("GITHUB_STEP_SUMMARY")
         if summary:
-            with open(summary, "a", encoding="utf8") as f:
-                f.write("### " + str(report.get("name", sid)) + "\n\n")
-                f.write("- 完整採集驗證：" + str(report["full_store_verified"]) + "\n")
-                f.write("- API 請求：" + str(report["requests"]) + "\n")
-                f.write("\n" + "~~~json\n" + json.dumps(report, ensure_ascii=False, indent=2) + "\n~~~\n")
+            with open(summary,"a",encoding="utf8") as f:
+                f.write("### "+str(report.get("name",sid))+"\n\n~~~json\n"+json.dumps(report,ensure_ascii=False,indent=2)+"\n~~~\n")
 if __name__ == "__main__":
     main(int(sys.argv[1]))
