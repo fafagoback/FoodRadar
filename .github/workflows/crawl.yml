@@ -151,18 +151,18 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/distributed_crawl.py discover
-      - name: 建立 GitHub 共用分批佇列及讀取最佳執行緒
+      - name: 分配固定 15 台工作機及讀取最佳執行緒
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          count=$(jq -er '.owner_count' data/discovery/discovery.json)
-          matrix=$(jq -cn --argjson count "$count" '{shard:[range(0;$count)]}')
+          count=$(jq -er '.owner_count | select(. == 15)' data/discovery/discovery.json)
+          matrix=$(jq -cn --argjson count "$count" '{include:[range(0;$count) | {shard:.,worker:(.+1|tostring|if length==1 then "0"+. else . end)}]}')
           value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er '.optimal_threads | select(type == "number" and . >= 1 and . <= 12 and . == floor)')
           epoch=$(sha256sum data/discovery/discovery.json | cut -c1-16)
           printf 'batch_count=%s\nmatrix=%s\ninitial_threads=%s\nepoch=%s\n' "$count" "$matrix" "$value" "$epoch" >> "$GITHUB_OUTPUT"
-          echo "已建立 $count 個分批任務，最多 15 台同時處理，初始執行緒 $value" >> "$GITHUB_STEP_SUMMARY"
+          echo "已分配固定 $count 台工作機，每台持續執行及學習，初始執行緒 $value" >> "$GITHUB_STEP_SUMMARY"
       - name: 上傳全機器共用店家清單
         uses: actions/upload-artifact@v4
         with:
@@ -172,7 +172,7 @@ jobs:
           retention-days: 3
 
   crawl_shard:
-    name: "動態排程｜任務批次 ${{ matrix.shard }}"
+    name: "爬蟲工作機 ${{ matrix.worker }}"
     needs: discover_once
     continue-on-error: true
     if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
@@ -229,7 +229,7 @@ jobs:
       matrix: ${{ steps.missing.outputs.matrix }}
       missing_count: ${{ steps.missing.outputs.missing_count }}
     steps:
-      - name: 只分派不存在成果的批次
+      - name: 只重派沒有保存成果的工作機
         id: missing
         env:
           GH_TOKEN: ${{ github.token }}
@@ -245,13 +245,13 @@ jobs:
           prefix="foodradar-raw-shard-"+os.environ["EPOCH"]+"-"
           missing=[i for i in range(int(os.environ["BATCH_COUNT"])) if prefix+str(i) not in found]
           with open(os.environ["GITHUB_OUTPUT"],"a") as f:
-              f.write("matrix="+json.dumps({"shard":missing},separators=(",",":"))+"\n")
+              f.write("matrix="+json.dumps({"include":[{"shard":i,"worker":f"{i+1:02d}"} for i in missing]},separators=(",",":"))+"\n")
               f.write("missing_count="+str(len(missing))+"\n")
-          print("待接手批次："+str(missing))
+          print("待接手工作機："+str(missing))
           PY
 
   recover_shard:
-    name: "故障接手｜未保存批次 ${{ matrix.shard }}"
+    name: "故障接手｜工作機 ${{ matrix.worker }}"
     needs: [discover_once, plan_recovery]
     if: ${{ !cancelled() && needs.plan_recovery.result == 'success' && needs.plan_recovery.outputs.missing_count != '0' }}
     runs-on: ubuntu-latest
@@ -340,7 +340,7 @@ jobs:
             exit 1
           fi
 
-      - name: 下載所有已完成任務批次的原始檔案
+      - name: 下載 15 台工作機的原始檔案
         if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
         uses: actions/download-artifact@v4
         with:

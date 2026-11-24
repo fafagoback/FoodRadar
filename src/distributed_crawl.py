@@ -217,7 +217,7 @@ def discover(config: dict, raw: Path, index: int):
 
 
 def save_shared_discovery(config: dict, root: Path = ROOT):
-    """Discover once at the configured coordinate; every matrix batch shares this file."""
+    """Discover once at the configured coordinate; all 15 crawl workers share this file."""
     folder = root / "data" / "discovery"
     if folder.exists():
         raise FileExistsError(f"Refusing to overwrite existing discovery: {folder}")
@@ -235,7 +235,7 @@ def save_shared_discovery(config: dict, root: Path = ROOT):
     for sid, owner in ownership.items():
         loads[owner] += estimates[sid]
     print("FOODRADAR_WEIGHTED_SHARDS=" + json.dumps({
-        "method": "native_matrix_weighted_microbatches", "max_parallel": MAX_PARALLEL, "batches": batch_count,
+        "method": "fixed_15_weighted_workers", "max_parallel": MAX_PARALLEL, "batches": batch_count,
         "estimated_loads": loads, "stores": len(stores),
     }), flush=True)
     manifest = {
