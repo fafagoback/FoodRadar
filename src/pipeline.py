@@ -103,7 +103,7 @@ def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarant
     return quarantined_ids
 
 
-def restore_history(config, rebuild_all=False):
+def restore_history(config, rebuild_all=False, *, direct=False):
     """Replay unprocessed HF Raw from a verified checkpoint or from zero."""
     from concurrent.futures import ThreadPoolExecutor
     from time import perf_counter
@@ -140,13 +140,26 @@ def restore_history(config, rebuild_all=False):
     previous.parent.mkdir(parents=True, exist_ok=True)
     temporary_db = ROOT/'data/raw-only-reconstructed.db'
     temporary_db.unlink(missing_ok=True)
-    checkpoint = None if rebuild_all else restore_checkpoint(temporary_db, records, config,lean=True)
-    batch, prefix_count = checkpoint if checkpoint else ('', 0)
-    conn = sqlite3.connect(temporary_db)
-    conn.row_factory = sqlite3.Row
-    if not checkpoint:
-        from working_quotes import initialize
-        initialize(conn)
+    state=None;conn=None
+    if direct:
+        from state_checkpoint import restore_direct,new_direct,direct_contract_digest,CACHE
+        from compact_direct import MAX_BYTES
+        restored=None if rebuild_all else restore_direct(records,config)
+        if restored:
+            state,batch,prefix_count=restored
+            checkpoint=(batch,prefix_count)
+        else:
+            state=new_direct()
+            batch,prefix_count='',0
+            checkpoint=None
+    else:
+        checkpoint = None if rebuild_all else restore_checkpoint(temporary_db, records, config,lean=True)
+        batch, prefix_count = checkpoint if checkpoint else ('', 0)
+        conn = sqlite3.connect(temporary_db)
+        conn.row_factory = sqlite3.Row
+        if not checkpoint:
+            from working_quotes import initialize
+            initialize(conn)
     replayed, skipped_incomplete = [], []
     quarantined_batches = []
     latest_excluded_store_uuids = []
@@ -210,15 +223,23 @@ def restore_history(config, rebuild_all=False):
             failed_store_uuids = sorted(set(failed_store_uuids) | quarantined_ids)
             is_partial = raw_partial or bool(quarantined_ids)
             t = perf_counter()
-            apply_snapshot(conn, docs, current_batch,
-                           excluded_store_uuids=failed_store_uuids,
-                           refresh_search=False)
-            conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-                         ('latest_raw_completeness',
-                          'partial_verified' if is_partial else 'complete'))
-            conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-                         ('latest_unverified_store_uuids',
-                          json.dumps(failed_store_uuids,ensure_ascii=False)))
+            if direct:
+                state.apply_batch(docs,current_batch,failed_store_uuids)
+                state.meta["latest_raw_completeness"]="partial_verified" if is_partial else "complete"
+                state.meta["latest_unverified_store_uuids"]=json.dumps(failed_store_uuids,ensure_ascii=False)
+                state.flush()
+                if any(p.path.stat().st_size>=MAX_BYTES for p in state.parts):
+                    state=state.rebuild_partitions(CACHE)
+            else:
+                apply_snapshot(conn, docs, current_batch,
+                               excluded_store_uuids=failed_store_uuids,
+                               refresh_search=False)
+                conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                             ('latest_raw_completeness',
+                              'partial_verified' if is_partial else 'complete'))
+                conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                             ('latest_unverified_store_uuids',
+                              json.dumps(failed_store_uuids,ensure_ascii=False)))
             applied = perf_counter()-t
             totals['sqlite_apply_seconds'] += applied
             replayed.append(manifest_path+':'+digest)
@@ -245,35 +266,47 @@ def restore_history(config, rebuild_all=False):
             }, ensure_ascii=False),flush=True)
         if not replayed:
             raise RuntimeError('No complete immutable HF Raw batches to build serving DB')
+        batch_count=(len(state.batch_rows()) if direct else
+                     conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0])
         if checkpoint and len([1 for p,m,_ in records[:prefix_count]
-                               if raw_manifest_should_replay(m,p,folder)]) != (
-                conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0]-processed):
+                               if raw_manifest_should_replay(m,p,folder)]) != batch_count-processed:
             raise ValueError('Checkpoint verified batch count mismatches Raw history')
         t=perf_counter()
-        if processed or not checkpoint:
-            refresh_product_search(conn)
-        # A republish must never reuse cached discount flags. The verified
-        # observations, not a prior price-rule projection, are authoritative.
-        audit=update_verified_weekly(conn,batch)
+        if direct:
+            audit=state.refresh_weekly(batch)
+        else:
+            if processed or not checkpoint:
+                refresh_product_search(conn)
+            # Verified observations, not cached discount flags, are authoritative.
+            audit=update_verified_weekly(conn,batch)
         price_seconds=perf_counter()-t
         print('HF_RAW_FINAL_VERIFIED_WEEKLY='+json.dumps({
             'batch':batch,**audit,'seconds':round(price_seconds,2)
         },ensure_ascii=False),flush=True)
-        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-                     ('raw_source',f'{folder}/'))
-        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
-                     ('raw_snapshot_count',str(len(replayed))))
-        conn.commit()
+        if direct:
+            state.meta.update(raw_source=f"{folder}/",raw_snapshot_count=str(len(replayed)))
+            state.flush()
+            if any(p.path.stat().st_size>=MAX_BYTES for p in state.parts):
+                state=state.rebuild_partitions(CACHE)
+        else:
+            conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                         ('raw_source',f'{folder}/'))
+            conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                         ('raw_snapshot_count',str(len(replayed))))
+            conn.commit()
         destination=ROOT/'data'/batch
         destination.mkdir(parents=True,exist_ok=True)
         if checkpoint and not processed:
             # A cache-only republish must report the actual retained shops from
             # the verified checkpoint rather than claiming there were none.
-            previous_excluded = conn.execute(
-                "SELECT value FROM metadata "
-                "WHERE key='latest_unverified_store_uuids'").fetchone()
-            if previous_excluded:
-                latest_excluded_store_uuids = json.loads(previous_excluded[0])
+            if direct:
+                latest_excluded_store_uuids=json.loads(state.meta.get("latest_unverified_store_uuids","[]"))
+            else:
+                previous_excluded = conn.execute(
+                    "SELECT value FROM metadata "
+                    "WHERE key='latest_unverified_store_uuids'").fetchone()
+                if previous_excluded:
+                    latest_excluded_store_uuids = json.loads(previous_excluded[0])
         quarantine_report = {
             'latest_batch': batch,
             'quarantined_empty_catalog_store_observations': sum(
@@ -289,6 +322,14 @@ def restore_history(config, rebuild_all=False):
             encoding='utf-8')
         print('FOODRADAR_RAW_QUARANTINE_SUMMARY=' +
               json.dumps(quarantine_report, ensure_ascii=False), flush=True)
+        if direct:
+            counts=state.stats()
+            source_counts={"stores":counts["stores"],"products":counts["products"],"crawl_batches":batch_count}
+        else:
+            source_counts={
+                'stores':conn.execute('SELECT COUNT(*) FROM stores').fetchone()[0],
+                'products':conn.execute('SELECT COUNT(*) FROM products').fetchone()[0],
+                'crawl_batches':batch_count}
         evidence={
             'format': ('foodradar-raw-verified-incremental-v1' if checkpoint
                        else 'foodradar-immutable-raw-only-rebuild-v1'),
@@ -297,11 +338,7 @@ def restore_history(config, rebuild_all=False):
             'skipped_incomplete_raw_count':len(skipped_incomplete),
             'manifest_digest':hashlib.sha256('\n'.join(replayed).encode()).hexdigest(),
             'source_prefix':f'{folder}/','legacy_snapshot_count':0,
-            'source_counts':{
-                'stores':conn.execute('SELECT COUNT(*) FROM stores').fetchone()[0],
-                'products':conn.execute('SELECT COUNT(*) FROM products').fetchone()[0],
-                'crawl_batches':conn.execute('SELECT COUNT(*) FROM crawl_batches').fetchone()[0]
-            }
+            'source_counts':source_counts
         }
         (destination/'verified-rebuild.json').write_text(
             json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -309,18 +346,21 @@ def restore_history(config, rebuild_all=False):
             'repo_id':config['hf_repo_id'],'folder':folder,'batch_id':batch,
             'manifest_count':len(records),'verified_batches':len(replayed),
             'manifest_digest':manifest_digest(records),
-            'contract_digest':contract_digest()
+            'contract_digest':direct_contract_digest() if direct else contract_digest()
         }
         (destination/'raw-manifest-index.json').write_text(
             json.dumps(raw_index,ensure_ascii=False,indent=2),encoding='utf-8')
         # The reconstructed DB and release DB are the same disposable file.
         # Close before the atomic same-filesystem rename; no second large
         # backup or transient duplicate on the Actions runner.
-        conn.close()
-        os.replace(temporary_db,destination/'serving.db')
-        print("FOODRADAR_WORK_DB_BYTES="+json.dumps({
-            "bytes":(destination/'serving.db').stat().st_size,
-            "duplicate_bytes":0}),flush=True)
+        if direct:
+            print("FOODRADAR_DIRECT_DB_METRICS="+json.dumps(state.metrics()),flush=True)
+        else:
+            conn.close()
+            os.replace(temporary_db,destination/'serving.db')
+            print("FOODRADAR_WORK_DB_BYTES="+json.dumps({
+                "bytes":(destination/'serving.db').stat().st_size,
+                "duplicate_bytes":0}),flush=True)
         previous.write_text(batch,encoding='utf-8')
         print('FOODRADAR_RAW_ONLY_REBUILT='+json.dumps(evidence,ensure_ascii=False),flush=True)
         timings={'manifest_index_seconds':index_seconds,
@@ -341,8 +381,12 @@ def restore_history(config, rebuild_all=False):
                     f"{quarantine_report['quarantined_empty_catalog_store_observations']} |\n"
                     f"| latest_retained_stores | "
                     f"{len(quarantine_report['latest_retained_store_uuids'])} |\n")
+        if direct:return state
+    except BaseException:
+        if state is not None:state.close()
+        raise
     finally:
-        conn.close()
+        if conn is not None:conn.close()
 
 
 def build_snapshot(output, config):

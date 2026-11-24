@@ -54,6 +54,7 @@ def capture():
         ("data/*/static-public/current.json", "current.json"),
         ("pages-static-source/current.json", "current.json"),
         ("data/*/store-identity-report.json", "store-identity-report.json"),
+        ("data/*/direct-db-report.json", "direct-db-report.json"),
     ]:
         matches = sorted(Path(".").glob(pattern))
         if matches:
@@ -127,6 +128,12 @@ def main(kind):
             messages.append("本次沒有完整分工抓取統計；重新發布或前段失敗時，不以歷史數量冒充本次抓取成果。")
         m = read("action-reports/metrics/current.json")
         catalog(m, "產出資料")
+        direct=read("action-reports/metrics/direct-db-report.json")
+        if direct:
+            add("精簡資料庫總容量",mb(direct.get("compact_bytes")))
+            add("完整展開的中間資料庫",mb(direct.get("full_expanded_database_bytes")))
+            add("單店暫存記憶體資料庫峰值",mb(direct.get("max_shop_scratch_bytes")))
+            add("資料庫與網站完整處理秒數",direct.get("seconds"))
         succeeded = os.environ.get("INGEST_RESULT") == "success" and isinstance(m, dict)
         add("資料更新結果", "已完成驗證並產出新的可部署資料包" if succeeded else
             "未完成可確認的資料更新")

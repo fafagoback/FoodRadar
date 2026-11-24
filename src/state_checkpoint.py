@@ -248,3 +248,124 @@ def save(source, raw_index_path, cache=CACHE, root=ROOT, *, compact=True):
         "parts":len(parts) if compact and parts else 1,
         "format":metadata["format"],"transient_db_bytes":source.stat().st_size,
     },ensure_ascii=False),flush=True)
+
+
+# Direct compact checkpoints use the same v3 physical layout; v4 identifies
+# the new bounded mutation path. No historical observations are regenerated
+# by expanding a full normalized SQL database.
+DIRECT_CONTRACTS=CONTRACTS+("src/compact_direct.py",)
+DIRECT_V3_ANCHOR="3ecd55f11ab6449f1eab661833833d17c97d3dab"
+DIRECT_V3_REVIEWED={
+    "src/pipeline.py":"a55e5a5a71a2e3d78daf310afb011ceec93901cf",
+    "src/compact_direct.py":"27bace902b74505d3e8d214200de7ae8c4b24e65",
+}
+
+def direct_contract_digest(root=ROOT):
+    h=hashlib.sha256()
+    for file in DIRECT_CONTRACTS:
+        h.update(file.encode()+b"\0")
+        h.update((Path(root)/file).read_bytes())
+    return h.hexdigest()
+
+def compatible_direct_contract(meta,root=ROOT):
+    if meta.get("format")=="foodradar-checkpoint-v4":
+        return meta.get("contract_digest")==direct_contract_digest(root)
+    if meta.get("format")!="foodradar-checkpoint-v3":
+        return False
+    try:
+        if meta.get("contract_digest")!=_historical_digest(root,DIRECT_V3_ANCHOR,CONTRACTS):
+            return False
+        for file in DIRECT_CONTRACTS:
+            data=(Path(root)/file).read_bytes()
+            if file in DIRECT_V3_REVIEWED:
+                blob=b"blob "+str(len(data)).encode()+b"\0"+data
+                if hashlib.sha1(blob).hexdigest()!=DIRECT_V3_REVIEWED[file]:return False
+            elif data!=subprocess.check_output(["git","show",f"{DIRECT_V3_ANCHOR}:{file}"],
+                    cwd=root,stderr=subprocess.DEVNULL,timeout=15):return False
+        return True
+    except (OSError,subprocess.SubprocessError):
+        return False
+
+def restore_direct(records,config,cache=CACHE,root=ROOT):
+    from compact_direct import open_collection
+    cache=Path(cache);state=None
+    if not (cache/"manifest.json").is_file():return None
+    try:
+        meta=json.loads((cache/"manifest.json").read_text(encoding="utf-8"))
+        count=meta["manifest_count"]
+        if (meta.get("repo_id")!=config["hf_repo_id"]
+            or meta.get("folder")!=config["hf_folder"].strip("/")
+            or type(count) is not int or not 0<count<=len(records)
+            or meta.get("manifest_digest")!=manifest_digest(records[:count])
+            or not compatible_direct_contract(meta,root)):
+            raise ValueError("Invalid direct checkpoint provenance or code contract")
+        parts=meta.get("parts")
+        if parts:
+            paths=[]
+            for p in parts:
+                rel=Path(p["path"])
+                if len(rel.parts)!=2 or rel.parts[0]!="shards" or rel.is_absolute() or ".." in rel.parts:
+                    raise ValueError("Unsafe checkpoint partition path")
+                path=cache/rel
+                if digest_file(path)!=p["sha256"]:raise ValueError("Corrupt partition SHA")
+                paths.append(path)
+        else:
+            path=cache/"serving.compact.db"
+            if digest_file(path)!=meta["compact_sha256"]:raise ValueError("Corrupt compact SHA")
+            paths=[path]
+        state=open_collection(paths)
+        if any(p.conn.execute("PRAGMA quick_check").fetchone()[0]!="ok" for p in state.parts):
+            raise ValueError("Invalid compact partition")
+        if (state.stats()!={k:meta[k] for k in ("stores","products","observations")}
+            or state.meta.get("latest_batch")!=meta["batch_id"]
+            or len(state.batch_rows())!=meta["verified_batches"]):
+            raise ValueError("Checkpoint counts or batch mismatch")
+        print("FOODRADAR_CHECKPOINT_RESTORED="+json.dumps({
+            "batch":meta["batch_id"],"manifests":count,"verified_batches":meta["verified_batches"],
+            "compact_bytes":state.metrics()["compact_bytes"],"direct":True},ensure_ascii=False),flush=True)
+        return state,meta["batch_id"],count
+    except (OSError,ValueError,KeyError,IndexError,sqlite3.DatabaseError) as e:
+        if state is not None:state.close()
+        print("FOODRADAR_CHECKPOINT_REJECTED="+json.dumps({
+            "reason":str(e)[:200],"fallback":"direct_HF_Raw_replay"}),flush=True)
+        return None
+
+def new_direct(cache=CACHE):
+    import shutil
+    from compact_direct import CompactStore,CompactCollection
+    cache=Path(cache)
+    # This is only disposable runner-local acceleration, never HF Raw.
+    shutil.rmtree(cache,ignore_errors=True)
+    cache.mkdir(parents=True)
+    return CompactCollection([CompactStore(cache/"serving.compact.db",empty=True)])
+
+def save_direct(state,raw_index_path,cache=CACHE,root=ROOT):
+    from compact_direct import MAX_BYTES
+    cache=Path(cache)
+    index=json.loads(Path(raw_index_path).read_text(encoding="utf-8"))
+    if (index.get("contract_digest")!=direct_contract_digest(root)
+        or state.meta.get("latest_batch")!=index.get("batch_id")
+        or len(state.batch_rows())!=index.get("verified_batches")):
+        raise ValueError("Direct cache publication provenance differs")
+    state.flush()
+    if any(p.path.stat().st_size>=MAX_BYTES for p in state.parts):
+        raise ValueError("Compact partition exceeds strict byte budget")
+    counts=state.stats()
+    parts=[]
+    for p in state.parts:
+        if p.conn.execute("PRAGMA integrity_check").fetchone()[0]!="ok":
+            raise ValueError("Compact checkpoint integrity check failed")
+        parts.append({"path":str(p.path.relative_to(cache)),"sha256":digest_file(p.path),
+                      "bytes":p.path.stat().st_size})
+    single=len(parts)==1 and parts[0]["path"]=="serving.compact.db"
+    metadata={**index,"format":"foodradar-checkpoint-v4",**counts,
+              "compact_sha256":parts[0]["sha256"] if single else None,
+              "parts":None if single else parts,"expanded_work_db_bytes":0}
+    temp=cache/"manifest.tmp"
+    temp.write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding="utf-8")
+    temp.replace(cache/"manifest.json")
+    (cache/"serving.db").unlink(missing_ok=True)
+    print("FOODRADAR_CHECKPOINT_PREPARED="+json.dumps({
+        "batch":index["batch_id"],"bytes":sum(p["bytes"] for p in parts),
+        "parts":len(parts),"format":metadata["format"],"transient_db_bytes":0,
+        **state.metrics()},ensure_ascii=False),flush=True)

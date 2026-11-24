@@ -70,26 +70,36 @@ def _price_event(at, price, unit, promo, quantity, unit_only=False):
         state, ensure_ascii=False, separators=(",", ":"))}
 
 
-def build(packed_db, serving_db, output):
-    packed_db, serving_db, output = Path(packed_db), Path(serving_db), Path(output)
-    if not packed_db.is_file() or not serving_db.is_file():
-        raise FileNotFoundError("Both verified packed-serving.db and serving.db are required")
+def build(packed_db, serving_db, output, *, direct=None, projection=None):
+    from contextlib import nullcontext
+    output=Path(output)
+    if direct is None:
+        packed_db,serving_db=Path(packed_db),Path(serving_db)
+        if not packed_db.is_file() or not serving_db.is_file():
+            raise FileNotFoundError("Both verified packed-serving.db and serving.db are required")
+    elif projection is None:
+        raise ValueError("Direct compact publication requires a verified card projection")
     output.mkdir(parents=True, exist_ok=True)
     blobs = output / "blobs"
     blobs.mkdir(exist_ok=True)
     compressor = zstd.ZstdCompressor(level=10, write_content_size=True)
-    with sqlite3.connect(packed_db) as packed, sqlite3.connect(serving_db) as source:
-        packed.row_factory = sqlite3.Row
-        source.row_factory = sqlite3.Row
-        assert packed.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert source.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        meta = {key: json.loads(value) for key, value in packed.execute("SELECT key,value FROM metadata")}
+    with (sqlite3.connect(packed_db) if direct is None else nullcontext(None)) as packed, (sqlite3.connect(serving_db) if direct is None else nullcontext(None)) as source:
+        if direct is None:
+            packed.row_factory = sqlite3.Row
+            source.row_factory = sqlite3.Row
+            assert packed.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert source.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            meta = {key: json.loads(value) for key, value in packed.execute("SELECT key,value FROM metadata")}
+        else:
+            projection.validate()
+            meta=projection.metadata
         if meta.get("application") != "FoodRadar" or meta.get("schema_version") != 2:
             raise ValueError("Refusing non-V2 or non-FoodRadar packed database")
         latest_batch = str(meta.get("latest_batch") or "")
         if len(latest_batch) != 14 or not latest_batch.isdigit():
             raise ValueError("Missing verified 14-digit source batch")
-        actual_batch = source.execute("SELECT value FROM metadata WHERE key='latest_batch'").fetchone()
+        actual_batch = ((direct.metadata().get("latest_batch"),) if direct is not None else
+                        source.execute("SELECT value FROM metadata WHERE key='latest_batch'").fetchone())
         if not actual_batch or actual_batch[0] != latest_batch:
             raise ValueError("Serving and packed database batches differ")
         batch_time = meta.get("latest_processed_at") or ""
@@ -99,16 +109,17 @@ def build(packed_db, serving_db, output):
         except ValueError as exc:
             raise ValueError("Invalid verified latest_processed_at") from exc
 
-        store_rows = [dict(s) for s in packed.execute("SELECT * FROM store_directory ORDER BY store_uuid")]
+        store_rows = projection.store_rows() if direct is not None else [dict(s) for s in packed.execute("SELECT * FROM store_directory ORDER BY store_uuid")]
         count_by_store = Counter()
         minis = []
         cards = []
         postings = defaultdict(lambda: defaultdict(list))
         history_keys = set()
-        for row in packed.execute("""SELECT store_uuid,product_uuid,card,search_text,city,
+        card_rows=(projection.rows() if direct is not None else packed.execute("""SELECT store_uuid,product_uuid,card,search_text,city,
                  category,discount_pct,savings,unit_price,rating,new_item,promo,
                  price_drop,platform_promo,latitude,longitude
-                 FROM web_products ORDER BY store_uuid,product_uuid"""):
+                 FROM web_products ORDER BY store_uuid,product_uuid"""))
+        for row in card_rows:
             card = json.loads(row["card"])
             sid, pid = str(row["store_uuid"]), str(row["product_uuid"])
             if card.get("store_uuid") != sid or card.get("product_uuid") != pid:
@@ -150,13 +161,19 @@ def build(packed_db, serving_db, output):
         # Canonical native quotes preserve the exact payable-price series.
         # The old generic events are redundant for all browser price graphs.
         history = defaultdict(dict)
-        has_quotes = source.execute("""SELECT 1 FROM sqlite_master
+        has_quotes = direct is not None or source.execute("""SELECT 1 FROM sqlite_master
              WHERE type IN ('table','view') AND name='product_price_observations'""").fetchone()
         if has_quotes:
             import sys
             sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
-            from canonical_history import quote_points
-            for sid, pid, quote in quote_points(source):
+            from canonical_history import quote_points,points_from_rows
+            if direct is not None:
+                native_rows=((q[1],q[2],q[3],q[4],q[5],q[6],q[7],q[8],q[10])
+                             for quotes in direct.quote_shops() for q in quotes)
+                history_points=points_from_rows(native_rows)
+            else:
+                history_points=quote_points(source)
+            for sid, pid, quote in history_points:
                 if (sid,pid) not in history_keys:
                     continue
                 at,unit,raw,promo,qty=quote

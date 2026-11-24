@@ -9,11 +9,14 @@ PROMOTIONS = {"NONE": "無", "DIRECT_DISCOUNT": "直接折價", "SAME_SKU_BXGY":
 
 def quote_points(conn):
     """Stream all verified observations ordered by stable SKU and time."""
-    for row in conn.execute("""SELECT store_uuid,product_uuid,observed_at,
+    yield from points_from_rows(conn.execute("""SELECT store_uuid,product_uuid,observed_at,
             menu_price_cents,promotion_type,buy_quantity,free_quantity,
             received_quantity,payable_total_cents
             FROM product_price_observations
-            ORDER BY store_uuid,product_uuid,observed_at,batch_id"""):
+            ORDER BY store_uuid,product_uuid,observed_at,batch_id"""))
+
+def points_from_rows(rows):
+    for row in rows:
         sid,pid,at,menu,kind,buy,free,received,payable=row
         if type(menu) is not int or menu <= 0 or type(received) is not int or received <= 0:
             raise ValueError("Invalid verified native quote")
