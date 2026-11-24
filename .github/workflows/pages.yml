@@ -307,3 +307,142 @@ jobs:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           BROWSER_RESULT: ${{ needs.acceptance.result }}
         run: python scripts/action_summary.py pages
+
+  cleanup-artifacts:
+    name: 清理已無用途的歷史資料包
+    needs: [ingest-gate, deploy, acceptance, report]
+    if: ${{ success() && needs.ingest-gate.outputs.published == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: 保留本次正式版本並清除已被取代的 Artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          python - <<'PY'
+          import json, os, re
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError
+
+          base = 'https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY']
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                     'Accept': 'application/vnd.github+json',
+                     'X-GitHub-Api-Version': '2022-11-28'}
+          def api(path, method='GET'):
+              with urlopen(Request(base + path, headers=headers, method=method), timeout=30) as response:
+                  body = response.read()
+                  return json.loads(body) if body else None
+
+          def paginated(path, key):
+              page = 1
+              while True:
+                  sep = '&' if '?' in path else '?'
+                  values = api(f'{path}{sep}per_page=100&page={page}')[key]
+                  yield from values
+                  if len(values) < 100:
+                      break
+                  page += 1
+
+          def workflow(run):
+              return run.get('path', '').split('@')[0]
+
+          source_id = int(os.environ['SOURCE_RUN_ID'])
+          pages_id = int(os.environ['GITHUB_RUN_ID'])
+          source = api(f'/actions/runs/{source_id}')
+          pages = api(f'/actions/runs/{pages_id}')
+          assert workflow(source) == '.github/workflows/crawl.yml'
+          assert workflow(pages) == '.github/workflows/pages.yml'
+          assert source['status'] == 'completed' and source['conclusion'] == 'success'
+          assert source['head_branch'] == pages['head_branch'] == 'main'
+          assert source['head_sha'] == pages['head_sha']
+
+          # 確認同一次資料來源與部署包仍存在；缺少任何一項則不刪除。
+          artifacts = list(paginated('/actions/artifacts', 'artifacts'))
+          def owner(a):
+              return (a.get('workflow_run') or {}).get('id')
+          def exists(run_id, name):
+              return any(owner(a) == run_id and a['name'] == name and not a['expired']
+                         and a['size_in_bytes'] > 0 for a in artifacts)
+          assert exists(source_id, 'foodradar-static-source'), '本次資料來源包不存在'
+          assert exists(pages_id, 'github-pages-' + os.environ['GITHUB_RUN_ATTEMPT']), '本次部署包不存在'
+
+          runs = {r['id']: r for r in paginated('/actions/runs', 'workflow_runs')}
+          runs[source_id] = source
+          runs[pages_id] = pages
+          # 有其他部署正在執行時，避免移除任何可能被該部署讀取的來源。
+          other_deploy = any(workflow(r) == '.github/workflows/pages.yml'
+                             and r['id'] != pages_id and r['status'] != 'completed'
+                             for r in runs.values())
+
+          merged = {}
+          def raw_saved(run_id):
+              if run_id not in merged:
+                  jobs = paginated(f'/actions/runs/{run_id}/jobs', 'jobs')
+                  merged[run_id] = any(
+                      step.get('name') == '交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw'
+                      and step.get('conclusion') == 'success'
+                      for job in jobs for step in (job.get('steps') or []))
+              return merged[run_id]
+
+          crawl_reports = {'foodradar-data-validation', 'foodradar-run-metrics'}
+          page_reports = {'foodradar-deploy-metrics', 'foodradar-pages-browser-diagnostics'}
+          targets = []
+          for a in artifacts:
+              if a['expired']:
+                  continue
+              rid, name = owner(a), a['name']
+              r = runs.get(rid)
+              if not r or r.get('head_branch') != 'main' or r['status'] != 'completed':
+                  continue
+              if workflow(r) == '.github/workflows/crawl.yml':
+                  if r['run_number'] > source['run_number']:
+                      continue
+                  raw = name == 'foodradar-shared-feed' or re.fullmatch(r'foodradar-raw-shard-\d+', name)
+                  if raw and raw_saved(rid):
+                      targets.append(a)
+                  elif (rid != source_id and r['run_number'] < source['run_number']
+                        and not other_deploy and (name == 'foodradar-static-source' or name in crawl_reports)):
+                      targets.append(a)
+              elif (workflow(r) == '.github/workflows/pages.yml'
+                    and r['run_number'] < pages['run_number'] and not other_deploy):
+                  if re.fullmatch(r'github-pages(?:-\d+)?', name) or name in page_reports:
+                      targets.append(a)
+
+          deleted = []
+          for a in targets:
+              rid = owner(a)
+              # 再確認沒有正在重跑的任務；新部署出現時停止清理舊來源。
+              current = api(f'/actions/runs/{rid}')
+              if current['status'] != 'completed' or current['run_attempt'] != runs[rid]['run_attempt']:
+                  continue
+              if api(f'/actions/runs/{pages_id}')['status'] != 'in_progress':
+                  break
+              try:
+                  api(f"/actions/artifacts/{a['id']}", 'DELETE')
+              except HTTPError as error:
+                  if error.code != 404:
+                      raise
+                  continue
+              deleted.append(a)
+              print('已清除', a['id'], a['name'], a['size_in_bytes'], flush=True)
+
+          remaining = list(paginated('/actions/artifacts', 'artifacts'))
+          assert not ({a['id'] for a in deleted} & {a['id'] for a in remaining}), '清理後驗證失敗'
+          assert any(owner(a) == source_id and a['name'] == 'foodradar-static-source' and not a['expired']
+                     for a in remaining), '最新來源包必須保留'
+          assert any(owner(a) == pages_id and a['name'] == 'github-pages-' + os.environ['GITHUB_RUN_ATTEMPT']
+                     and not a['expired'] for a in remaining), '最新部署包必須保留'
+          total = sum(a['size_in_bytes'] for a in deleted)
+          live = [a for a in remaining if not a['expired']]
+          result = {'deleted_count': len(deleted), 'deleted_bytes': total,
+                    'remaining_count': len(live), 'remaining_bytes': sum(a['size_in_bytes'] for a in live)}
+          print('FOODRADAR_ARTIFACT_CLEANUP=' + json.dumps(result), flush=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write('## 自動清理歷史 Artifact\n\n')
+              f.write(f"已刪除 {len(deleted)} 個檔案，釋放 {total/1048576:.2f} MB。\n")
+              f.write(f"剩餘 {len(live)} 個檔案，共 {result['remaining_bytes']/1048576:.2f} MB。\n")
+          PY
