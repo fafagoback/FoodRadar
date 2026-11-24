@@ -51,7 +51,8 @@ permissions:
   contents: read
 concurrency:
   group: foodradar-crawl-pipeline-v2
-  cancel-in-progress: true
+  # A checkpoint-only republish must preserve the currently running crawl.
+  cancel-in-progress: ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION')) }}
 jobs:
   prepare_run:
     name: 停止同類舊任務並清理臨時執行紀錄
