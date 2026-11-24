@@ -7,6 +7,10 @@ the archived bytes back from Hugging Face.
 from __future__ import annotations
 
 import hashlib
+import gzip
+import shutil
+import tempfile
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -26,6 +30,23 @@ from catalog_complete import (
 )
 
 TW = timezone(timedelta(hours=8))
+
+
+
+@contextmanager
+def open_seekable_raw_archive(path):
+    """Inflate gzip once into a disk-backed seekable TAR.
+
+    Replay validates every response and later reads the bodies again in store
+    order. Seeking backwards on a gzip stream repeatedly re-inflates its
+    prefix. Use a temporary file instead; original archive bytes are untouched.
+    """
+    with tempfile.TemporaryFile(mode="w+b") as expanded:
+        with gzip.open(path, "rb") as compressed:
+            shutil.copyfileobj(compressed, expanded, length=1024 * 1024)
+        expanded.seek(0)
+        with tarfile.open(fileobj=expanded, mode="r:") as archive:
+            yield archive
 
 
 def capture_response(directory: Path, filename: str, response) -> str:
@@ -218,7 +239,7 @@ def archive_and_upload(root: Path, config: dict, batch: str,
     ))
     if hashlib.sha256(downloaded.read_bytes()).hexdigest() != record["archive_sha256"]:
         raise ValueError("Uploaded HF Raw archive differs from local capture")
-    with tarfile.open(downloaded, "r:gz") as archive:
+    with open_seekable_raw_archive(downloaded) as archive:
         members = {m.name: m for m in archive.getmembers() if m.isfile()}
         if set(members) != set(record["responses"]):
             raise ValueError("Uploaded HF Raw body member set mismatch")

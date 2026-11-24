@@ -3,7 +3,7 @@ run-name: 'FoodRadar｜20MB 資料庫容量實測｜#${{ github.run_number }}'
 on:
   push:
     branches: [diagnostic/db-budget-20mb]
-    paths: ['.github/workflows/db-budget-probe.yml', 'scripts/db_budget_probe.py', 'scripts/db_compact_candidate.py']
+    paths: ['.github/workflows/db-budget-probe.yml', 'scripts/db_budget_probe.py', 'scripts/db_compact_candidate.py', 'src/**', 'tests/**', 'scripts/audit_canonical_history.py']
 permissions:
   contents: read
   actions: read
@@ -26,12 +26,13 @@ jobs:
           fail-on-cache-miss: true
       - name: 檢查容量並實測正規化價格紀錄
         run: |
-          python -m pip install -q msgpack zstandard
-          python scripts/db_compact_candidate.py data/state-checkpoint/serving.db
+          python -m pip install -q -r requirements.txt
+          python -m unittest discover -s tests -p test_compact_raw_replay.py -v
+          python scripts/audit_canonical_history.py data/state-checkpoint/serving.db
       - name: 保存容量報告
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: db-budget-report
-          path: db-budget-report.json
+          path: canonical-history-audit.json
           retention-days: 1
