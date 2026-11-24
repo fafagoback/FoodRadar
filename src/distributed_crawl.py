@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,44 +49,59 @@ def weighted_owners(store_ids, count, historical_weights):
         return {sid: shard_for_uuid(sid, count) for sid in ids}
     loads = [0] * count
     owners = {}
-    for sid in sorted(ids, key=lambda x: (-historical_weights.get(x, 1), x)):
+    for sid in sorted(ids, key=lambda x: (-historical_weights.get(x, 400), x)):
         owner = min(range(count), key=lambda index: (loads[index], index))
         owners[sid] = owner
-        loads[owner] += historical_weights.get(sid, 1)
+        loads[owner] += historical_weights.get(sid, 400)
     return owners
 
 
+def workload_weight(store):
+    """Milliseconds of estimated work, including independent promotion recheck."""
+    measured = store.get("crawl_elapsed_ms")
+    if type(measured) is int and measured > 0:
+        return max(100, measured)
+    pages = len(store.get("catalog_responses") or [])
+    sections = int(store.get("catalog_section_count") or 0)
+    recheck = store.get("promo_recheck") or {}
+    second = int(recheck.get("second_catalog_pages") or 0)
+    if recheck.get("status") and not second:
+        second = pages
+    return max(400, 400 * (1 + pages + second) + 100 * sections)
+
+
 def latest_raw_workload_weights(config):
-    """Read ONLY last batch's small manifest, not Raw archives or live stores."""
+    """Prefer newest complete OR partial observation; never download Raw bodies."""
     if not os.environ.get("HF_TOKEN"):
         return {}
-    try:
-        from huggingface_hub import hf_hub_download
-        latest = Path(hf_hub_download(
-            config["hf_repo_id"], config["hf_folder"].strip("/") + "/latest.json",
-            repo_type="dataset", token=os.environ["HF_TOKEN"]))
-        manifest = json.loads(latest.read_text(encoding="utf-8"))
-        if manifest.get("format") != "foodradar-immutable-http-body-v1":
-            raise ValueError("unknown Raw manifest version")
-        weights = {}
-        for store in manifest.get("stores", []):
-            if store.get("success") is not True:
+    from huggingface_hub import hf_hub_download
+    candidates = []
+    for pointer in ("latest.json", "latest-partial.json"):
+        try:
+            latest = Path(hf_hub_download(
+                config["hf_repo_id"], config["hf_folder"].strip("/") + "/" + pointer,
+                repo_type="dataset", token=os.environ["HF_TOKEN"]))
+            manifest = json.loads(latest.read_text(encoding="utf-8"))
+            if manifest.get("format") == "foodradar-immutable-http-body-v1":
+                candidates.append(manifest)
+        except Exception as exc:
+            print("FOODRADAR_LOAD_POINTER_UNAVAILABLE=" + json.dumps({
+                "pointer": pointer, "error_type": type(exc).__name__}), flush=True)
+    weights = {}
+    for manifest in sorted(candidates, key=lambda m: str(m.get("batch_id") or ""), reverse=True):
+        for store in manifest.get("stores") or []:
+            try:
+                sid = canonical_store_uuid(store["store_uuid"], store["store_url"])
+                if sid in weights:
+                    continue
+                if store.get("success") is True or store.get("crawl_elapsed_ms"):
+                    weights[sid] = workload_weight(store)
+            except (KeyError, ValueError, TypeError):
                 continue
-            sid = canonical_store_uuid(store["store_uuid"], store["store_url"])
-            pages = store.get("catalog_responses") or []
-            sections = int(store.get("catalog_section_count") or 0)
-            # Native catalog pages drive API requests and response volume.
-            weights[sid] = max(1, 1 + len(pages) * 4 + sections // 2)
-        print("FOODRADAR_PREVIOUS_LOAD_WEIGHTS=" + json.dumps({
-            "stores": len(weights), "source_batch": manifest.get("batch_id"),
-        }), flush=True)
-        return weights
-    except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
-        print("FOODRADAR_LOAD_WEIGHTS_FALLBACK=" + json.dumps({
-            "reason": str(exc)[:200], "method": "stable_sha256",
-        }), flush=True)
-        return {}
-
+    print("FOODRADAR_PREVIOUS_LOAD_WEIGHTS=" + json.dumps({
+        "stores": len(weights), "source_batches": sorted(
+            str(m.get("batch_id") or "") for m in candidates)}), flush=True)
+    return weights
 
 
 def latest_raw_promotion_baseline(config):
@@ -214,9 +230,9 @@ def save_shared_discovery(config: dict, root: Path = ROOT):
     ownership = weighted_owners(stores, 15, weights)
     loads = [0] * 15
     for sid, owner in ownership.items():
-        loads[owner] += weights.get(sid, 1)
+        loads[owner] += weights.get(sid, 400)
     print("FOODRADAR_WEIGHTED_SHARDS=" + json.dumps({
-        "method": "historical_catalog_lpt" if weights else "sha256_fallback",
+        "method": "recent_capture_cost_lpt" if weights else "sha256_fallback",
         "estimated_loads": loads, "stores": len(stores),
     }), flush=True)
     manifest = {
@@ -321,6 +337,8 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
     captured = []
     for completed, store_uuid in enumerate(assigned, 1):
         item = discovered[store_uuid]
+        started = time.monotonic()
+        before_requests = global_limiter.snapshot()["requests"]
         try:
             result = fetch_store_raw(item, raw)
         except Exception as exc:
@@ -347,6 +365,8 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
                 print("FOODRADAR_PROMO_DIAGNOSTIC_UNAVAILABLE=" + json.dumps({
                     "store_uuid": store_uuid, "reason": result["promotion_stats_error"]
                 }), flush=True)
+        result["crawl_elapsed_ms"] = max(1, round((time.monotonic() - started) * 1000))
+        result["crawl_api_requests"] = global_limiter.snapshot()["requests"] - before_requests
         captured.append(result)
         if completed % 10 == 0 or completed == len(assigned):
             print("FOODRADAR_SHARD_PROGRESS=" + json.dumps({

@@ -174,19 +174,19 @@ class AdaptiveRateLimiter:
 
     def wait(self):
         """Serialize shared API starts; sleep only until the next safe slot."""
-        with self.lock:
-            now = time.monotonic()
-            earliest = max(
-                self.pause_until,
-                self.last_request_time + random.uniform(
-                    self.current_interval,
-                    self.current_interval + (self.max_interval - self.min_interval)
-                ),
-            )
-            if earliest > now:
-                time.sleep(earliest - now)
-            self.last_request_time = time.monotonic()
-            self.total_requests += 1
+        jitter = random.uniform(0, self.max_interval - self.min_interval)
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                earliest = max(self.pause_until,
+                               self.last_request_time + self.current_interval + jitter)
+                if earliest <= now:
+                    self.last_request_time = now
+                    self.total_requests += 1
+                    return
+                delay = earliest - now
+            # Let a concurrent 429 publish its cooldown while another thread waits.
+            time.sleep(delay)
 
     def record_success(self):
         """Restore former fast pace only after stable successful responses."""

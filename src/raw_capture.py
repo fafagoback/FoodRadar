@@ -126,8 +126,16 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
                         # getStoreV1 is only a preview for large grocery stores.
                         # Save every native catalog page before accepting a complete capture.
                         catalog_started = True
+                        options = {}
+                        if os.getenv("FOODRADAR_PARALLEL_SECTIONS") == "1":
+                            def section_session():
+                                independent = requests.Session()
+                                independent.cookies.update(session.cookies)
+                                return independent
+                            options = {"session_factory": section_session, "section_workers": 3}
                         all_catalog = capture_catalog(
-                            session, uuid, data, root, headers, capture_response, store_attempt=attempt)
+                            session, uuid, data, root, headers, capture_response,
+                            store_attempt=attempt, **options)
                         result.update(success=True, response_path=relative,
                                       captured_at=datetime.now(TW).isoformat(), **all_catalog)
                         print("CATALOG_CAPTURE=" + json.dumps({

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import time
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import requests
 from menu_core import global_limiter
@@ -164,7 +166,8 @@ def _catalog_skus(raw_bodies):
     return skus
 
 
-def capture_catalog(session, store_uuid, base_data, root, headers, capture_response, store_attempt=1):
+def capture_catalog(session, store_uuid, base_data, root, headers, capture_response, store_attempt=1,
+                    session_factory=None, section_workers=1):
     """Fetch every native category; split deep failing categories by real subsections.
 
     Uber's getCatalogPresentationV2 can return HTTP 200 + status=failure /
@@ -187,20 +190,32 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     # cache across stores, sessions, batches or promotion rechecks.
     partition_cache = {}
     reused_partitions = 0
+    cache_lock = threading.Lock()
+    local_session = threading.local()
 
     def collect(section_index, section_uuid, subsection_uuid=None, stop_before_offset=None):
         nonlocal reused_partitions
         key = (("child", subsection_uuid) if subsection_uuid is not None
                else ("parent", section_uuid), stop_before_offset)
-        if key in partition_cache:
-            reused_partitions += 1
-            return partition_cache[key]
-        result = collect_uncached(section_index, section_uuid, subsection_uuid,
-                                  stop_before_offset)
-        partition_cache[key] = result
-        return result
+        with cache_lock:
+            future = partition_cache.get(key)
+            owner = future is None
+            if owner:
+                future = Future()
+                partition_cache[key] = future
+            else:
+                reused_partitions += 1
+        if owner:
+            try:
+                future.set_result(collect_uncached(section_index, section_uuid,
+                                                   subsection_uuid, stop_before_offset))
+            except BaseException as exc:
+                future.set_exception(exc)
+                raise
+        return future.result()
 
     def collect_uncached(section_index, section_uuid, subsection_uuid=None, stop_before_offset=None):
+        active_session = getattr(local_session, 'value', session)
         records, bodies, seen_offsets = [], [], set()
         offset, page, use_collection_type = 0, 0, False
         while page < MAX_CATALOG_PAGES:
@@ -228,7 +243,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             for attempt in range(1, 7):
                 try:
                     global_limiter.wait()
-                    resp = session.post(CATALOG_API, json=payload,
+                    resp = active_session.post(CATALOG_API, json=payload,
                                         headers=headers, timeout=30)
                     relative = (
                         f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-"
@@ -268,7 +283,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                         filters["sectionTypes"] = ["COLLECTION"]
                         try:
                             global_limiter.wait()
-                            alt = session.post(CATALOG_API, json=payload,
+                            alt = active_session.post(CATALOG_API, json=payload,
                                                headers=headers, timeout=30)
                             alt_relative = (
                                 f"catalog/{store_uuid}/store-attempt-{store_attempt:02d}-"
@@ -393,9 +408,26 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
 
     responses, section_reports = [], []
     response_paths, unique_skus = set(), set()
-    for section_index, section_uuid in enumerate(section_uuids):
-        records, bodies, mode, children_count = verified_partition(
-            section_index, section_uuid)
+    def capture_section(pair):
+        index, section = pair
+        if session_factory is None or section_workers <= 1:
+            return verified_partition(index, section)
+        with session_factory() as independent:
+            local_session.value = independent
+            try:
+                return verified_partition(index, section)
+            finally:
+                del local_session.value
+
+    pairs = list(enumerate(section_uuids))
+    # Different native sections can overlap network wait, never bypass shared
+    # request pacing, and each pagination chain remains strictly sequential.
+    if session_factory is not None and section_workers > 1 and len(pairs) >= 8:
+        with ThreadPoolExecutor(max_workers=min(3, section_workers)) as executor:
+            partitions = list(executor.map(capture_section, pairs))
+    else:
+        partitions = [verified_partition(i, s) for i, s in pairs]
+    for (section_index, section_uuid), (records, bodies, mode, children_count) in zip(pairs, partitions):
         for record in records:
             if record["path"] not in response_paths:
                 responses.append(record)

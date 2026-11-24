@@ -51,7 +51,7 @@ jobs:
   prepare_run:
     name: 停止同類舊任務並清理臨時執行紀錄
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 20
     permissions:
       contents: read
       actions: write
@@ -83,6 +83,25 @@ jobs:
             echo "已停止舊版 #$number" >> "$GITHUB_STEP_SUMMARY"
           done <<< "$runs"
 
+      - name: 一次性清除本次以前所有已結束的 Workflow 紀錄
+        if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GH_REPO/actions"
+          # Snapshot IDs before deleting, so pagination cannot skip shifted entries.
+          gh api --paginate "$api/runs?status=completed&per_page=100" --jq '.workflow_runs[].id' > "$RUNNER_TEMP/fr-old-runs.txt"
+          count=0
+          while IFS= read -r id; do
+            [[ -n "$id" && "$id" != "$GITHUB_RUN_ID" ]] || continue
+            gh api -X DELETE "$api/runs/$id"
+            count=$((count+1))
+          done < "$RUNNER_TEMP/fr-old-runs.txt"
+          echo "已刪除 $count 筆歷史執行紀錄；保留仍在執行的獨立研究及本次爬取。" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: 清除已結束的臨時診斷及維護執行
         if: ${{ github.event_name == 'push' }}
         env:
@@ -104,7 +123,7 @@ jobs:
   discover_once:
     name: 統一掃描單一座標，產出 15 台共用店家清單
     needs: prepare_run
-    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
+    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -115,7 +134,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: 安裝程式所需套件
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-crawl.txt
       - name: 單次 Feed 掃描與儲存原始 HTTP
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -131,7 +150,7 @@ jobs:
   crawl_shard:
     name: "分工爬取工作機 ${{ matrix.shard }}／14"
     needs: discover_once
-    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
+    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -147,13 +166,15 @@ jobs:
         with:
           python-version: '3.11'
       - name: 安裝程式所需套件
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-crawl.txt
       - name: 下載同一份店家清單
         uses: actions/download-artifact@v4
         with:
           name: foodradar-shared-feed
           path: data/discovery
       - name: 依 UUID 分工抓取該台負責店家
+        env:
+          FOODRADAR_PARALLEL_SECTIONS: '1'
         run: python src/distributed_crawl.py shard --index ${{ matrix.shard }} --count 15 --discovery-file data/discovery/discovery.json
       - name: 上傳分工原始資料給第 16 台（不寫 HF / DB）
         if: ${{ !cancelled() }}
@@ -206,7 +227,7 @@ jobs:
           fi
 
       - name: 下載 15 台工作機的原始檔案
-        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
+        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
         uses: actions/download-artifact@v4
         with:
           pattern: foodradar-raw-shard-*
@@ -214,7 +235,7 @@ jobs:
           merge-multiple: false
 
       - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
-        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl')) }}"
+        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124'))) }}"
         env:
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
         run: python src/distributed_crawl.py merge --count 15 --input-dir data/parts --upload

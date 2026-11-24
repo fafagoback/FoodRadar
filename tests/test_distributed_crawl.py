@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from distributed_crawl import shard_for_uuid, merge_shards, weighted_owners
+from distributed_crawl import shard_for_uuid, merge_shards, weighted_owners, workload_weight
 
 
 class DistributionTests(unittest.TestCase):
@@ -34,6 +34,12 @@ class DistributionTests(unittest.TestCase):
         self.assertNotEqual(owners[stores[0]],owners[stores[1]])
         loads=[sum(weights[s] for s in stores if owners[s]==i) for i in range(15)]
         self.assertLess(max(loads),240)
+
+    def test_workload_includes_promo_second_pass(self):
+        base = {"catalog_responses": [1] * 100, "catalog_section_count": 10}
+        self.assertGreater(workload_weight({**base, "promo_recheck": {
+            "status": "MATCHED", "second_catalog_pages": 100}}), workload_weight(base))
+        self.assertEqual(workload_weight({**base, "crawl_elapsed_ms": 12345}), 12345)
 
     def test_fallback_preserves_original_sha_assignment(self):
         stores=[f"{n:08x}-0000-4000-8000-000000000000" for n in range(15)]
