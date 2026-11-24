@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import requests
-from menu_core import global_limiter
+from menu_core import global_limiter, response_retry_after
 
 CATALOG_API = "https://www.ubereats.com/api/getCatalogPresentationV2"
 MAX_CATALOG_PAGES = 250
@@ -89,7 +90,7 @@ def _check_rate_limit(response, body, attempt):
         # can keep every worker throttled; pause all threads instead.
         seconds = min(120, 15 * (2 ** (attempt - 1)))
         kind = "HTTP 429" if response.status_code == 429 else "application 429"
-        global_limiter.trigger_backoff(seconds, f"Catalog {kind}")
+        global_limiter.trigger_backoff(seconds, f"Catalog {kind}", retry_after=response_retry_after(response))
         raise _UpstreamRateLimit(f"Catalog {kind} (retry {attempt})")
 
 
@@ -240,7 +241,8 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                        "pagingInfo": {"enabled": True, "offset": offset},
                        "source": "NV_L2_CATALOG"}
             body, data, n, relative = None, None, 0, None
-            for attempt in range(1, 7):
+            rate_retries = max(6, min(12, int(os.getenv("FOODRADAR_CATALOG_429_RETRIES", "6"))))
+            for attempt in range(1, rate_retries + 1):
                 try:
                     global_limiter.wait()
                     resp = active_session.post(CATALOG_API, json=payload,
@@ -323,7 +325,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                 except (requests.RequestException, ValueError) as exc:
                     # Keep normal transient errors at three tries, but give
                     # rate-limited requests enough global cooldown to recover.
-                    retries = 6 if isinstance(exc, _UpstreamRateLimit) else 3
+                    retries = rate_retries if isinstance(exc, _UpstreamRateLimit) else 3
                     if attempt >= retries:
                         raise RuntimeError(
                             f"Catalog {section_uuid}/{subsection_uuid}, "

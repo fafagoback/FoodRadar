@@ -26,6 +26,7 @@ import uuid
 import threading
 import urllib.parse
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from snapshot_validation import validate_document
@@ -147,6 +148,23 @@ def parse_review_count(raw_str) -> int:
         return None
 
 
+def response_retry_after(response):
+    """Honor a server's Retry-After seconds or HTTP-date, if present."""
+    value = getattr(response, "headers", {}).get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(int(value)))
+    except (ValueError, TypeError, OverflowError):
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            return max(0.0, (date - datetime.now(timezone.utc)).total_seconds())
+        except (ValueError, TypeError, OverflowError):
+            return None
+
+
 class AdaptiveRateLimiter:
     """Global adaptive Uber API pace: fast when healthy, cautious after 429.
 
@@ -202,7 +220,7 @@ class AdaptiveRateLimiter:
                 print("API_RATE_RECOVERY=" + json.dumps(
                     {"interval_seconds": self.current_interval}), flush=True)
 
-    def trigger_backoff(self, backoff_seconds: float, reason: str = "HTTP 429"):
+    def trigger_backoff(self, backoff_seconds: float, reason: str = "HTTP 429", retry_after=None):
         """Global cooldown on HTTP 429 *or* HTTP-200 application code 429.
 
         Increase pace interval only when the API confirms throttling, rather
@@ -216,6 +234,8 @@ class AdaptiveRateLimiter:
             self.current_interval = min(
                 2.0, max(0.65, round(self.current_interval * 1.6, 3)))
             seconds = max(0.0, min(float(backoff_seconds), 120.0))
+            if retry_after is not None:
+                seconds = max(seconds, float(retry_after))
             self.pause_until = max(self.pause_until, now + seconds)
             print(
                 "API_RATE_LIMIT=" + json.dumps({

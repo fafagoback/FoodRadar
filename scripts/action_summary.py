@@ -109,6 +109,10 @@ def main(kind):
     elif kind == "crawl":
         add("店家清單掃描", result(os.environ.get("DISCOVER_RESULT")))
         add("分工抓取", result(os.environ.get("SHARD_RESULT")))
+        if os.environ.get("RECOVERY_PLAN_RESULT") == "success":
+            add("需故障接手的批次", integer(os.environ.get("RECOVERY_COUNT")))
+            if os.environ.get("RECOVERY_COUNT") != "0":
+                add("故障接手結果", result(os.environ.get("RECOVERY_RESULT")))
         add("資料彙整與發布", result(os.environ.get("INGEST_RESULT")))
         m = read("action-reports/metrics/shard-reconciliation.json")
         if m:
@@ -123,7 +127,10 @@ def main(kind):
             add("實際請求次數", integer(m.get("sum_api_requests")))
             add("流量限制異常次數", integer(m.get("sum_429_events")))
             add("漏抓店家數", integer(m.get("owner_discovery_gap")))
-            add("分工工作機數", integer(m.get("runners")))
+            add("任務批次數", integer(m.get("runners")))
+            add("同時工作機上限", integer(m.get("max_parallel_runners", 15)))
+            add("有效執行緒學習樣本", integer(m.get("learning_samples")))
+            add("本次最佳執行緒平均", integer(m.get("learned_initial_threads")))
         else:
             messages.append("本次沒有完整分工抓取統計；重新發布或前段失敗時，不以歷史數量冒充本次抓取成果。")
         m = read("action-reports/metrics/current.json")

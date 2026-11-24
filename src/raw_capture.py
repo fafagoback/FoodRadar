@@ -22,7 +22,7 @@ from pathlib import Path
 
 import requests
 
-from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter
+from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter, response_retry_after
 from promo_api_recheck import QUARANTINE_STATUSES
 from catalog_complete import (
     capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure,
@@ -58,7 +58,7 @@ def capture_response(directory: Path, filename: str, response) -> str:
     return path.as_posix()
 
 
-def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
+def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_factory=None) -> dict:
     """Capture immutable HTTP bodies; retry store metadata only before paging.
 
     capture_catalog owns the per-page retry budget, including 429 cooldown.
@@ -66,10 +66,11 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
     exhausted page or structural partition error. Keep the failed capture
     for audit and let the existing release gate decide whether to publish.
     """
+    max_retries = max(max_retries, min(12, int(os.getenv("FOODRADAR_STORE_RETRIES", str(max_retries)))))
     uuid = normalize_store_uuid(store["store_uuid"], store["store_url"])
     if not re.fullmatch(r"[0-9a-f-]{36}", uuid):
         return {"store_uuid": uuid, "error": "Invalid store UUID"}
-    session = requests.Session()
+    session = (session_factory or requests.Session)()
     if not attach_delivery_location(session, store):
         session.close()
         return {"store_uuid": uuid, "error": "Missing feed delivery coordinate"}
@@ -95,7 +96,8 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
                 capture_response(root, relative, response)
                 if response.status_code == 429:
                     global_limiter.trigger_backoff(
-                        min(120, 15 * (2 ** (attempt - 1))), "Store HTTP 429")
+                        min(120, 15 * (2 ** (attempt - 1))), "Store HTTP 429",
+                        retry_after=response_retry_after(response))
                     result["error"] = "Store HTTP 429 (too many requests)"
                     continue
                 # Terminal inactive responses are complete captures too.
@@ -113,7 +115,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5) -> dict:
                     if payload.get("status") == "failure" and code == "429":
                         global_limiter.trigger_backoff(
                             min(120, 15 * (2 ** (attempt - 1))),
-                            "Store application 429")
+                            "Store application 429", retry_after=response_retry_after(response))
                         result["error"] = "Store application code 429 (too many requests)"
                         continue
                     if (payload.get("status") == "failure" and
