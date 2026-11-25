@@ -357,11 +357,14 @@ class CatalogBroker:
             journal=PageJournal(session,self.storage,
                 self._name("page",sid,"-"+key+"-"+group["plan_sha"][:16]),
                 recover=lease["attempt"]>1)
+            refresh_number=0
             def refresh():
+                nonlocal refresh_number
+                refresh_number+=1
                 global_limiter.wait()
                 response=session.post("https://www.ubereats.com/api/getStoreV1",
                     json={"storeUuid":sid,"sfNuggetCount":24},headers=plan["headers"],timeout=12)
-                capture_response(raw,f"section-refresh/{sid}-{key}-{response.status_code}.body",response)
+                capture_response(raw,f"section-refresh/{sid}-{key}-{refresh_number:02d}-{response.status_code}.body",response)
                 body=response.json()
                 data=body.get("data")
                 if response.status_code==429 or (body.get("status")=="failure" and isinstance(data,dict) and str(data.get("code"))=="429"):

@@ -129,14 +129,17 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_facto
                         # getStoreV1 is only a preview for large grocery stores.
                         # Save every native catalog page before accepting a complete capture.
                         catalog_started = True
+                        refresh_number = 0
                         def refresh_native_metadata():
+                            nonlocal refresh_number
+                            refresh_number += 1
                             global_limiter.wait()
                             renewed = session.post(
                                 "https://www.ubereats.com/api/getStoreV1",
                                 json={"storeUuid": uuid, "sfNuggetCount": 24},
                                 headers=headers, timeout=12,
                             )
-                            extra = f"stores/{uuid}-attempt-{attempt:02d}-metadata-refresh-status-{renewed.status_code}.body"
+                            extra = f"stores/{uuid}-attempt-{attempt:02d}-metadata-refresh-{refresh_number:02d}-status-{renewed.status_code}.body"
                             capture_response(root, extra, renewed)
                             if renewed.status_code == 429:
                                 global_limiter.trigger_backoff(30, "Store metadata refresh HTTP 429",

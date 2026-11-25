@@ -351,22 +351,34 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     # One additional native metadata read per store at most, shared by all
     # section threads. It cannot invent child IDs or replace the first body.
     metadata_lock = threading.Lock()
-    refreshed = None
-    refresh_attempted = False
+    refreshed = []
+    refresh_attempts = 0
 
     def extra_children(section_uuid):
-        nonlocal refreshed, refresh_attempted
+        nonlocal refresh_attempts
         if refresh_native_metadata is None:
             return []
         with metadata_lock:
-            if not refresh_attempted:
-                refresh_attempted = True
-                refreshed = refresh_native_metadata()
-                if (not isinstance(refreshed, dict)
-                        or set(_section_ids(refreshed)) != set(section_uuids)
-                        or (refreshed.get("catalogSectionPagingInfo") or {}).get("hasMore") is True):
-                    raise RuntimeError("Refreshed native category roster changed; refusing mixed capture")
-            return _subsections_for(refreshed, section_uuid) if refreshed else []
+            for native in refreshed:
+                children = _subsections_for(native, section_uuid)
+                if children:
+                    return children
+            # The upstream metadata can be incomplete or change temporarily.
+            # Retry only that metadata, never the already captured parent pages.
+            while refresh_attempts < 3:
+                refresh_attempts += 1
+                native = refresh_native_metadata()
+                if (not isinstance(native, dict)
+                        or set(_section_ids(native)) != set(section_uuids)
+                        or (native.get("catalogSectionPagingInfo") or {}).get("hasMore") is True):
+                    continue
+                refreshed.append(native)
+                children = _subsections_for(native, section_uuid)
+                if children:
+                    return children
+            if not refreshed:
+                raise RuntimeError("Refreshed native category roster changed; refusing mixed capture")
+            return []
 
     def verified_partition(section_index, parent_uuid, subsection_uuid=None, visited=None):
         """Get all native pages without ever requesting offset >= 1000.

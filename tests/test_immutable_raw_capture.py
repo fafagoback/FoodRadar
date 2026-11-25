@@ -128,11 +128,11 @@ class StoreRetryScopeTests(unittest.TestCase):
 
     def test_structural_partition_failure_never_restarts_store(self):
         result, calls, count, _ = self.run_capture(
-            [self.base(), self.page(True, 1020), self.base()], [0])
+            [self.base(), self.page(True, 1020)] + [self.base()]*3, [0])
         self.assertFalse(result["success"])
         self.assertIn("native subsection UUIDs unavailable", result["error"])
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(count, 3)
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(count, 5)
         self.assertNotIn("catalog_complete", result)
 
     def test_missing_child_ids_refresh_metadata_without_recrawling_parent(self):
@@ -149,6 +149,20 @@ class StoreRetryScopeTests(unittest.TestCase):
         self.assertEqual(count, 4)
         self.assertEqual(result["catalog_section_reports"][0]["mode"],
                          "native_children_before_deep_offset")
+
+    def test_changed_roster_retry_reuses_parent(self):
+        changed = self.response({"status": "success", "data": {
+            "title":"Test store","aisles":{"store":[{"catalogSectionUUID":"different"}]}
+        }})
+        renewed = self.response({"status": "success", "data": {
+            "title":"Test store","aisles":{"store":[{"catalogSectionUUID":"parent"}]},
+            "sections":[{"uuid":"parent","subsectionUuids":["child"]}]
+        }})
+        result,calls,count,_=self.run_capture(
+            [self.base(),self.page(True,1020),changed,renewed,self.page()],[0,0])
+        self.assertTrue(result["success"])
+        self.assertEqual(count,5)
+        self.assertEqual(len(calls),5)
 
     def test_metadata_refresh_forbidden_is_not_a_verified_partial(self):
         result, calls, count, _ = self.run_capture(
