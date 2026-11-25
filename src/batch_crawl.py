@@ -32,6 +32,11 @@ def assert_supported_catalog_groups(state):
         raise ValueError("Unsupported legacy page checkpoint queue")
 
 
+def should_split_catalog(sections_count, elapsed_ms):
+    """Only large stores benefit from paying cross-machine CAS per native section."""
+    return sections_count >= 8 and (elapsed_ms >= 60000 or sections_count >= 40)
+
+
 def batch_name(state, index, wave):
     return f"fr-worker-{state['epoch']}-{index}-w{wave:02d}"
 
@@ -141,7 +146,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
             estimate = shared.get("workload_weights", {}).get(sid, 400)
             if capture is not fetch_store_raw:
                 return None
-            if len(sections) < 16 and not (len(sections) >= 8 and estimate >= 20000):
+            if not should_split_catalog(len(sections), estimate):
                 return None
             queue.register_catalog(sid, lease["token"], sections)
             print("FOODRADAR_CATEGORY_SPLIT=" + json.dumps({

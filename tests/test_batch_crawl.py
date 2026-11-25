@@ -63,6 +63,15 @@ class BatchCrawlTests(unittest.TestCase):
         state["catalog_groups"] = {}
         self.assertTrue(prefer_new_store(state))
 
+    def test_cross_worker_split_only_for_high_cost_or_very_wide_catalog(self):
+        from batch_crawl import should_split_catalog
+        self.assertTrue(should_split_catalog(24, 208306))
+        self.assertTrue(should_split_catalog(8, 61000))
+        self.assertTrue(should_split_catalog(40, 400))
+        self.assertFalse(should_split_catalog(19, 18404))
+        self.assertFalse(should_split_catalog(33, 52994))
+        self.assertFalse(should_split_catalog(7, 200000))
+
     def test_category_batch_claim_fills_only_available_thread_slots(self):
         state = initial_state("r", "e", "sha", ["a"])
         q = GitQueue(ROOT, "r")
