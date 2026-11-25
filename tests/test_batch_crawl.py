@@ -33,6 +33,17 @@ class BatchCrawlTests(unittest.TestCase):
         self.assertEqual(picked[0][0], "z")
         validate_state(state)
 
+    def test_category_batch_claim_fills_only_available_thread_slots(self):
+        state = initial_state("r", "e", "sha", ["a"])
+        q = GitQueue(ROOT, "r")
+        with patch.object(q, "transact", side_effect=lambda edit: edit(state)[1]):
+            _, lease = q.claim("original", 0, 1)[0]
+            q.register_catalog("a", lease["token"], ["s0", "s1", "s2", "s3"])
+            batch = q.claim_catalog_batch("helper", 1, "a", 2)
+            self.assertEqual([row[1] for row in batch], ["0", "1"])
+            self.assertEqual(state["catalog_groups"]["a"]["pending"], ["2", "3"])
+            self.assertEqual({row[2]["worker"] for row in batch}, {1})
+
     def test_native_sections_fanout_finish_without_intermediate_artifacts(self):
         state = initial_state("r", "e", "sha", ["a"], {"a": 30000})
         q = GitQueue(ROOT, "r")
