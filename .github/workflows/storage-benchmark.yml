@@ -1,5 +1,5 @@
-name: FoodRadar｜第十三輪自動結構搜尋
-run-name: FoodRadar｜低初始化成本與頁面結構實測
+name: FoodRadar｜第十四輪原生欄式資料庫實驗
+run-name: FoodRadar｜DuckDB 原生資料模型與交易實測
 on:
   push:
     branches: [research/storage-20261124]
@@ -8,52 +8,41 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-  actions: write
 concurrency:
   group: foodradar-storage-benchmark
   cancel-in-progress: false
 jobs:
-  search:
+  benchmark:
     if: github.ref == 'refs/heads/research/storage-20261124'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: research/storage-20261124
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: 檢查研究截止時間
-        id: deadline
-        run: |
-          if [ "$(date -u +%s)" -lt "$(date -u -d '2026-11-25 00:00:00' +%s)" ]; then echo 'active=true' >> "$GITHUB_OUTPUT"; fi
-      - name: 安裝免費開源套件
-        if: steps.deadline.outputs.active == 'true'
-        run: pip install 'msgpack>=1,<2' 'zstandard>=0.23,<1'
-      - name: 還原固定正式資料版本
-        if: steps.deadline.outputs.active == 'true'
+      - name: 安裝開源套件
+        run: pip install 'msgpack>=1,<2' 'zstandard>=0.23,<1' 'duckdb>=1.4,<2' 'pyarrow>=18,<25' 'pandas>=2,<3'
+      - name: 唯讀還原固定正式資料
         uses: actions/cache/restore@v4
         with:
           path: data/state-checkpoint/
           key: foodradar-state-v1-45353673604-1
           fail-on-cache-miss: true
-      - name: 逐輪驗證並記錄不同候選方案
-        if: steps.deadline.outputs.active == 'true'
-        id: bench
+      - name: 原生欄式儲存及逐筆一致性、獨立記憶體、單店交易實測
         run: |
           set -o pipefail
-          mkdir -p docs/storage-research
-          python scripts/benchmark_storage_round13.py data/state-checkpoint | tee /tmp/fr13.log
-          grep -q '^FR13_RESULT=' /tmp/fr13.log
-      - name: 保存本輪研究紀錄
-        if: always() && steps.deadline.outputs.active == 'true'
+          python scripts/benchmark_storage_round14_duckdb.py data/state-checkpoint | tee /tmp/fr14.log
+          grep -q '^FR14_RESULT=' /tmp/fr14.log
+      - name: 保存本輪研究結果
+        if: always()
         run: |
           mkdir -p docs/storage-research
-          if test -f /tmp/fr13.log; then cp /tmp/fr13.log docs/storage-research/round13-${{ github.run_id }}.log; else echo '未取得測試日誌' > docs/storage-research/round13-${{ github.run_id }}.log; fi
-          tail -c 50000 docs/storage-research/round13-${{ github.run_id }}.log >> "$GITHUB_STEP_SUMMARY"
+          report=docs/storage-research/round14-${{ github.run_id }}.log
+          if test -f /tmp/fr14.log; then cp /tmp/fr14.log "$report"; else echo '無實測結果，請檢查 Actions 日誌' > "$report"; fi
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add docs/storage-research
-          git commit -m '保存第十三輪結構搜尋進度'
+          git add "$report"
+          git commit -m '保存第十四輪原生欄式實測紀錄'
           git push origin HEAD:research/storage-20261124
