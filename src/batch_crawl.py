@@ -48,6 +48,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
     transport = TransportPool()
     active, finished, uncommitted = {}, {}, {}
+    reserved = deque()
     section_finished, uncommitted_sections = {}, {}
     claim_future, sync_future, status_future = None, None, None
     next_claim_at, next_status_at, last_flush_at = 0.0, 0.0, 0.0
@@ -176,14 +177,15 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     claim_future = None
                     if not rows:
                         next_claim_at = now + 2.0
-                    for kind, sid, key, lease in rows:
-                        if len(active) >= ctrl.target:
-                            raise ValueError("Claimed more than free execution slots")
-                        active[pool.submit(one, kind, sid, key, lease)] = (kind, sid, key)
+                    reserved.extend(rows)
                 if sync_future is not None and sync_future.done():
                     amount, elapsed = sync_future.result()
                     local_commit_seconds += elapsed
                     sync_future = None
+                if snap["cooldown_remaining_seconds"] <= 0:
+                    while reserved and len(active) < ctrl.target:
+                        kind, sid, key, lease = reserved.popleft()
+                        active[pool.submit(one, kind, sid, key, lease)] = (kind, sid, key)
                 if status_future is not None and status_future.done():
                     state_now = status_future.result()
                     status_future = None
@@ -195,7 +197,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         and not g["pending"] and not g["leased"]
                         and len(g["local_done"]) + len(g["completed"]) == len(g["sections"])
                         for g in groups.values())
-                    if (not active and not uncommitted and not uncommitted_sections
+                    if (not active and not reserved and not uncommitted and not uncommitted_sections
                             and sync_future is None and claim_future is None
                             and not state_now["pending"] and not state_now["leased"]
                             and categories_done and
@@ -218,10 +220,10 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     sync_future = coordinator.submit(sync)
                 if (snap["cooldown_remaining_seconds"] <= 0
                         and claim_future is None and now >= next_claim_at):
-                    free_slots = max(0, ctrl.target - len(active))
-                    if free_slots and not uncommitted and not uncommitted_sections:
+                    free_slots = max(0, ctrl.target - len(active) - len(reserved))
+                    if free_slots and not reserved and not uncommitted and not uncommitted_sections:
                         claim_future = coordinator.submit(claim, free_slots)
-                if (not active and not uncommitted and not uncommitted_sections and claim_future is None
+                if (not active and not reserved and not uncommitted and not uncommitted_sections and claim_future is None
                         and sync_future is None and status_future is None
                         and now >= next_status_at):
                     status_future = coordinator.submit(queue.read)
