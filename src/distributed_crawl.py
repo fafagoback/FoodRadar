@@ -233,7 +233,8 @@ def save_shared_discovery(config: dict, root: Path = ROOT, dynamic=False):
     }
     previous_promotions = latest_raw_promotion_baseline(config)
     if dynamic:
-        ownership, batch_count, estimates = None, 15, {}
+        ownership, batch_count = None, 15
+        estimates = latest_raw_workload_weights(config)
         print("FOODRADAR_DYNAMIC_TASK_POOL=" + json.dumps({"workers": 15, "stores": len(stores)}), flush=True)
     else:
         weights = latest_raw_workload_weights(config)
