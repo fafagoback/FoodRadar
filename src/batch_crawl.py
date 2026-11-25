@@ -9,6 +9,9 @@ from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
+from catalog_complete import _section_ids, capture_catalog
+from menu_core import attach_delivery_location, response_retry_after
+from raw_capture import capture_response
 from crawl_queue import artifact_name
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip
@@ -45,6 +48,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
     transport = TransportPool()
     active, finished, uncommitted = {}, {}, {}
+    section_finished, uncommitted_sections = {}, {}
     claim_future, sync_future, status_future = None, None, None
     next_claim_at, next_status_at, last_flush_at = 0.0, 0.0, 0.0
     claim_seconds, idle_seconds, local_commit_seconds = 0.0, 0.0, 0.0
@@ -55,32 +59,105 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         rows = queue.claim(owner, index, count)
         return rows, time.monotonic() - t
 
-    def one(sid, lease):
-        folder = tasks / artifact_name(state, sid, lease)
+    def one(kind, sid, key, lease):
+        item = discovered[sid]
+        section = kind == "section"
+        folder = ((base / "sections" / (sid + "-" + key + "-" + lease["token"]))
+                  if section else tasks / artifact_name(state, sid, lease))
         raw = folder / "raw"
         raw.mkdir(parents=True)
-        item = discovered[sid]
         t = time.monotonic()
-        result = capture(item, raw, session_factory=transport.session)
-        if result.get("success") is True and not result.get("inactive"):
+
+        if section:
+            expected_uuid = lease["section_uuid"]
+            def only_section(store, root, relative, data, headers, attempt):
+                section_ids = _section_ids(data)
+                if expected_uuid not in section_ids:
+                    raise ValueError("Native catalog category identity changed")
+                section_index = section_ids.index(expected_uuid)
+                session = transport.session()
+                try:
+                    if not attach_delivery_location(session, item):
+                        raise ValueError("Missing delivery location for section worker")
+                    def refresh_native():
+                        global_limiter.wait()
+                        response = session.post(
+                            "https://www.ubereats.com/api/getStoreV1",
+                            json={"storeUuid": sid, "sfNuggetCount": 24},
+                            headers=headers, timeout=12)
+                        capture_response(root, "refresh/native-" + str(section_index)
+                                         + "-status-" + str(response.status_code) + ".body", response)
+                        if response.status_code == 429:
+                            global_limiter.trigger_backoff(30, "Section refresh HTTP 429",
+                                                           retry_after=response_retry_after(response))
+                        if response.status_code != 200:
+                            raise RuntimeError("Section refresh HTTP " + str(response.status_code))
+                        body = response.json()
+                        data = body.get("data")
+                        if (body.get("status") == "failure" or not isinstance(data, dict)
+                                or set(_section_ids(data)) != set(section_ids)):
+                            raise RuntimeError("Native catalog category metadata changed")
+                        global_limiter.record_success()
+                        return data
+                    return capture_catalog(
+                        session, sid, data, root, headers, capture_response,
+                        store_attempt=attempt, section_indices=[section_index],
+                        refresh_native_metadata=refresh_native)
+                finally:
+                    session.close()
+            result = capture(item, raw, session_factory=transport.session,
+                             catalog_runner=only_section)
+            checks = body_checksums(raw)
+            doc = {"run_id":state["run_id"], "source_sha":state["source_sha"],
+                   "epoch":state["epoch"], "store_uuid":sid, "token":lease["token"],
+                   "worker":index, "section_index":int(key),
+                   "section_uuid":expected_uuid, "result":result, "responses":checks}
+            (folder / "section.json").write_text(json.dumps(doc, ensure_ascii=False),
+                                                 encoding="utf8")
+            if (result.get("store_uuid") != sid or
+                    result.get("catalog_section_count", 0) not in (0, 1)):
+                raise ValueError("Invalid native section result")
+            return kind, sid, key, lease["token"]
+
+        def dispatch(store, root, relative, data, headers, attempt):
+            sections = _section_ids(data)
+            estimate = shared.get("workload_weights", {}).get(sid, 400)
+            if capture is not fetch_store_raw:
+                return None
+            if len(sections) < 16 and not (len(sections) >= 8 and estimate >= 20000):
+                return None
+            queue.register_catalog(sid, lease["token"], sections)
+            print("FOODRADAR_CATEGORY_SPLIT=" + json.dumps({
+                "store_uuid": sid, "sections": len(sections), "estimated_work": estimate,
+                "worker":index}), flush=True)
+            return {"catalog_responses":[], "catalog_complete":False,
+                    "catalog_section_count":len(sections),
+                    "catalog_sections_finished":0, "catalog_item_occurrences":0,
+                    "catalog_deferred":True}
+
+        result = capture(item, raw, session_factory=transport.session,
+                         catalog_runner=dispatch) if capture is fetch_store_raw else capture(
+                             item, raw, session_factory=transport.session)
+        if (result.get("success") is True and not result.get("inactive")
+                and not result.get("catalog_deferred")):
             prior = baseline.get(sid) or {}
             try:
                 result = verify(item, raw, result, prior.get("stats"), prior.get("batch", ""),
                                 previous_watch=prior.get("promotion_watch"))
             except Exception as exc:
-                result["promo_recheck"] = {"status": "UNAVAILABLE", "trigger": "verifier_exception",
-                    "error": str(exc)[:180], "previous_stats": prior.get("stats"),
-                    "previous_batch": prior.get("batch", ""),
-                    "previous_watch": prior.get("promotion_watch") or {}}
+                result["promo_recheck"] = {"status":"UNAVAILABLE", "trigger":"verifier_exception",
+                    "error":str(exc)[:180], "previous_stats":prior.get("stats"),
+                    "previous_batch":prior.get("batch", ""),
+                    "previous_watch":prior.get("promotion_watch") or {}}
         result["crawl_elapsed_ms"] = max(1, round((time.monotonic()-t)*1000))
         checks = body_checksums(raw)
         result["crawl_api_requests"] = len(checks)
-        doc = {"run_id": state["run_id"], "source_sha": state["source_sha"],
-               "epoch": state["epoch"], "store_uuid": sid, "token": lease["token"],
-               "worker": index, "store": result, "responses": checks}
+        doc = {"run_id":state["run_id"], "source_sha":state["source_sha"],
+               "epoch":state["epoch"], "store_uuid":sid, "token":lease["token"],
+               "worker":index, "store":result, "responses":checks}
         (folder / "task.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf8")
         validate_task(folder, state, sid, lease)
-        return sid, lease["token"]
+        return kind, sid, key, lease["token"]
 
     try:
         # Claim no more than the available execution slots. Store bodies remain
