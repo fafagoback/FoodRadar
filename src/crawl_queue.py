@@ -292,21 +292,40 @@ class GitQueue:
             return True, len(sections)
         return self.transact(edit)
 
-    def claim_catalog(self, owner, worker, sid):
-        token = uuid.uuid4().hex
+    def claim_catalog_batch(self, owner, worker, sid, slots):
+        """Claim only the actual free category threads, using one atomic commit."""
+        if slots < 1:
+            return []
+        tokens = [uuid.uuid4().hex for _ in range(slots)]
+        token_set = set(tokens)
         def edit(s):
             group = s.get("catalog_groups", {}).get(sid)
-            if not group or not group["pending"]:
-                return False, None
-            key = group["pending"].pop(0)
-            group["attempts"][key] = group["attempts"].get(key,0)+1
-            lease = {"owner":owner, "worker":worker, "token":token,
-                     "expires":time.time()+self.lease_seconds,
-                     "attempt":group["attempts"][key]}
-            group["leased"][key] = lease
+            if group is None:
+                return False, []
+            existing = [(sid,key,row) for key,row in group["leased"].items()
+                        if row["owner"] == owner and row["token"] in token_set]
+            if existing:
+                return False, existing
+            keys = group["pending"][:slots]
+            if not keys:
+                return False, []
+            del group["pending"][:len(keys)]
+            now = time.time()
+            records = []
+            for key, token in zip(keys, tokens):
+                group["attempts"][key] = group["attempts"].get(key,0)+1
+                row = {"owner":owner, "worker":worker, "token":token,
+                       "expires":now+self.lease_seconds,
+                       "attempt":group["attempts"][key]}
+                group["leased"][key] = row
+                records.append((sid,key,row))
             validate_batch_group(sid, group)
-            return True, (sid, key, lease)
+            return True, records
         return self.transact(edit)
+
+    def claim_catalog(self, owner, worker, sid):
+        rows = self.claim_catalog_batch(owner, worker, sid, 1)
+        return rows[0] if rows else None
 
     def mark_local_catalog_batch(self, owner, records):
         def edit(s):
@@ -544,9 +563,9 @@ class SharedGitQueue:
                 if len(claimed) >= slots:
                     break
                 if kind == "section":
-                    row = self.lanes[lane].claim_catalog(owner, worker, sid)
-                    if row:
-                        _, key, lease = row
+                    rows = self.lanes[lane].claim_catalog_batch(
+                        owner, worker, sid, slots-len(claimed))
+                    for _, key, lease in rows:
                         lease["section_uuid"] = state["catalog_groups"][sid]["sections"][int(key)]
                         claimed.append(("section", sid, key, lease))
                 else:
