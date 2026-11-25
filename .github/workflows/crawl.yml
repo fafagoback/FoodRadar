@@ -46,6 +46,8 @@ jobs:
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: 準備測試執行環境
         uses: actions/setup-python@v5
         with:
