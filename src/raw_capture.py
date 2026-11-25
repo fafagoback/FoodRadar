@@ -32,6 +32,10 @@ from catalog_complete import (
 TW = timezone(timedelta(hours=8))
 
 
+class CheckpointStorageError(RuntimeError):
+    """Durable capture failed; recover the task instead of accepting a failed store."""
+
+
 
 @contextmanager
 def open_seekable_raw_archive(path):
@@ -184,6 +188,8 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_facto
                             "occurrences": all_catalog["catalog_item_occurrences"]}), flush=True)
                         return result
                 result["error"] = f"HTTP {response.status_code} or incomplete response"
+            except CheckpointStorageError:
+                raise
             except (requests.RequestException, RuntimeError, ValueError, TypeError) as exc:
                 # Preserve the deepest native HTTP/parsing failure in the report,
                 # including exceptions wrapped by catalog pagination.

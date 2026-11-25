@@ -23,7 +23,7 @@ import requests
 
 from catalog_complete import CATALOG_API, _catalog_entries, _catalog_skus, _section_ids, capture_catalog
 from menu_core import attach_delivery_location, global_limiter, response_retry_after
-from raw_capture import capture_response, TW
+from raw_capture import capture_response, TW, CheckpointStorageError
 
 MIN_SECTIONS = 8
 
@@ -70,10 +70,6 @@ def validate_group(sid, group):
     return group
 
 
-class CheckpointStorageError(RuntimeError):
-    """A storage operation failed; do not turn it into an upstream result."""
-
-
 class PageJournal:
     """Replay the exact successful native page of this capture, not cached prices.
 
@@ -81,11 +77,12 @@ class PageJournal:
     one-page category is persisted by its category artifact. Failures, invalid
     paging, and independent promotion rechecks never use these checkpoints.
     """
-    def __init__(self, session, storage, prefix, recover=False):
+    def __init__(self, session, storage, prefix, recover=False, save_terminal=False):
         self.session = session
         self.storage = storage
         self.prefix = prefix
         self.recover = recover
+        self.save_terminal = save_terminal
         self.replayed = 0
         self.saved = 0
         self.local = {}
@@ -134,7 +131,7 @@ class PageJournal:
         offset = json["pagingInfo"]["offset"]
         if paging["hasMore"] and (type(paging.get("offset")) is not int or paging["offset"] <= offset):
             return response
-        if offset == 0 and not paging["hasMore"]:
+        if not self.save_terminal and offset == 0 and not paging["hasMore"]:
             return response
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
@@ -223,15 +220,19 @@ class CatalogBroker:
     def dispatch(self, item, raw, response_path, data, headers, attempt):
         sid = item["store_uuid"]
         sections = _section_ids(data)
-        # Actual native category count, not a predicted duration.
-        if len(sections) < MIN_SECTIONS or (data.get("catalogSectionPagingInfo") or {}).get("hasMore") is True:
+        if not sections or (data.get("catalogSectionPagingInfo") or {}).get("hasMore") is True:
             return None
+        plan={"identity":self._identity(sid), "item":item, "sections":sections,
+              "headers":headers, "store_attempt":attempt, "response_path":response_path,
+              "worker":self.worker, "responses":checks(raw),
+              "captured_at":datetime.now(TW).isoformat()}
+        # Small stores keep one owner; combine the plan with the first valid
+        # page to avoid a separate metadata upload. Every valid page can be
+        # recovered by the next owner of this exact run, even terminal pages.
+        if len(sections) < MIN_SECTIONS:
+            return self._run_small(sid, raw, plan, data)
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp)
-            plan={"identity":self._identity(sid), "item":item, "sections":sections,
-                  "headers":headers, "store_attempt":attempt, "response_path":response_path,
-                  "worker":self.worker, "responses":checks(raw),
-                  "captured_at":datetime.now(TW).isoformat()}
             copy_raw(raw,folder/"raw")
             (folder/"plan.json").write_bytes(wire(plan))
             self._read_plan(folder,sid)
@@ -248,7 +249,7 @@ class CatalogBroker:
             folder=Path(temp)
             loaded=self._load_plan(sid,folder,group)
             if loaded is None:
-                return None
+                return self._resume_small(sid,raw)
             plan,data,artifact_id=loaded
             self._register(sid,plan,artifact_id)
             copy_raw(folder/"raw",raw)
@@ -256,6 +257,91 @@ class CatalogBroker:
         return {"store_uuid":sid,"store_url":self.discovered[sid]["store_url"],
                 "success":True,"response_path":plan["response_path"],
                 "captured_at":datetime.now(TW).isoformat(),**catalog}
+
+    def _resume_small(self,sid,raw):
+        with tempfile.TemporaryDirectory() as temp:
+            first=Path(temp)
+            try:
+                found=self.storage("recover",self._name("small",sid),first)
+            except Exception as exc:
+                raise CheckpointStorageError("Cannot verify small store checkpoint") from exc
+            if found is None:
+                return None
+            plan,data=self._read_plan(first,sid)
+            if not 0 < len(plan["sections"]) < MIN_SECTIONS:
+                raise ValueError("Small store plan has invalid category roster")
+            copy_raw(first/"raw",raw)
+            catalog=self._run_small(sid,raw,plan,data,first=first,first_id=found["id"])
+            return {"store_uuid":sid,"store_url":plan["item"]["store_url"],"success":True,
+                    "response_path":plan["response_path"],"captured_at":datetime.now(TW).isoformat(),**catalog}
+
+    def _run_small(self,sid,raw,plan,data,first=None,first_id=None):
+        # The first immutable page artifact includes the original native base.
+        # Only metadata in the plan is copied; later raw files are separate.
+        prefix=self._name("page",sid,"-small-"+sha(wire(plan))[:16])
+        first_key=None
+        if first is not None:
+            page=json.loads((first/"page.json").read_text())
+            first_key=prefix+"-"+sha(wire(page["request"]))
+        def storage(op,name,folder):
+            nonlocal first_key,first_id
+            folder=Path(folder)
+            if op=="recover" and name==first_key and first is not None:
+                for file in ("page.json","response.body"):
+                    shutil.copyfile(first/file,folder/file)
+                return {"id":first_id}
+            if op=="upload" and first_key is None:
+                folder.joinpath("plan.json").write_bytes(wire(plan))
+                for path,digest in plan["responses"].items():
+                    source=raw/path
+                    if sha(source.read_bytes())!=digest:
+                        raise ValueError("Original small store metadata changed")
+                    dest=folder/"raw"/path
+                    dest.parent.mkdir(parents=True,exist_ok=True)
+                    shutil.copyfile(source,dest)
+                self._read_plan(folder,sid)
+                saved=self.storage("upload",self._name("small",sid),folder)
+                first_key=name
+                return saved
+            return self.storage(op,name,folder)
+        session=self.session_factory()
+        try:
+            if not attach_delivery_location(session,plan["item"]):
+                raise ValueError("Missing native delivery location")
+            journal=PageJournal(session,storage,prefix,recover=first is not None,save_terminal=True)
+            refresh=self._refresh(session,sid,raw,plan,"small")
+            result=capture_catalog(journal,sid,data,raw,plan["headers"],capture_response,
+                store_attempt=plan["store_attempt"],refresh_native_metadata=refresh)
+        finally:
+            session.close()
+        with self.metrics_lock:
+            self.metrics["saved_pages"]+=journal.saved
+            self.metrics["resumed_pages"]+=journal.replayed
+        print("FR_SMALL_STORE_PAGES="+json.dumps({"store":sid,"saved":journal.saved,
+              "resumed":journal.replayed}),flush=True)
+        return result
+
+    def _refresh(self,session,sid,raw,plan,key):
+        refresh_number=0
+        def refresh():
+            nonlocal refresh_number
+            refresh_number+=1
+            global_limiter.wait()
+            response=session.post("https://www.ubereats.com/api/getStoreV1",
+                json={"storeUuid":sid,"sfNuggetCount":24},headers=plan["headers"],timeout=12)
+            capture_response(raw,f"section-refresh/{sid}-{key}-{refresh_number:02d}-{response.status_code}.body",response)
+            body=response.json()
+            data=body.get("data")
+            if response.status_code==429 or (body.get("status")=="failure" and isinstance(data,dict) and str(data.get("code"))=="429"):
+                global_limiter.trigger_backoff(30,"Native category metadata refresh 429",
+                    retry_after=response_retry_after(response))
+            if response.status_code!=200 or body.get("status")=="failure" or not isinstance(data,dict):
+                raise RuntimeError(f"Native metadata refresh unavailable HTTP {response.status_code}")
+            if data.get("storeUuid") not in (None,sid):
+                raise ValueError("Native metadata refresh changed store")
+            global_limiter.record_success()
+            return data
+        return refresh
 
     def claim(self, sid):
         token=uuid.uuid4().hex
@@ -357,25 +443,7 @@ class CatalogBroker:
             journal=PageJournal(session,self.storage,
                 self._name("page",sid,"-"+key+"-"+group["plan_sha"][:16]),
                 recover=lease["attempt"]>1)
-            refresh_number=0
-            def refresh():
-                nonlocal refresh_number
-                refresh_number+=1
-                global_limiter.wait()
-                response=session.post("https://www.ubereats.com/api/getStoreV1",
-                    json={"storeUuid":sid,"sfNuggetCount":24},headers=plan["headers"],timeout=12)
-                capture_response(raw,f"section-refresh/{sid}-{key}-{refresh_number:02d}-{response.status_code}.body",response)
-                body=response.json()
-                data=body.get("data")
-                if response.status_code==429 or (body.get("status")=="failure" and isinstance(data,dict) and str(data.get("code"))=="429"):
-                    global_limiter.trigger_backoff(30,"Native category metadata refresh 429",
-                        retry_after=response_retry_after(response))
-                if response.status_code!=200 or body.get("status")=="failure" or not isinstance(data,dict):
-                    raise RuntimeError(f"Native metadata refresh unavailable HTTP {response.status_code}")
-                if data.get("storeUuid") not in (None,sid):
-                    raise ValueError("Native metadata refresh changed store")
-                global_limiter.record_success()
-                return data
+            refresh=self._refresh(session,sid,raw,plan,key)
             try:
                 result=capture_catalog(journal,sid,data,raw,plan["headers"],capture_response,
                     store_attempt=plan["store_attempt"],section_indices=[int(key)],refresh_native_metadata=refresh)

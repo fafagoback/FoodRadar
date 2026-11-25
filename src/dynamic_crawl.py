@@ -21,7 +21,7 @@ from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip, _validate_references
 from menu_core import global_limiter
 from promo_api_recheck import verify_suspicious_store
-from raw_capture import fetch_store_raw
+from raw_capture import fetch_store_raw, CheckpointStorageError
 from catalog_broker import CatalogBroker, validate_group
 
 HELPER = ROOT / ".github/actions/fr-dynamic-crawl/artifact.cjs"
@@ -144,6 +144,8 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
                                      catalog_runner=broker.dispatch)
             else:
                 result = capture(item, raw, session_factory=transport.session)
+        except CheckpointStorageError:
+            raise
         except Exception as exc:
             result = {"store_uuid": sid, "store_url": item["store_url"], "success": False,
                       "error": type(exc).__name__ + ": " + str(exc)}

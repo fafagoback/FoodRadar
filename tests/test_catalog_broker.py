@@ -59,4 +59,40 @@ class PageTests(unittest.TestCase):
         self.assertEqual(out["catalog_section_count"],1)
         self.assertEqual(out["catalog_section_reports"][0]["section_uuid"],"7")
 
+
+class SmallStoreResumeTests(unittest.TestCase):
+    def test_one_small_store_replays_saved_page_on_another_worker(self):
+        from catalog_complete import CATALOG_API
+        class Crash(BaseException): pass
+        sid="00000000-0000-4000-8000-000000000001"
+        item={"store_uuid":sid,"store_url":"https://example.invalid/store/"+sid}
+        base={"title":"small","aisles":{"x":[{"catalogSectionUUID":"section"}]}}
+        calls=[]
+        class Session:
+            def __init__(self,worker):self.worker=worker
+            def close(self):pass
+            def post(self,url,json,headers,timeout):
+                assert url==CATALOG_API
+                offset=json["pagingInfo"]["offset"]
+                calls.append((self.worker,offset))
+                if self.worker==0 and offset==60:raise Crash()
+                return Response({"data":{"catalog":[{"payload":{"standardItemsPayload":{
+                    "catalogItems":[sample_item(str(offset),"Fixture",100)]}}}],
+                    "pagingInfo":{"hasMore":offset==0,"offset":60 if offset==0 else 120}}})
+        state={"run_id":"123","source_sha":"sha","epoch":"epoch"}
+        with tempfile.TemporaryDirectory() as t,patch("catalog_broker.attach_delivery_location",return_value=True):
+            root=Path(t);storage=MemoryArtifacts(root/"artifacts")
+            a=CatalogBroker(None,state,{sid:item},"a",0,storage,lambda:Session(0))
+            raw=root/"a";raw.mkdir();(raw/"base.body").write_text(json.dumps({"data":base}))
+            with self.assertRaises(Crash):
+                a.dispatch(item,raw,"base.body",base,{},1)
+            b=CatalogBroker(None,state,{sid:item},"b",1,storage,lambda:Session(1))
+            target=root/"b";target.mkdir()
+            result=b._resume_small(sid,target)
+            self.assertTrue(result["success"])
+            self.assertEqual(len(result["catalog_responses"]),2)
+            self.assertEqual(calls,[(0,0),(0,60),(1,60)])
+            self.assertEqual(b.metrics["resumed_pages"],1)
+            self.assertEqual((target/"base.body").read_bytes(),(raw/"base.body").read_bytes())
+
 if __name__=="__main__":unittest.main()
