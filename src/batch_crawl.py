@@ -81,14 +81,20 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                 try:
                     if not attach_delivery_location(session, item):
                         raise ValueError("Missing delivery location for section worker")
+                    refresh_count = 0
                     def refresh_native():
+                        nonlocal refresh_count
+                        refresh_count += 1
                         global_limiter.wait()
                         response = session.post(
                             "https://www.ubereats.com/api/getStoreV1",
                             json={"storeUuid": sid, "sfNuggetCount": 24},
                             headers=headers, timeout=12)
-                        capture_response(root, "refresh/native-" + str(section_index)
-                                         + "-status-" + str(response.status_code) + ".body", response)
+                        capture_response(
+                            root, "refresh/native-" + str(section_index)
+                            + "-attempt-" + str(attempt)
+                            + "-sequence-" + str(refresh_count)
+                            + "-status-" + str(response.status_code) + ".body", response)
                         if response.status_code == 429:
                             global_limiter.trigger_backoff(30, "Section refresh HTTP 429",
                                                            retry_after=response_retry_after(response))
