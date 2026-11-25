@@ -279,6 +279,12 @@ DIRECT_CAPTURE_MIGRATIONS = (
     # persisted observations, and compact layout are byte-contract identical.
     ("ec8967d99c608519b8e99892fa331afacf532ab8",
      "f9556966d9469bbe8fb4d5130bde62f46dcb708b"),
+    # Physical recompression preserves every decoded MessagePack byte and
+    # the schema, so either verified previous checkpoint is directly reusable.
+    ("ec8967d99c608519b8e99892fa331afacf532ab8",
+     "19731748a3a1672a977b644f09f288786e3192c0"),
+    ("a7c6bfb0917d957c1119540fa31f32390fbf60bc",
+     "19731748a3a1672a977b644f09f288786e3192c0"),
 )
 
 def compatible_direct_contract(meta,root=ROOT):
