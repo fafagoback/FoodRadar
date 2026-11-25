@@ -328,7 +328,8 @@ def worker_reports(summary_dir,state,index):
     final["wave_count"]=len(reports)
     final["artifact_uploads"]=sum(r.get("artifact_uploads",0) for r in reports)
     final["timing"]={k:round(sum(r.get("timing",{}).get(k,0) for r in reports),2)
-                     for k in ("worker_seconds","claim_seconds","idle_queue_seconds")}
+                     for k in ("worker_seconds","claim_seconds","idle_queue_seconds",
+                               "local_commit_seconds","last_task_finish_seconds","barrier_wait_seconds")}
     final["worker_ips"]=list(dict.fromkeys(r["public_ip"] for r in reports if r.get("public_ip")))
     return final
 

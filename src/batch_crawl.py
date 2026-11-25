@@ -53,6 +53,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     claim_future, sync_future, status_future = None, None, None
     next_claim_at, next_status_at, last_flush_at = 0.0, 0.0, 0.0
     claim_seconds, idle_seconds, local_commit_seconds = 0.0, 0.0, 0.0
+    last_task_finished = None
     last_saturated = False
 
     def claim(count):
@@ -246,6 +247,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     if future not in active:
                         continue
                     kind, sid, key, token = future.result()
+                    last_task_finished = time.monotonic()
                     del active[future]
                     if kind == "section":
                         if key in section_finished.get(sid, {}):
@@ -273,7 +275,9 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                "timing": {"worker_seconds": round(time.monotonic()-started, 2),
                           "claim_seconds": round(claim_seconds, 2),
                           "idle_queue_seconds": round(idle_seconds, 2),
-                           "local_commit_seconds": round(local_commit_seconds, 2)}}
+                           "local_commit_seconds": round(local_commit_seconds, 2),
+                           "last_task_finish_seconds": round((last_task_finished or started)-started, 2),
+                           "barrier_wait_seconds": round(time.monotonic()-(last_task_finished or started),2)}}
     (base / "summary.json").write_text(json.dumps(summary), encoding="utf8")
     print("FOODRADAR_DYNAMIC_WORKER=" + json.dumps(summary), flush=True)
     return summary
