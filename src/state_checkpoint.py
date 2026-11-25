@@ -318,8 +318,10 @@ DIRECT_LAYOUT_MIGRATIONS = (
 # original schema and remain readable; no arbitrary digest bypass.
 # Nested scheduling changes live capture only; immutable Raw decoding and
 # the direct compact physical layout are unchanged. Pin exact reviewed blobs.
-CODEC_UPGRADE="d29f8d12beaabe407136559802077764b14492f6"
-CODEC_PREVIOUS_CURRENT_LAYOUTS=("37fc80992b90312a8a777435d0351aa4dabdf0ab",)
+CODEC_UPGRADE="d5ead077b373557d61c1eeb040b2ebcf81566c10"
+# Exact performance-only migration: same observation fields, quote math and compact layout.
+CODEC_PREVIOUS_CURRENT_LAYOUTS=("b700e4928d072bc8e1138e5da441d12baa882752",
+    "d29f8d12beaabe407136559802077764b14492f6","37fc80992b90312a8a777435d0351aa4dabdf0ab")
 CODEC_OLD_LAYOUTS=("97fe6baca43bb8bcbd087b7fa03c6d372f2b646f","7fb36f3df7f43399278eba3582a4f0899b6a7f9d")
 CODEC_OLD_CONTRACTS=tuple(dict.fromkeys(old for old,new in DIRECT_LAYOUT_MIGRATIONS))
 

@@ -57,6 +57,32 @@ class ImmutableRawTests(unittest.TestCase):
             self.assertEqual(products[0]["name"], "converted")
             self.assertEqual(products[0]["store_uuid"], record["stores"][0]["store_uuid"])
 
+    def test_parallel_decode_preserves_manifest_order_and_inactive_identity(self):
+        import os
+        from raw_capture import documents_from_hf_raw
+        stores=[];responses={}
+        body=b'{"status":"failure","data":{"code":"410"}}'
+        buffer=io.BytesIO()
+        with tarfile.open(fileobj=buffer,mode="w:gz") as archive:
+            for i in (3,1,2):
+                sid=f"{i:08x}-0000-4000-8000-000000000000"
+                name=f"stores/{sid}.body"
+                info=tarfile.TarInfo(name);info.size=len(body)
+                archive.addfile(info,io.BytesIO(body))
+                responses[name]=hashlib.sha256(body).hexdigest()
+                stores.append({"store_uuid":sid,"store_url":"https://www.ubereats.com/tw/store/test/"+sid,
+                    "response_path":name,"captured_at":"2026-10-30T16:01:01+08:00",
+                    "success":True,"inactive":True})
+        manifest={"complete":True,"batch_id":"20261030160101","responses":responses,"stores":stores}
+        results=[]
+        for workers in ("1","3"):
+            with patch.dict(os.environ,{"FR_RAW_DECODE_WORKERS":workers}):
+                with tarfile.open(fileobj=io.BytesIO(buffer.getvalue()),mode="r:gz") as archive:
+                    docs=documents_from_hf_raw(archive,manifest)
+                    results.append([(d["store_uuid"],d["store_id"],d["batch_id"],d["captured_at"]) for d in docs])
+        self.assertEqual(results[0],results[1])
+        self.assertEqual([r[0] for r in results[1]],[s["store_uuid"] for s in stores])
+
     def test_bad_source_hash_aborts_db_conversion(self):
         original = b'{"data":{"title":"Example"}}'
         filename = "stores/raw.body"
