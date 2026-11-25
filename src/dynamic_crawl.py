@@ -331,7 +331,7 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
     shared, digest, ids = shared_identity(discovery_file)
     state = (queue or runtime_queue()).read()
     verify_queue(state, shared, digest, ids)
-    if state["pending"] or state["leased"] or set(state["completed"]) != set(ids):
+    if state["pending"] or state["leased"] or state.get("local_done") or set(state["completed"]) != set(ids):
         raise RuntimeError("Task pool incomplete; no HF/DB update")
     for sid, group in state.get("catalog_groups", {}).items():
         validate_group(sid,group)
@@ -401,12 +401,13 @@ def main():
     q = runtime_queue()
     shared, digest, ids = shared_identity(args.discovery_file)
     if args.command == "init":
-        q.initialize(initial_state(shared["run_id"], digest[:16], shared["source_sha"], ids))
+        q.initialize(initial_state(shared["run_id"], digest[:16], shared["source_sha"], ids,
+                                   weights=shared.get("workload_weights") or {}))
     elif args.command == "status":
         state = q.read()
         verify_queue(state, shared, digest, ids)
         groups=state.get("catalog_groups",{}).values()
-        print(json.dumps({"remaining": len(state["pending"]) + len(state["leased"]),
+        print(json.dumps({"remaining": len(state["pending"]) + len(state["leased"]) + len(state.get("local_done", {})),
                           "completed": len(state["completed"]),
                           "sections_remaining":sum(len(g["pending"])+len(g["leased"]) for g in groups),
                           "sections_completed":sum(len(g["completed"]) for g in groups)}))
