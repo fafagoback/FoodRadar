@@ -678,6 +678,42 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             shutil.copyfile(shard_raw / relative, target)
     if len(copied) != total_responses:
         raise RuntimeError("Lost HTTP response body during shard merge")
+    # Category helpers keep original bytes in their worker's sole artifact.
+    # The owner is reconstructed above; now perform the unchanged promotion
+    # verifier against the complete native HTTP catalog before HF publication.
+    deferred_count, deferred_extra_requests = 0, 0
+    if discovery_file is not None:
+        shared = json.loads(discovery_file.read_text(encoding="utf8"))
+        originals = {row["store_uuid"]: row for row in shared["stores"]}
+        baselines = shared.get("previous_promotion_stats") or {}
+        from promo_api_recheck import verify_suspicious_store
+        for sid, store in all_captured.items():
+            if not store.pop("catalog_deferred", False):
+                continue
+            deferred_count += 1
+            if store.get("success") is not True or store.get("inactive"):
+                continue
+            baseline = baselines.get(sid) or {}
+            before = len(list(raw.rglob("*.body")))
+            try:
+                verify_suspicious_store(
+                    originals[sid], raw, store, baseline.get("stats"),
+                    baseline.get("batch", ""),
+                    previous_watch=baseline.get("promotion_watch"))
+            except Exception as exc:
+                store["promo_recheck"] = {
+                    "status":"UNAVAILABLE", "trigger":"verifier_exception",
+                    "error":str(exc)[:180], "previous_stats":baseline.get("stats"),
+                    "previous_batch":baseline.get("batch", ""),
+                    "previous_watch":baseline.get("promotion_watch") or {}}
+            added = len(list(raw.rglob("*.body"))) - before
+            if added < 0:
+                raise RuntimeError("Promotion verification deleted original raw")
+            deferred_extra_requests += added
+            store["crawl_api_requests"] = store.get("crawl_api_requests",0) + added
+    total_responses += deferred_extra_requests
+    print("FOODRADAR_DEFERRED_PROMOTION_VERIFICATION=" + json.dumps({
+        "stores":deferred_count, "extra_original_bodies":deferred_extra_requests}),flush=True)
     ip_list = [m.get("public_ip") for m in metadata]
     ip_unique = len(set(ip for ip in ip_list if ip))
     stores = [all_captured[sid] for sid in sorted(all_captured)]
