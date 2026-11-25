@@ -58,10 +58,17 @@ jobs:
           active=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/crawl.yml/runs?branch=main&per_page=100" --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID and .status == \"in_progress\") | .id")
           [[ -z "$active" ]] || { echo "已有其他 RUN 執行，停止壓測"; exit 1; }
       - name: 測試每秒15、30、60、150次交易
+        if: ${{ !contains(github.event.head_commit.message, 'FR_POOL_PROD_TEST') }}
         run: python3 -u scripts/fr_pool_load_test.py
+      - name: 正式任務池介面｜15台並行、拆分、回報及成果確認
+        if: ${{ contains(github.event.head_commit.message, 'FR_POOL_PROD_TEST') }}
+        run: PYTHONPATH=src python3 -u scripts/fr_pool_integration_test.py
       - name: 確認僅本次模擬任務已清除
-        if: ${{ always() }}
+        if: ${{ always() && !contains(github.event.head_commit.message, 'FR_POOL_PROD_TEST') }}
         run: python3 -u scripts/fr_pool_load_test.py --cleanup-only
+      - name: 清除本次正式介面測試任務
+        if: ${{ always() && contains(github.event.head_commit.message, 'FR_POOL_PROD_TEST') }}
+        run: PYTHONPATH=src python3 -u scripts/fr_pool_integration_test.py --cleanup-only
 
   preflight_only:
     name: 修復驗收｜僅跑測試，不爬取或部署
