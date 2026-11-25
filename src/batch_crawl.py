@@ -35,8 +35,9 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     queue = queue or runtime_queue()
     state = queue.read()
     verify_queue(state, shared, digest, ids)
-    if state.get("catalog_groups"):
-        raise ValueError("Legacy page checkpoint queue")
+    if any(group.get("format") != "batch-section-v2"
+           for group in state.get("catalog_groups", {}).values()):
+        raise ValueError("Unsupported legacy page checkpoint queue")
     base = root / "data" / f"worker-batch-{index}"
     tasks = base / "tasks"
     tasks.mkdir(parents=True, exist_ok=False)
