@@ -293,6 +293,13 @@ DIRECT_CAPTURE_MIGRATIONS = (
      "d7ce089c208e0b0d2337779b8de6d1c742eab6f6"),
     ("19731748a3a1672a977b644f09f288786e3192c0",
      "d7ce089c208e0b0d2337779b8de6d1c742eab6f6"),
+    # Bounded native metadata retries do not alter the observation contract.
+    ("ec8967d99c608519b8e99892fa331afacf532ab8",
+     "91f9c257bfc100bb8c06258046ca6102ad53507f"),
+    ("a7c6bfb0917d957c1119540fa31f32390fbf60bc",
+     "91f9c257bfc100bb8c06258046ca6102ad53507f"),
+    ("19731748a3a1672a977b644f09f288786e3192c0",
+     "91f9c257bfc100bb8c06258046ca6102ad53507f"),
 )
 
 def compatible_direct_contract(meta,root=ROOT):
