@@ -16,7 +16,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
-from crawl_queue import SharedGitQueue, HEARTBEAT_SECONDS, initial_state, artifact_name
+from crawl_queue import SharedGitQueue, HEARTBEAT_SECONDS, initial_state, artifact_name, validate_batch_group
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip, _validate_references
 from menu_core import global_limiter
@@ -89,7 +89,13 @@ def validate_task(folder, state, sid, lease):
     result = doc["store"]
     if result.get("store_uuid") != sid:
         raise ValueError("Task result has wrong store UUID")
-    _validate_references(result, set(checks))
+    if result.get("catalog_deferred"):
+        if (result.get("catalog_complete") is not False
+                or result.get("catalog_responses")
+                or result.get("response_path") not in checks):
+            raise ValueError("Invalid deferred native catalog")
+    else:
+        _validate_references(result, set(checks))
     recheck = result.get("promo_recheck") or {}
     if recheck.get("status") == "MATCHED":
         paths = [recheck.get("second_response_path")] + recheck.get("second_catalog_response_paths", [])
@@ -334,9 +340,10 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
     if state["pending"] or state["leased"] or state.get("local_done") or set(state["completed"]) != set(ids):
         raise RuntimeError("Task pool incomplete; no HF/DB update")
     for sid, group in state.get("catalog_groups", {}).items():
-        validate_group(sid,group)
-        if group["pending"] or group["leased"]:
-            raise RuntimeError("Native category task pool incomplete; no HF/DB update")
+        validate_batch_group(sid, group)
+        if (group["pending"] or group["leased"] or group["local_done"]
+                or len(group["completed"]) != len(group["sections"])):
+            raise RuntimeError("Cross-machine category pool incomplete; no HF/DB update")
     owners = {sid: state["completed"][sid]["worker"] for sid in ids}
     by_worker = [[] for _ in range(15)]
     checks_by_worker = [{} for _ in range(15)]
