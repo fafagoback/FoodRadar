@@ -43,6 +43,10 @@ jobs:
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_PRECHECK_ONLY') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
@@ -56,6 +60,16 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: 安裝測試套件
         run: pip install -r requirements.txt
+      - name: 驗證任務池清空（僅指定驗收，不啟動爬蟲）
+        if: ${{ contains(github.event.head_commit.message, 'FR_POOL_CLEAR_TEST') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          active=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/crawl.yml/runs?branch=main&per_page=100" --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID and .status != \"completed\") | .id")
+          [[ -z "$active" ]] || { echo "有其他 RUN 執行中，禁止測試清空任務池" >&2; exit 1; }
+          python scripts/fr_clear_task_pool.py
       - name: 執行全部 Python 與 JavaScript 回歸測試
         run: |
           env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
@@ -72,6 +86,7 @@ jobs:
     permissions:
       contents: write
       actions: write
+      id-token: write
     outputs:
       batch_count: ${{ steps.plan.outputs.batch_count }}
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -121,6 +136,8 @@ jobs:
           node --check web/packed-turso.js
           node --check web/static-catalog.js
           node --check web/data-contract.js
+      - name: 爬取前清空 SB 共用任務池（保留表結構）
+        run: python scripts/fr_clear_task_pool.py
       - name: 掃描設定座標並儲存原始 HTTP
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
