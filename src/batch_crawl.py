@@ -9,7 +9,7 @@ from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
-from catalog_complete import _section_ids, capture_catalog
+from catalog_complete import _section_ids, _subsections_for, capture_catalog
 from menu_core import attach_delivery_location, response_retry_after
 from raw_capture import capture_response
 from crawl_queue import artifact_name
@@ -32,9 +32,10 @@ def assert_supported_catalog_groups(state):
         raise ValueError("Unsupported legacy page checkpoint queue")
 
 
-def should_split_catalog(sections_count, elapsed_ms):
-    """Only large stores benefit from paying cross-machine CAS per native section."""
-    return sections_count >= 8 and (elapsed_ms >= 60000 or sections_count >= 40)
+def should_split_catalog(sections_count, elapsed_ms, native_children=0):
+    """Size, not category count, determines whether a store should fan out."""
+    return sections_count >= 1 and (elapsed_ms >= 60000 or sections_count >= 40
+                                    or native_children >= 8)
 
 
 def batch_name(state, index, wave):
@@ -94,6 +95,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
 
         if section:
             expected_uuid = lease["section_uuid"]
+            sub_path = lease.get("sub_path",[])
             def only_section(store, root, relative, data, headers, attempt):
                 section_ids = _section_ids(data)
                 if expected_uuid not in section_ids:
@@ -126,10 +128,16 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             raise RuntimeError("Native catalog category metadata changed")
                         global_limiter.record_success()
                         return data
+                    def split_children(children):
+                        queue.register_children(sid,key,lease["token"],children)
+                        print("FOODRADAR_SUBSECTION_SPLIT="+json.dumps({
+                            "store_uuid":sid,"section_key":key,"subsections":len(children),
+                            "worker":index}),flush=True)
                     return capture_catalog(
                         session, sid, data, root, headers, capture_response,
                         store_attempt=attempt, section_indices=[section_index],
-                        refresh_native_metadata=refresh_native)
+                        refresh_native_metadata=refresh_native,subsection_path=sub_path,
+                        defer_children=split_children if hasattr(queue,"register_children") else None)
                 finally:
                     session.close()
             result = capture(item, raw, session_factory=transport.session,
@@ -138,8 +146,9 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
             checks = body_checksums(raw)
             doc = {"run_id":state["run_id"], "source_sha":state["source_sha"],
                    "epoch":state["epoch"], "store_uuid":sid, "token":lease["token"],
-                   "worker":index, "section_index":int(key),
-                   "section_uuid":expected_uuid, "result":result, "responses":checks}
+                   "worker":index, "section_index":int(key.split(".")[0]),
+                   "section_uuid":expected_uuid, "sub_path":sub_path,
+                   "result":result, "responses":checks}
             (folder / "section.json").write_text(json.dumps(doc, ensure_ascii=False),
                                                  encoding="utf8")
             if (result.get("store_uuid") != sid or
@@ -147,14 +156,40 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                 raise ValueError("Invalid native section result")
             return kind, sid, key, lease["token"]
 
+        catalog_options={}
         def dispatch(store, root, relative, data, headers, attempt):
             sections = _section_ids(data)
             estimate = shared.get("workload_weights", {}).get(sid, 400)
             if capture is not fetch_store_raw:
                 return None
-            if not should_split_catalog(len(sections), estimate):
+            if (data.get("catalogSectionPagingInfo") or {}).get("hasMore") is True:
+                return None  # original catalog enumeration gate must reject this
+            native_counts={sec:len(_subsections_for(data,sec)) for sec in sections}
+            historical=shared.get("section_workload_weights",{}).get(sid,{})
+            weights={sec:max(int(historical.get(sec,0)),native_counts[sec]*500,
+                              estimate//max(1,len(sections))) for sec in sections}
+            existing=state.get("catalog_groups",{}).get(sid)
+            if existing:
+                deferred_roster=existing["sections"]
+                if not set(deferred_roster)<=set(sections):
+                    raise ValueError("Native deferred store roster changed")
+                local_indices=[i for i,sec in enumerate(sections) if sec not in deferred_roster]
+                if local_indices:
+                    catalog_options.update(section_indices=local_indices,deferred_roster=deferred_roster)
+                    return None
+                sections=deferred_roster
+            elif not should_split_catalog(len(sections), estimate,max(native_counts.values(),default=0)):
+                if hasattr(queue,"register_children"):
+                    def promote(remaining):
+                        queue.register_catalog(sid,lease["token"],remaining,weights)
+                        print("FOODRADAR_STORE_PROMOTED="+json.dumps({
+                            "store_uuid":sid,"remaining_sections":len(remaining),"worker":index}),flush=True)
+                    catalog_options["promote_store"]=promote
                 return None
-            queue.register_catalog(sid, lease["token"], sections)
+            if hasattr(queue,"register_children"):
+                queue.register_catalog(sid,lease["token"],sections,weights)
+            else:
+                queue.register_catalog(sid,lease["token"],sections)
             print("FOODRADAR_CATEGORY_SPLIT=" + json.dumps({
                 "store_uuid": sid, "sections": len(sections), "estimated_work": estimate,
                 "worker":index}), flush=True)
@@ -164,7 +199,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     "catalog_deferred":True}
 
         result = capture(item, raw, session_factory=transport.session,
-                         catalog_runner=dispatch) if capture is fetch_store_raw else capture(
+                         catalog_runner=dispatch,catalog_options=catalog_options) if capture is fetch_store_raw else capture(
                              item, raw, session_factory=transport.session)
         if (result.get("success") is True and not result.get("inactive")
                 and not result.get("catalog_deferred")):

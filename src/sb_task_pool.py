@@ -132,15 +132,18 @@ class SupabaseQueue:
                 raise ValueError("Mixed SB run identity")
             place(state,row["task_key"],row)
         for row in sorted((r for r in rows if r["task_type"]=="section"),
-                          key=lambda r:(r["payload"]["sid"],int(r["payload"]["key"]))):
+                          key=lambda r:(r["payload"]["sid"],tuple(map(int,r["payload"]["key"].split("."))))):
             p=row["payload"]; sid=p["sid"]; key=p["key"]
             if sid not in state["tasks"]:
                 raise ValueError("Orphan native category")
             group=state["catalog_groups"].setdefault(sid,{"format":"batch-section-v2",
-                "sections":[],"pending":[],"leased":{},"local_done":{},"completed":{},"attempts":{}})
-            if int(key)!=len(group["sections"]):
-                raise ValueError("Native category roster gap")
-            group["sections"].append(p["section_uuid"])
+                "sections":[],"pending":[],"leased":{},"local_done":{},"completed":{},"attempts":{},"partitions":{}})
+            if "." in key:
+                group["partitions"][key]={"section_uuid":p["section_uuid"],"sub_path":p["sub_path"]}
+            else:
+                if int(key)!=len(group["sections"]):
+                    raise ValueError("Native category roster gap")
+                group["sections"].append(p["section_uuid"])
             group["attempts"][key]=row["retry_count"]
             place(group,key,row)
         for sid,group in state["catalog_groups"].items():
@@ -158,6 +161,7 @@ class SupabaseQueue:
             p=row["payload"]; lease=self._lease(row)
             if row["task_type"]=="section":
                 lease["section_uuid"]=p["section_uuid"]
+                lease["sub_path"]=p.get("sub_path",[])
                 jobs.append(("section",p["sid"],p["key"],lease))
             elif row["task_type"]=="store":
                 jobs.append(("store",p["sid"],None,lease))
@@ -167,8 +171,12 @@ class SupabaseQueue:
             raise ValueError("Claim exceeds available slots")
         return jobs,bool(result["drained"])
 
-    def register_catalog(self,sid,token,sections):
-        return self._rpc("split",sid=sid,token=token,sections=sections)["sections"]
+    def register_catalog(self,sid,token,sections,weights=None):
+        return self._rpc("split",sid=sid,token=token,sections=sections,weights=weights or {})["sections"]
+
+    def register_children(self,sid,key,token,children):
+        children=sorted(set(children))
+        return self._rpc("split",sid=sid,key=key,token=token,sections=children)["sections"]
 
     def finalize_batch(self,owner,stores,sections,artifact_id,batch_name):
         records=self._records(stores,sections)

@@ -70,7 +70,10 @@ class BatchCrawlTests(unittest.TestCase):
         self.assertTrue(should_split_catalog(40, 400))
         self.assertFalse(should_split_catalog(19, 18404))
         self.assertFalse(should_split_catalog(33, 52994))
-        self.assertFalse(should_split_catalog(7, 200000))
+        self.assertTrue(should_split_catalog(7, 200000))
+        self.assertTrue(should_split_catalog(1, 200000))
+        self.assertTrue(should_split_catalog(1, 400, 81))
+        self.assertFalse(should_split_catalog(0, 200000))
 
     def test_category_batch_claim_fills_only_available_thread_slots(self):
         state = initial_state("r", "e", "sha", ["a"])

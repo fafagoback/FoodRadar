@@ -351,7 +351,7 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
     for sid, group in state.get("catalog_groups", {}).items():
         validate_batch_group(sid, group)
         if (group["pending"] or group["leased"] or group["local_done"]
-                or len(group["completed"]) != len(group["sections"])):
+                or len(group["completed"]) != len(group["sections"])+len(group.get("partitions",{}))):
             raise RuntimeError("Cross-machine category pool incomplete; no HF/DB update")
     owners = {sid: state["completed"][sid]["worker"] for sid in ids}
     by_worker = [[] for _ in range(15)]
@@ -386,11 +386,26 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
         if store_result.get("catalog_deferred"):
             if group is None:
                 raise ValueError("Deferred store has no section task group")
-            pages, reports, failures = [], [], []
+            from native_partition_merge import merge_partition_tree
+            from catalog_complete import _section_ids
+            pages=list(store_result.pop("catalog_local_responses",[]))
+            reports=list(store_result.pop("catalog_local_reports",[]))
+            failures=[]
+            native_roster=store_result.pop("catalog_full_sections",None)
+            if native_roster is not None:
+                original=json.loads((folder/"raw"/store_result["response_path"]).read_bytes())
+                if native_roster!=_section_ids(original["data"]):
+                    raise ValueError("Deferred store original roster mismatch")
+                if (set(group["sections"]) & {r["section_uuid"] for r in reports}
+                        or set(group["sections"]) | {r["section_uuid"] for r in reports} != set(native_roster)
+                        or any(p["path"] not in doc["responses"] for p in pages)
+                        or any(r.get("terminal_has_more") is not False for r in reports)):
+                    raise ValueError("Deferred store local coverage mismatch")
+            partition_docs={}
             total_requests = store_result.get("crawl_api_requests", 0)
             elapsed = store_result.get("crawl_elapsed_ms", 0)
             helpers = set()
-            for key in map(str, range(len(group["sections"]))):
+            for key in sorted(group["completed"],key=lambda k:tuple(map(int,k.split(".")))):
                 row = group["completed"][key]
                 batch = row.get("batch_name")
                 if not __import__("re").fullmatch(
@@ -402,11 +417,16 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
                 for field, value in (("run_id",state["run_id"]),
                         ("source_sha",state["source_sha"]),("epoch",state["epoch"]),
                         ("store_uuid",sid),("worker",row["worker"]),
-                        ("token",row["token"]),("section_index",int(key)),
-                        ("section_uuid",group["sections"][int(key)])):
+                        ("token",row["token"]),("section_index",int(key.split(".")[0])),
+                        ("section_uuid",group["sections"][int(key.split(".")[0])])):
                     if section_doc.get(field) != value:
                         raise ValueError("Wrong category provenance: " + field)
+                expected_path=group.get("partitions",{}).get(key,{}).get("sub_path",[])
+                if section_doc.get("sub_path",[])!=expected_path:
+                    raise ValueError("Wrong subsection provenance")
                 checks = section_doc["responses"]
+                if any(Path(n).is_absolute() or ".." in Path(n).parts for n in checks):
+                    raise ValueError("Unsafe category raw path")
                 if checks != body_checksums(source_dir/"raw"):
                     raise ValueError("Native category original HTTP SHA256 mismatch")
                 sec = section_doc["result"]
@@ -424,19 +444,14 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
                 helpers.add(row["worker"])
                 total_requests += len(checks)
                 elapsed += sec.get("crawl_elapsed_ms", 0)
-                if sec.get("success") is not True or sec.get("catalog_complete") is not True:
-                    failures.append(str(sec.get("error") or "Unverified native category"))
-                    continue
-                sec_reports = sec.get("catalog_section_reports") or []
-                if (len(sec_reports) != 1 or
-                        sec_reports[0].get("section_uuid") != group["sections"][int(key)] or
-                        sec_reports[0].get("terminal_has_more") is not False):
-                    raise ValueError("Native category terminal pagination unverified")
-                for page in sec.get("catalog_responses", []):
-                    if page["path"] not in checks:
-                        raise ValueError("Missing original category HTTP response")
-                    pages.append({**page, "path":prefix + page["path"]})
-                reports.extend(sec_reports)
+                partition_docs[key]=(sec,checks,source_dir/"raw",prefix)
+            for key in map(str,range(len(group["sections"]))):
+                try:
+                    merged_pages, report=merge_partition_tree(group,key,partition_docs)
+                    pages.extend(merged_pages)
+                    reports.append(report)
+                except RuntimeError as exc:
+                    failures.append(str(exc))
             store_result["crawl_api_requests"] = total_requests
             store_result["crawl_elapsed_ms"] = max(1, elapsed)
             store_result["catalog_worker_indices"] = sorted(helpers)
@@ -445,8 +460,10 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
                 store_result["catalog_complete"] = False
                 store_result["error"] = "; ".join(failures)
             else:
-                if len(reports) != len(group["sections"]):
+                full_roster=native_roster if native_roster is not None else group["sections"]
+                if len(reports)!=len(full_roster) or {r["section_uuid"] for r in reports}!=set(full_roster):
                     raise ValueError("Incomplete native catalog section roster")
+                reports.sort(key=lambda r:full_roster.index(r["section_uuid"]))
                 store_result["catalog_responses"] = pages
                 store_result["catalog_section_reports"] = reports
                 store_result["catalog_sections_finished"] = len(reports)
@@ -454,7 +471,12 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
                 store_result["catalog_item_occurrences"] = sum(p["item_count"] for p in pages)
                 store_result["catalog_reused_partitions"] = 0
                 store_result["catalog_independent_inventory_verified"] = False
-                store_result["catalog_unique_skus"] = 0
+                # Compute the union from immutable raw HTTP, not summed page counts.
+                from catalog_complete import _catalog_skus
+                unique=set()
+                for page in pages:
+                    unique.update(_catalog_skus([json.loads((raw/page["path"]).read_bytes())]))
+                store_result["catalog_unique_skus"] = len(unique)
             print("FOODRADAR_CROSS_WORKER_MERGE=" + json.dumps({
                 "store_uuid":sid, "sections":len(group["sections"]),
                 "workers":sorted(helpers), "pages":len(pages),

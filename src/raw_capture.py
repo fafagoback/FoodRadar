@@ -63,7 +63,7 @@ def capture_response(directory: Path, filename: str, response) -> str:
 
 
 def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_factory=None,
-                    catalog_runner=None) -> dict:
+                    catalog_runner=None, catalog_options=None) -> dict:
     """Capture immutable HTTP bodies; retry store metadata only before paging.
 
     capture_catalog owns the per-page retry budget, including 429 cooldown.
@@ -176,6 +176,7 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_facto
                         if catalog_runner is not None:
                             all_catalog = catalog_runner(store, root, relative, data, headers, attempt)
                         if all_catalog is None:
+                            options.update(catalog_options or {})
                             all_catalog = capture_catalog(
                                 session, uuid, data, root, headers, capture_response,
                                 store_attempt=attempt, **options)

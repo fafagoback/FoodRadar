@@ -86,7 +86,24 @@ def validate_batch_group(sid, group):
              set(group.get("local_done", {})), set(group.get("completed", {}))]
     if any(slots[i] & slots[j] for i in range(4) for j in range(i+1,4)):
         raise ValueError("Category belongs to multiple states")
-    if set.union(*slots) != set(map(str, range(len(sections)))):
+    roots = set(map(str, range(len(sections))))
+    partitions = group.get("partitions", {})
+    if not isinstance(partitions, dict) or roots & set(partitions):
+        raise ValueError("Invalid nested partition map")
+    for key, part in partitions.items():
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,7}", key):
+            raise ValueError("Invalid nested partition key")
+        parent = key.rsplit(".", 1)[0]
+        root = int(key.split(".")[0])
+        path = part.get("sub_path")
+        if (str(root) not in roots or parent not in roots | set(partitions)
+                or not isinstance(path, list) or len(path) != key.count(".")
+                or len(set(path)) != len(path) or sections[root] in path
+                or not all(isinstance(v,str) and v for v in path)
+                or part.get("section_uuid") != sections[root]
+                or path[:-1] != partitions.get(parent,{}).get("sub_path",[])):
+            raise ValueError("Invalid nested native identity")
+    if set.union(*slots) != roots | set(partitions):
         raise ValueError("Native category coverage mismatch")
     for row in (list(group["leased"].values()) + list(group["local_done"].values())
                 + list(group["completed"].values())):

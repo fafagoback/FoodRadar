@@ -169,7 +169,8 @@ def _catalog_skus(raw_bodies):
 
 def capture_catalog(session, store_uuid, base_data, root, headers, capture_response, store_attempt=1,
                     session_factory=None, section_workers=1, refresh_native_metadata=None,
-                    section_indices=None):
+                    section_indices=None, subsection_path=None, defer_children=None,
+                    promote_store=None, deferred_roster=None):
     """Fetch every native category; split deep failing categories by real subsections.
 
     Uber's getCatalogPresentationV2 can return HTTP 200 + status=failure /
@@ -179,6 +180,11 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     Never fabricate a category, response, or a completed status.
     """
     section_uuids = _section_ids(base_data)
+    target_path = tuple(subsection_path or ())
+    if target_path and (len(target_path)>7 or len(set(target_path))!=len(target_path)
+                        or section_indices is None or len(section_indices)!=1):
+        raise ValueError("Invalid native subsection path")
+    deferred = None
     paging = base_data.get("catalogSectionPagingInfo") or {}
     if paging.get("hasMore") is True:
         raise ValueError("Store reports additional category pages; category enumeration unverified")
@@ -388,6 +394,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         *actual* native child UUIDs to terminal pages, preserving the parent
         preview as a validation set rather than substituting a partial menu.
         """
+        nonlocal deferred
         visited = frozenset() if visited is None else visited
         current_uuid = subsection_uuid or parent_uuid
         if current_uuid in visited or len(visited) >= 8:
@@ -419,6 +426,17 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             "known_parent_skus": len(parent_skus),
             "offset_1020_requested": False,
         }), flush=True)
+        # Only a verified native roster may become new shared tasks. The
+        # parent preview stays in this worker's immutable raw artifact.
+        if defer_children is not None:
+            children = sorted(set(children))
+            if any(c in visited or c == current_uuid for c in children):
+                raise ValueError("Cyclic native child roster")
+            defer_children(children)
+            deferred = {"children":children,"preview_responses":records}
+            return records,bodies,"deferred_children",len(children)
+        if promote_store is not None and subsection_uuid is None and len(children)>=2:
+            return records,bodies,"promote_store",len(children)
         child_records, child_bodies = [], []
         for child in children:
             cr, cb, _, _ = verified_partition(
@@ -450,7 +468,12 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     response_paths, unique_skus = set(), set()
     def capture_section(pair):
         index, section = pair
-        if session_factory is None or section_workers <= 1:
+        if target_path:
+            if section in target_path:
+                raise ValueError("Native subsection path includes its root")
+            return verified_partition(index,section,target_path[-1],
+                                      frozenset((section,)+target_path[:-1]))
+        if session_factory is None or section_workers <= 1 or defer_children is not None or promote_store is not None:
             return verified_partition(index, section)
         with session_factory() as independent:
             local_session.value = independent
@@ -467,11 +490,24 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         pairs = [p for p in pairs if p[0] in wanted]
     # Different native sections can overlap network wait, never bypass shared
     # request pacing, and each pagination chain remains strictly sequential.
-    if session_factory is not None and section_workers > 1 and len(pairs) >= 8:
+    if (session_factory is not None and section_workers > 1 and len(pairs) >= 8
+            and promote_store is None and defer_children is None and not target_path):
         with ThreadPoolExecutor(max_workers=min(3, section_workers)) as executor:
             partitions = list(executor.map(capture_section, pairs))
     else:
-        partitions = [verified_partition(i, s) for i, s in pairs]
+        partitions = []
+        for i, pair in enumerate(pairs):
+            part = capture_section(pair)
+            if part[2] == "promote_store":
+                deferred_roster = [s for _,s in pairs[i:]]
+                promote_store(deferred_roster)
+                pairs = pairs[:i]
+                break
+            if part[2] == "deferred_children":
+                return {"catalog_responses":[], "catalog_complete":False,
+                        "catalog_section_count":1, "catalog_sections_finished":0,
+                        "catalog_item_occurrences":0, "catalog_deferred_children":deferred}
+            partitions.append(part)
     for (section_index, section_uuid), (records, bodies, mode, children_count) in zip(pairs, partitions):
         for record in records:
             if record["path"] not in response_paths:
@@ -491,6 +527,16 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             "terminal_has_more": False})
     if len(section_reports) != len(pairs):
         raise ValueError("Not all catalog sections reached terminal pages")
+    if deferred_roster is not None:
+        if (set(deferred_roster) & {r["section_uuid"] for r in section_reports}
+                or set(deferred_roster) | {r["section_uuid"] for r in section_reports} != set(section_uuids)):
+            raise ValueError("Invalid deferred store coverage")
+        return {"catalog_responses":[], "catalog_complete":False,
+                "catalog_section_count":len(section_uuids),
+                "catalog_sections_finished":len(section_reports),
+                "catalog_item_occurrences":0, "catalog_deferred":True,
+                "catalog_full_sections":section_uuids,
+                "catalog_local_responses":responses,"catalog_local_reports":section_reports}
     return {
         "catalog_responses": responses,
         "catalog_complete": True,

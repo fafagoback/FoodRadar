@@ -63,18 +63,20 @@ def weighted_owners(store_ids, count, historical_weights):
 def workload_weight(store):
     """Milliseconds of estimated work, including independent promotion recheck."""
     measured = store.get("crawl_elapsed_ms")
+    requests = store.get("crawl_api_requests") or 0
+    request_cost = 250*requests if type(requests) is int and requests>0 else 0
     if type(measured) is int and measured > 0:
-        return max(100, measured)
+        return max(100, measured, request_cost)
     pages = len(store.get("catalog_responses") or [])
     sections = int(store.get("catalog_section_count") or 0)
     recheck = store.get("promo_recheck") or {}
     second = int(recheck.get("second_catalog_pages") or 0)
     if recheck.get("status") and not second:
         second = pages
-    return max(400, 400 * (1 + pages + second) + 100 * sections)
+    return max(400, request_cost, 400 * (1 + pages + second) + 100 * sections)
 
 
-def latest_raw_workload_weights(config):
+def latest_raw_workload_weights(config, section_weights=None):
     """Prefer newest complete OR partial observation; never download Raw bodies."""
     if not os.environ.get("HF_TOKEN"):
         return {}
@@ -96,10 +98,18 @@ def latest_raw_workload_weights(config):
         for store in manifest.get("stores") or []:
             try:
                 sid = canonical_store_uuid(store["store_uuid"], store["store_url"])
-                if sid in weights:
-                    continue
                 if store.get("success") is True or store.get("crawl_elapsed_ms"):
-                    weights[sid] = workload_weight(store)
+                    # Keep the larger of the last complete/partial observation.
+                    weights[sid] = max(weights.get(sid,0),workload_weight(store))
+                    if section_weights is not None:
+                        per=section_weights.setdefault(sid,{})
+                        for report in store.get("catalog_section_reports") or []:
+                            sec=report.get("section_uuid")
+                            if isinstance(sec,str) and sec:
+                                cost=max(250*int(report.get("pages") or 0),
+                                         500*int(report.get("subsections") or 0),
+                                         int(report.get("workload_ms") or 0))
+                                per[sec]=max(per.get(sec,0),cost)
             except (KeyError, ValueError, TypeError):
                 continue
     print("FOODRADAR_PREVIOUS_LOAD_WEIGHTS=" + json.dumps({
@@ -232,9 +242,10 @@ def save_shared_discovery(config: dict, root: Path = ROOT, dynamic=False):
         for p in sorted(raw.rglob("*.body"))
     }
     previous_promotions = latest_raw_promotion_baseline(config)
+    section_weights={}
     if dynamic:
         ownership, batch_count = None, 15
-        estimates = latest_raw_workload_weights(config)
+        estimates = latest_raw_workload_weights(config, section_weights)
         print("FOODRADAR_DYNAMIC_TASK_POOL=" + json.dumps({"workers": 15, "stores": len(stores)}), flush=True)
     else:
         weights = latest_raw_workload_weights(config)
@@ -250,6 +261,7 @@ def save_shared_discovery(config: dict, root: Path = ROOT, dynamic=False):
         "ownership": ownership, "owner_count": batch_count,
         "assignment_mode": "dynamic" if dynamic else "legacy-fixed",
         "workload_weights": estimates,
+        "section_workload_weights":section_weights,
         "format": "foodradar-shared-feed-v1",
         "run_id": os.getenv("GITHUB_RUN_ID", "local"),
         "source_sha": os.getenv("GITHUB_SHA", "local"),
