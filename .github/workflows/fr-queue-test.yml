@@ -1,7 +1,7 @@
 name: FR 開發分支｜動態任務池回歸
 on:
   push:
-    branches: [feature/fr-dynamic-queue-20261125, feature/fr-compact-production-20261125]
+    branches: [feature/fr-dynamic-queue-20261125, feature/fr-compact-production-20261125, feature/fr-section-resume-20261125]
 permissions:
   contents: read
 concurrency:

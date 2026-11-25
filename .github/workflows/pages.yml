@@ -361,7 +361,8 @@ jobs:
                   raw = (re.fullmatch(r'foodradar-shared-feed(?:-[0-9a-f]{16})?', name)
                          or re.fullmatch(r'foodradar-raw-shard-(?:[0-9a-f]{16}-)?\d+', name)
                          or re.fullmatch(r'fr-task-[0-9a-f]{16}-[0-9a-f-]{36}-[0-9a-f]{32}', name)
-                         or re.fullmatch(r'fr-worker-[0-9a-f]{16}-\d+', name))
+                         or re.fullmatch(r'fr-worker-[0-9a-f]{16}-\d+', name)
+                         or re.fullmatch(r'fr-(?:plan|section|page)-[0-9a-f]{16}-[0-9a-f-]+', name))
                   if raw and (raw_saved(rid) or (rid != source_id and r['conclusion'] == 'cancelled')):
                       targets.append(a)
                   elif (rid != source_id and r['run_number'] < source['run_number']

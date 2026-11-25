@@ -22,6 +22,7 @@ from distributed_crawl import ROOT, load_shared_discovery, public_ip, _validate_
 from menu_core import global_limiter
 from promo_api_recheck import verify_suspicious_store
 from raw_capture import fetch_store_raw
+from catalog_broker import CatalogBroker
 
 HELPER = ROOT / ".github/actions/fr-dynamic-crawl/artifact.cjs"
 
@@ -115,6 +116,8 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
     ctrl = AdaptiveThreads(initial)
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
     transport = TransportPool()
+    broker = (CatalogBroker(queue,state,discovered,owner,index,storage,transport.session)
+              if capture is fetch_store_raw else None)
     stop = threading.Event()
     heartbeat_errors = []
     def heartbeat():
@@ -134,7 +137,13 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
         item = discovered[sid]
         started = time.monotonic()
         try:
-            result = capture(item, raw, session_factory=transport.session)
+            if broker is not None:
+                result = broker.resume(sid, raw, lease.get("attempt", 1))
+                if result is None:
+                    result = capture(item, raw, session_factory=transport.session,
+                                     catalog_runner=broker.dispatch)
+            else:
+                result = capture(item, raw, session_factory=transport.session)
         except Exception as exc:
             result = {"store_uuid": sid, "store_url": item["store_url"], "success": False,
                       "error": type(exc).__name__ + ": " + str(exc)}
@@ -198,6 +207,13 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
                     if not claims:
                         current = queue.read()
                         has_pending = bool(current["pending"])
+                        if broker is not None:
+                            helper = broker.claim_any(current)
+                            if helper is not None:
+                                active[pool.submit(broker.run_partition,helper)] = None
+                                has_pending = True
+                                next_poll = 0
+                                continue
                         if not current["pending"] and not current["leased"] and not active:
                             break
                         if not current["pending"] and any(
@@ -211,7 +227,11 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
                     ctrl.observe(time.monotonic(), global_limiter.snapshot(),
                                  len(active) >= ctrl.target and has_pending)
                     for future in done:
-                        active.pop(future)
+                        task = active.pop(future)
+                        if task is None:
+                            future.result()
+                            next_poll = 0
+                            continue
                         sid, lease, artifact_id, folder = future.result()
                         if not queue.finish(sid, lease["token"], artifact_id):
                             # A stale worker never overwrites a recovered task.
@@ -229,7 +249,7 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
     summary = {"run_id": state["run_id"], "source_sha": state["source_sha"],
                "epoch": state["epoch"], "shard_index": index, "public_ip": public_ip(),
                "thread_learning": ctrl.report(), "api": global_limiter.snapshot(),
-               "completed": captured_count}
+               "completed": captured_count, "catalog_helpers": broker.metrics if broker else {}}
     output = root / "data" / ("worker-summary-" + str(index))
     output.mkdir(parents=True, exist_ok=True)
     (output / "summary.json").write_text(json.dumps(summary), encoding="utf8")

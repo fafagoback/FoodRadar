@@ -25,6 +25,8 @@ on:
       - 'src/crawl_batches.py'
       - 'src/crawl_queue.py'
       - 'src/dynamic_crawl.py'
+      - 'src/catalog_broker.py'
+      - 'src/compact_repack.py'
       - '.github/actions/fr-dynamic-crawl/**'
       - 'src/crawl_transport.py'
       - 'scripts/save_crawl_settings.py'

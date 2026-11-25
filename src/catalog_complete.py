@@ -168,7 +168,8 @@ def _catalog_skus(raw_bodies):
 
 
 def capture_catalog(session, store_uuid, base_data, root, headers, capture_response, store_attempt=1,
-                    session_factory=None, section_workers=1, refresh_native_metadata=None):
+                    session_factory=None, section_workers=1, refresh_native_metadata=None,
+                    section_indices=None):
     """Fetch every native category; split deep failing categories by real subsections.
 
     Uber's getCatalogPresentationV2 can return HTTP 200 + status=failure /
@@ -447,6 +448,11 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                 del local_session.value
 
     pairs = list(enumerate(section_uuids))
+    if section_indices is not None:
+        wanted = set(section_indices)
+        if not wanted or not wanted <= set(range(len(pairs))):
+            raise ValueError("Invalid native category indices")
+        pairs = [p for p in pairs if p[0] in wanted]
     # Different native sections can overlap network wait, never bypass shared
     # request pacing, and each pagination chain remains strictly sequential.
     if session_factory is not None and section_workers > 1 and len(pairs) >= 8:
@@ -471,12 +477,12 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
             "mode": mode,
             "subsections": children_count,
             "terminal_has_more": False})
-    if len(section_reports) != len(section_uuids):
+    if len(section_reports) != len(pairs):
         raise ValueError("Not all catalog sections reached terminal pages")
     return {
         "catalog_responses": responses,
         "catalog_complete": True,
-        "catalog_section_count": len(section_uuids),
+        "catalog_section_count": len(pairs),
         "catalog_sections_finished": len(section_reports),
         "catalog_section_reports": section_reports,
         "catalog_unique_skus": len(unique_skus),

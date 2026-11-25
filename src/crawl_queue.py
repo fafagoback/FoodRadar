@@ -149,9 +149,11 @@ class GitQueue:
             s["pending"] = s["pending"][len(ids):]
             now = time.time()
             result = []
+            attempts = s.setdefault("attempts", {})
             for sid in ids:
+                attempts[sid] = attempts.get(sid, 0) + 1
                 row = {"owner": owner, "worker": worker, "token": token,
-                       "expires": now + self.lease_seconds}
+                       "expires": now + self.lease_seconds, "attempt": attempts[sid]}
                 s["leased"][sid] = row
                 result.append((sid, row))
             return True, result
@@ -162,6 +164,8 @@ class GitQueue:
             now = time.time()
             rows = [v for v in s["leased"].values()
                     if v["owner"] == owner]
+            for group in s.get("catalog_groups", {}).values():
+                rows.extend(v for v in group["leased"].values() if v["owner"] == owner)
             for row in rows:
                 row["expires"] = now + self.lease_seconds
             return bool(rows), len(rows)
@@ -278,7 +282,7 @@ class SharedGitQueue:
             refs = [f"+{q.ref}:refs/fr-local/lane-{i:02d}" for i, q in enumerate(self.lanes)]
             self.root.git("fetch", "--no-tags", "--depth=1", self.root.remote, *refs)
             merged = {k: self.meta[k] for k in ("version", "run_id", "epoch", "source_sha", "tasks")}
-            merged.update(pending=[], leased={}, completed={})
+            merged.update(pending=[], leased={}, completed={}, catalog_groups={})
             available = set()
             for i, lane in enumerate(self.lanes):
                 state = validate_state(json.loads(self.root.git("show", f"refs/fr-local/lane-{i:02d}:queue.json").stdout))
@@ -290,6 +294,10 @@ class SharedGitQueue:
                 merged["pending"].extend(state["pending"])
                 merged["leased"].update(state["leased"])
                 merged["completed"].update(state["completed"])
+                for sid, group in state.get("catalog_groups", {}).items():
+                    if sid not in state["tasks"] or sid in merged["catalog_groups"]:
+                        raise ValueError("Invalid catalog task group owner")
+                    merged["catalog_groups"][sid] = group
             self.available = available
             merged["pending"].sort()
             return validate_state(merged)
