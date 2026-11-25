@@ -1,7 +1,7 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
-  # 修正後啟動工作機可加入已有原生分類任務池；FR_CRAWL_SPEED_TEST 完整驗證。
+  # 動態分工修正：限制未完成大型分類群組數，避免一般店家長期被排擠。
   push:
     branches: [main]
     paths: ['.github/workflows/crawl.yml']
