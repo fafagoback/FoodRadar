@@ -15,7 +15,7 @@ from raw_capture import capture_response
 from crawl_queue import artifact_name
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip
-from dynamic_crawl import runtime_queue, shared_identity, verify_queue, body_checksums, validate_task
+from dynamic_crawl import runtime_queue, shared_identity, verify_queue, body_checksums, validate_task, validate_learning_summary
 from menu_core import global_limiter
 from promo_api_recheck import verify_suspicious_store
 from raw_capture import fetch_store_raw
@@ -60,8 +60,14 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
     if not valid_threads(initial):
         raise ValueError("Invalid initial threads")
-    ctrl = AdaptiveThreads(initial, window_seconds=10, minimum_successes=4)
+    ctrl = AdaptiveThreads(initial)
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
+    if wave:
+        previous = root / 'data' / 'previous-worker-learning' / 'summary.json'
+        if previous.is_file():
+            prior = validate_learning_summary(json.loads(previous.read_text()), state, index, wave-1)
+            ctrl.resume(prior, time.monotonic(), global_limiter.snapshot())
+            print('FOODRADAR_THREADS_RESUMED=' + json.dumps(ctrl.report()), flush=True)
     transport = TransportPool()
     active, finished, uncommitted = {}, {}, {}
     reserved = deque()
@@ -194,6 +200,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                 while True:
                     now=time.monotonic()
                     snap=global_limiter.snapshot()
+                    ctrl.observe(now, snap, len(active)>=ctrl.target, len(active))
                     if pending_exchange is not None and pending_exchange.done():
                         jobs,drained,elapsed=pending_exchange.result()
                         claim_seconds+=elapsed
@@ -211,7 +218,9 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             active[pool.submit(one,kind,sid,key,lease)]=(kind,sid,key)
                     if drained and not active and not reserved and not uncommitted and not uncommitted_sections and pending_exchange is None:
                         break
-                    free=max(0,ctrl.target-len(active)-len(reserved))
+                    # The SB RPC accepts at most 12 slots per exchange. Refill
+                    # repeatedly until the current target is reached.
+                    free=min(12,max(0,ctrl.target-len(active)-len(reserved)))
                     if snap["cooldown_remaining_seconds"]>0:
                         free=0
                     done_count=len(uncommitted)+sum(map(len,uncommitted_sections.values()))
@@ -231,7 +240,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             jobs,done=queue.exchange(owner,index,slots,stores,sections)
                             return jobs,done,time.monotonic()-begin
                         pending_exchange=coordinator.submit(do_exchange)
-                    ctrl.observe(time.monotonic(),global_limiter.snapshot(),len(active)>=ctrl.target)
+                    ctrl.observe(time.monotonic(),global_limiter.snapshot(),len(active)>=ctrl.target,len(active))
                     waiting=set(active)
                     if pending_exchange is not None:
                         waiting.add(pending_exchange)
@@ -267,9 +276,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                 while True:
                     now = time.monotonic()
                     snap = global_limiter.snapshot()
-                    if snap["rate_limit_events"] > ctrl.baseline["rate_limit_events"]:
-                        ctrl.observe(now, snap, False)
-                        last_saturated = False
+                    ctrl.observe(now, snap, len(active)>=ctrl.target, len(active))
                     if claim_future is not None and claim_future.done():
                         rows, elapsed = claim_future.result()
                         claim_seconds += elapsed
@@ -328,7 +335,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         status_future = coordinator.submit(queue.read)
                         next_status_at = now + 2.0
                     saturated = len(active) >= ctrl.target
-                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), saturated)
+                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), saturated, len(active))
                     last_saturated = saturated
                     waiting = set(active)
                     for future in (claim_future, sync_future, status_future):

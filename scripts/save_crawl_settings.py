@@ -1,4 +1,4 @@
-"""Publish only the common starting value, after a successful RUN."""
+"""Publish the common starting value after all worker reports are validated."""
 import base64
 import json
 import os
@@ -22,10 +22,11 @@ def main():
     if any(m.get("run_id") != os.environ["GITHUB_RUN_ID"] or
            m.get("source_sha") != os.environ["GITHUB_SHA"] for m in manifests):
         raise SystemExit("工作機報告不屬於本次執行")
-    # The workflow calls this only after reconciliation passes. An isolated
-    # deterministic catalog gap does not invalidate other workers' measured
-    # concurrency. Exclude reports without a valid stable sample, not the run.
+    # Worker identity and assembly are validated before publishing learning.
+    # HF upload / website publication is intentionally independent.
     reports = [m.get("thread_learning") or {} for m in manifests]
+    # The controller only assigns optimal_threads after a valid busy window.
+    print("有效最佳值：" + json.dumps([r.get("optimal_threads") for r in reports]))
     best = average_best(reports)
     if best is None:
         print("樣本不足，保留原始設定")

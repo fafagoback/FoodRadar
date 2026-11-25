@@ -108,6 +108,12 @@ def validate_task(folder, state, sid, lease):
     return doc
 
 
+def validate_learning_summary(doc,state,index,wave):
+    for k,v in (("run_id",state["run_id"]),("source_sha",state["source_sha"]),
+                ("epoch",state["epoch"]),("shard_index",index),("wave",wave)):
+        if doc.get(k)!=v:raise ValueError("Saved thread learning identity mismatch")
+    return doc["thread_learning"]
+
 def restore_worker_learning(storage,state,index,wave):
     if wave==0:return None
     for previous in range(wave-1,-1,-1):
@@ -116,10 +122,7 @@ def restore_worker_learning(storage,state,index,wave):
             found=storage("recover",name,folder)
             if found is None:continue
             doc=json.loads((Path(folder)/"summary.json").read_text())
-            for k,v in (("run_id",state["run_id"]),("source_sha",state["source_sha"]),
-                        ("epoch",state["epoch"]),("shard_index",index),("wave",previous)):
-                if doc.get(k)!=v:raise ValueError("Saved thread learning identity mismatch")
-            return doc["thread_learning"]
+            return validate_learning_summary(doc,state,index,previous)
     return None
 
 
@@ -324,7 +327,8 @@ def worker_reports(summary_dir,state,index):
     learning=[r.get("thread_learning") or {} for r in reports]
     # A later 429 may have invalidated earlier learning.
     chosen=learning[-1]
-    final["thread_learning"]={**chosen,"samples":sum((r.get("samples",[]) for r in learning),[])}
+    final["thread_learning"]={**chosen,"samples":sum((r.get("samples",[]) for r in learning),[]),
+                              "events":sum((r.get("events",[]) for r in learning),[])}
     api=dict(final.get("api") or {})
     for k in ("requests","successes","rate_limit_events"):
         api[k]=sum(r.get("api",{}).get(k,0) for r in reports)

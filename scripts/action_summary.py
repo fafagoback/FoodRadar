@@ -148,6 +148,11 @@ def main(kind):
             add("同時工作機上限", integer(m.get("max_parallel_runners", 15)))
             add("有效執行緒學習樣本", integer(m.get("learning_samples")))
             add("本次最佳執行緒平均", integer(m.get("learned_initial_threads")))
+            for row in m.get("worker_learning", []):
+                add("工作機 %02d 執行緒" % row["worker"],
+                    "初始 %s；最佳 %s；結束 %s；成功下限 %s；失敗上限 %s" %
+                    tuple(row.get(k) if row.get(k) is not None else "—" for k in
+                          ("initial_threads","optimal_threads","target","lower","upper")))
         else:
             messages.append("本次沒有完整分工抓取統計；重新發布或前段失敗時，不以歷史數量冒充本次抓取成果。")
         m = read("action-reports/metrics/current.json")

@@ -1,12 +1,18 @@
-"""Bounded per-run adaptive store concurrency."""
+"""Per-worker exponential search followed by integer bisection.
+
+Only measure when work is available. A real upstream throttle is a failed
+probe; insufficient work is not. Keep the HTTP limiter and Retry-After intact.
+"""
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
+import json
 import time
 
 MIN_THREADS = 1
-MAX_THREADS = 12
-DEFAULT_THREADS = 2
+MAX_THREADS = 64
+DEFAULT_THREADS = 4
+REPROBE_SECONDS = 300
 
 def valid_threads(value):
     return type(value) is int and MIN_THREADS <= value <= MAX_THREADS
@@ -14,19 +20,22 @@ def valid_threads(value):
 @dataclass
 class AdaptiveThreads:
     initial: int
-    window_seconds: float = 15
+    window_seconds: float = 10
     minimum_successes: int = 12
     target: int = field(init=False)
-    best: int | None = field(init=False, default=None)
-    best_rate: float = field(init=False, default=0.0)
+    lower: int = 0
+    upper: int | None = None
+    best: int | None = None
+    best_rate: float = 0.0
     baseline: dict = field(default_factory=dict)
-    since: float = 0.0
-    saturated: bool = True
-    saturated_seconds: float = 0.0
     last_tick: float = 0.0
+    saturated: bool = False
+    busy_seconds: float = 0.0
+    busy_successes: int = 0
     next_probe: float = 0.0
-    direction: int = 1
+    settling: bool = False
     samples: list = field(default_factory=list)
+    events: list = field(default_factory=list)
 
     def __post_init__(self):
         if not valid_threads(self.initial):
@@ -34,91 +43,128 @@ class AdaptiveThreads:
         self.target = self.initial
 
     def reset(self, now, snapshot):
-        self.since = now
         self.baseline = dict(snapshot)
-        self.saturated = True
-        self.saturated_seconds = 0.0
         self.last_tick = now
+        self.busy_seconds = 0.0
+        self.busy_successes = 0
+        self.saturated = False
 
-    def observe(self, now, snapshot, saturated):
+    def _log(self, tested, outcome, reason):
+        event = {"tested": tested, "result": outcome, "reason": reason,
+                 "lower": self.lower, "upper": self.upper, "next": self.target}
+        self.events.append(event)
+        print("FOODRADAR_THREAD_PROBE=" + json.dumps(event), flush=True)
+
+    def _choose(self, now):
+        if self.upper is None:
+            self.target = min(MAX_THREADS, max(MIN_THREADS, self.lower * 2))
+        elif self.lower == 0:
+            self.target = max(MIN_THREADS, self.upper // 2)
+        elif self.upper - self.lower > 1:
+            self.target = (self.lower + self.upper) // 2
+        else:
+            self.target = self.lower
+        if (self.lower == MAX_THREADS or
+                (self.lower and self.upper is not None and self.upper-self.lower == 1)):
+            self.next_probe = now + REPROBE_SECONDS
+
+    def observe(self, now, snapshot, saturated, active_count=None):
         if not self.baseline:
             self.reset(now, snapshot)
+            self.saturated = saturated
             return
-        if snapshot["rate_limit_events"] > self.baseline["rate_limit_events"]:
-            self.target = max(MIN_THREADS, self.target // 2)
-            if self.best is not None and self.best > self.target:
-                self.best = None
-                self.best_rate = 0.0
-            self.next_probe = now + max(60, snapshot["cooldown_remaining_seconds"])
+        throttled = snapshot["rate_limit_events"] > self.baseline["rate_limit_events"]
+        cooling = snapshot["cooldown_remaining_seconds"] > 0
+        if throttled:
+            # Multiple responses from the same in-flight cohort are one failed
+            # probe, not repeated halving of a setting not yet tested.
+            if not self.settling:
+                tested = self.target
+                self.upper = min(self.upper, tested) if self.upper is not None else tested
+                if self.lower >= tested:
+                    self.lower = 0
+                    self.best = None
+                    self.best_rate = 0.0
+                self._choose(now)
+                self.settling = True
+                self._log(tested, "failed", "upstream_429")
             self.reset(now, snapshot)
-            self.saturated = False
             return
-        if snapshot["cooldown_remaining_seconds"] > 0:
+        if cooling or (self.settling and active_count is not None and active_count > self.target):
             self.reset(now, snapshot)
-            self.saturated = False
             return
-        self.saturated_seconds += max(0.0, now - self.last_tick) if saturated else 0.0
+        if self.settling:
+            self.settling = False
+            self.reset(now, snapshot)
+            self.saturated = saturated
+            return
+
+        # Accumulate *busy* intervals; queue handoffs and the tail do not
+        # erase already collected evidence or count as failed probes.
+        if self.saturated:
+            self.busy_seconds += max(0.0, now-self.last_tick)
+            self.busy_successes += max(0, snapshot["successes"]-self.baseline["successes"])
         self.last_tick = now
+        self.baseline = dict(snapshot)
         self.saturated = saturated
-        elapsed = now - self.since
-        if elapsed < self.window_seconds:
+        if not saturated or self.busy_seconds < self.window_seconds or self.busy_successes < self.minimum_successes:
             return
-        successes = snapshot["successes"] - self.baseline["successes"]
-        if self.saturated_seconds < elapsed * 0.65 or successes < self.minimum_successes:
-            self.reset(now, snapshot)
-            return
-        rate = successes / elapsed
-        self.samples.append({"threads": self.target, "successes": successes,
-                             "seconds": round(elapsed, 2), "rate": round(rate, 4),
-                              "saturated_seconds": round(self.saturated_seconds, 2),
-                              "limiter_interval": snapshot["interval_seconds"]})
-        improved = self.best is None or rate > self.best_rate * 1.05
-        equivalent_lower = self.best is not None and self.target < self.best and rate >= self.best_rate * 0.95
-        # Refresh the reference on every saturated window of the current
-        # best setting. A morning peak must not dominate an hours-long run.
-        if improved or equivalent_lower or self.target == self.best:
-            self.best, self.best_rate = self.target, rate
-        if now >= self.next_probe:
-            if self.best is not None and self.target != self.best:
-                self.direction = -1 if self.target > self.best else 1
-                self.target = self.best
-                self.next_probe = now + 120
-            else:
-                candidate = self.target + self.direction
-                if not valid_threads(candidate):
-                    self.direction *= -1
-                    candidate = self.target + self.direction
-                if valid_threads(candidate):
-                    self.target = candidate
+
+        tested = self.target
+        rate = self.busy_successes / max(self.busy_seconds, 1e-9)
+        self.samples.append({"threads": tested, "successes": self.busy_successes,
+                             "seconds": round(self.busy_seconds, 3), "rate": round(rate, 4),
+                             "saturated_seconds": round(self.busy_seconds, 3),
+                             "limiter_interval": snapshot["interval_seconds"]})
+        # No arbitrary 5% throughput improvement requirement. The API pacing
+        # ceiling can mask increases in available parallelism.
+        if self.upper == tested:
+            # At the minimum after a throttle, or a later re-probe of the old
+            # boundary. Fresh successful evidence supersedes that boundary.
+            self.upper = None
+        self.lower = max(self.lower, tested)
+        self.best, self.best_rate = self.lower, rate
+        converged = self.lower == MAX_THREADS or (self.upper is not None and self.upper-self.lower == 1)
+        if converged and tested == self.lower:
+            if self.next_probe and now >= self.next_probe and self.lower < MAX_THREADS:
+                self.target = self.upper
+                self.next_probe = 0.0
+            elif not self.next_probe:
+                self.next_probe = now + REPROBE_SECONDS
+        else:
+            self._choose(now)
+        if tested != self.target or len(self.samples) == 1:
+            self._log(tested, "passed", "stable_busy_window")
         self.reset(now, snapshot)
 
     def resume(self, prior, now, snapshot):
-        """Carry learning across job rollover without carrying process clocks."""
-        target=prior.get("target")
-        best=prior.get("optimal_threads")
-        rate=prior.get("best_rate")
-        if not valid_threads(target) or (best is not None and not valid_threads(best)):
+        target = prior.get("target")
+        lower = prior.get("lower", prior.get("optimal_threads") or 0)
+        upper = prior.get("upper")
+        best = prior.get("optimal_threads")
+        rate = prior.get("best_rate", 0.0)
+        delay = prior.get("probe_delay", 0.0)
+        if (not valid_threads(target) or type(lower) is not int or not 0 <= lower <= MAX_THREADS
+                or (upper is not None and (not valid_threads(upper) or upper <= lower))
+                or best != (lower or None) or type(rate) not in (int, float) or not 0 <= rate < 1e6
+                or type(delay) not in (int, float) or not 0 <= delay <= REPROBE_SECONDS):
             raise ValueError("Invalid saved thread learning")
-        if type(rate) not in (int,float) or not 0<=rate<1e6:
-            raise ValueError("Invalid saved throughput")
-        if prior.get("direction") not in (-1,1):
-            raise ValueError("Invalid probe direction")
-        delay=prior.get("probe_delay",0)
-        if type(delay) not in (int,float) or not 0<=delay<=300:
-            raise ValueError("Invalid saved probe delay")
-        self.target,self.best,self.best_rate=target,best,rate
-        self.direction=prior["direction"]
-        self.next_probe=now+delay
-        self.reset(now,snapshot)
+        self.target, self.lower, self.upper, self.best, self.best_rate = target, lower, upper, best, rate
+        self.next_probe = now + delay if delay else 0.0
+        # New runner/IP: only current-process observations can confirm a
+        # candidate again. Historic samples are merged in worker_reports.
+        self.settling = False
+        self.reset(now, snapshot)
 
     def report(self, now=None):
-        if now is None:now=time.monotonic()
+        if now is None:
+            now = time.monotonic()
         return {"initial_threads": self.initial, "optimal_threads": self.best,
-                "samples": self.samples,"target":self.target,"best_rate":self.best_rate,
-                "direction":self.direction,"probe_delay":min(300,max(0,self.next_probe-now))}
+                "samples": self.samples, "events": self.events, "target": self.target,
+                "lower": self.lower, "upper": self.upper, "best_rate": self.best_rate,
+                "probe_delay": min(REPROBE_SECONDS, max(0, self.next_probe-now))}
 
 def run_adaptive(items, capture, limiter, initial, on_result, clock=time.monotonic):
-    """At most target whole stores are in flight. Never cancel a successful request."""
     ctrl = AdaptiveThreads(initial)
     pending = deque(items)
     active = {}
@@ -126,20 +172,17 @@ def run_adaptive(items, capture, limiter, initial, on_result, clock=time.monoton
     with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool:
         while active or pending:
             snap = limiter.snapshot()
-            # React to a newly observed throttle before admitting new work.
-            if snap["rate_limit_events"] > ctrl.baseline["rate_limit_events"]:
-                ctrl.observe(clock(), snap, False)
+            ctrl.observe(clock(), snap, len(active) >= ctrl.target, len(active))
             if snap["cooldown_remaining_seconds"] <= 0:
                 while pending and len(active) < ctrl.target:
                     item = pending.popleft()
                     active[pool.submit(capture, item)] = item
             if not active:
                 if pending:
-                    ctrl.observe(clock(), limiter.snapshot(), False)
                     time.sleep(min(1, max(.05, snap["cooldown_remaining_seconds"])))
                 continue
             done, _ = wait(active, timeout=.25, return_when=FIRST_COMPLETED)
-            ctrl.observe(clock(), limiter.snapshot(), len(active) >= ctrl.target and bool(pending))
+            ctrl.observe(clock(), limiter.snapshot(), len(active) >= ctrl.target, len(active))
             for future in done:
                 active.pop(future)
                 on_result(future.result())

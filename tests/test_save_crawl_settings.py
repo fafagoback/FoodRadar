@@ -21,7 +21,7 @@ class SaveCrawlSettingsTests(unittest.TestCase):
                 path.write_text(json.dumps({
                     "shard_index": i, "run_id": "run", "source_sha": "sha",
                     "stores": [{"success": i != 0}],
-                    "thread_learning": {"optimal_threads": 6 if i < 2 else None},
+                    "thread_learning": {"optimal_threads": 16 if i < 2 else None},
                 }))
                 files.append(path)
             original = {"sha": "old", "content": base64.b64encode(
@@ -35,7 +35,7 @@ class SaveCrawlSettingsTests(unittest.TestCase):
             self.assertEqual(gh.call_count, 2)
             args = gh.call_args.args
             content = next(x[8:] for x in args if x.startswith("content="))
-            self.assertEqual(json.loads(base64.b64decode(content)), {"optimal_threads": 6})
+            self.assertEqual(json.loads(base64.b64decode(content)), {"optimal_threads": 16})
 
 if __name__ == "__main__":
     unittest.main()

@@ -729,6 +729,10 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         "batch": batch, "runners": count, "max_parallel_runners": min(count, MAX_PARALLEL),
         "learned_initial_threads": average_best([m.get("thread_learning") or {} for m in metadata]),
         "learning_samples": sum((m.get("thread_learning") or {}).get("optimal_threads") is not None for m in metadata),
+        "worker_learning": [{"worker": m["shard_index"]+1,
+            **{k: (m.get("thread_learning") or {}).get(k) for k in
+               ("initial_threads","optimal_threads","target","lower","upper","events")}}
+            for m in metadata],
         "feed_union": len(all_discovered),
         "captured_stores": len(stores), "verified_stores": len(successes),
         "owner_discovery_gap": len(owner_missing),

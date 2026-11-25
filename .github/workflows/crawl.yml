@@ -184,7 +184,9 @@ jobs:
           set -euo pipefail
           count=$(jq -er '.owner_count | select(. == 15)' data/discovery/discovery.json)
           matrix=$(jq -cn --argjson count "$count" '{include:[range(0;$count) | {shard:.,worker:(.+1|tostring|if length==1 then "0"+. else . end)}]}')
-          value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er '.optimal_threads | select(type == "number" and . >= 1 and . <= 12 and . == floor)')
+          limits=$(PYTHONPATH=src python -c 'from adaptive_threads import DEFAULT_THREADS,MAX_THREADS; print(DEFAULT_THREADS,MAX_THREADS)')
+          read -r default maximum <<< "$limits"
+          value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er --argjson max "$maximum" '.optimal_threads | select(type == "number" and . >= 1 and . <= $max and . == floor)') || value="$default"
           epoch=$(sha256sum data/discovery/discovery.json | cut -c1-16)
           printf 'batch_count=%s\nmatrix=%s\ninitial_threads=%s\nepoch=%s\n' "$count" "$matrix" "$value" "$epoch" >> "$GITHUB_OUTPUT"
           echo "共用任務池由固定 $count 台工作機動態領取，每台持續執行及學習，初始執行緒 $value" >> "$GITHUB_STEP_SUMMARY"
@@ -303,6 +305,12 @@ jobs:
         with:
           name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
           path: data/discovery
+      - name: 讀取同次 RUN 本工作機既有學習成果（如有）
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w00
+          path: data/previous-worker-learning
       - name: 動態爬取、本機保存全部原始資料
         env:
           FR_CRAWL_WAVE: '1'
@@ -391,6 +399,13 @@ jobs:
         if: ${{ needs.discover_once.result == 'success' }}
         run: python src/dynamic_crawl.py assemble
 
+      - name: 保存所有工作機平均最佳執行緒至 Repo
+        if: ${{ success() && needs.discover_once.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
+        run: python scripts/save_crawl_settings.py
+
       - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
         if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
         env:
@@ -402,12 +417,6 @@ jobs:
         # Unknown errors and missing or invalid artifacts still abort publication.
         run: python src/distributed_crawl.py merge --count ${{ needs.discover_once.outputs.batch_count }} --input-dir data/parts --upload --discovery-file data/discovery/discovery.json
 
-      - name: 保存所有工作機平均最佳執行緒至 Repo
-        if: ${{ success() && needs.discover_once.result == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
-        run: python scripts/save_crawl_settings.py
       - name: 恢復經驗證的 SQLite 加速快取（不影響 HF Raw）
         if: ${{ inputs.mode != 'full-rebuild' }}
         uses: actions/cache/restore@v4

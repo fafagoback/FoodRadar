@@ -7,20 +7,16 @@ from dynamic_crawl import restore_worker_learning
 class ThreadRollover(unittest.TestCase):
     def test_no_relearn_from_original_value_after_rollover(self):
         snapshot={"successes":0,"rate_limit_events":0,"cooldown_remaining_seconds":0,"interval_seconds":.18}
-        original=AdaptiveThreads(2);original.reset(100,snapshot)
-        original.target=5;original.best=6;original.best_rate=4.7
-        original.next_probe=150;original.direction=-1
+        original=AdaptiveThreads(4);original.reset(100,snapshot)
+        original.target=12;original.lower=8;original.upper=16;original.best=8;original.best_rate=4.7
         report=original.report(120)
-        next_worker=AdaptiveThreads(2)
+        next_worker=AdaptiveThreads(4)
         next_worker.resume(report,10,snapshot)
-        self.assertEqual((next_worker.target,next_worker.best,next_worker.best_rate),(5,6,4.7))
-        self.assertEqual(next_worker.next_probe,40)
-        next_worker.observe(12,dict(snapshot,rate_limit_events=1),True)
-        self.assertEqual(next_worker.target,2)
-        self.assertIsNone(next_worker.best)
-        third=AdaptiveThreads(2);third.resume(next_worker.report(13),100,snapshot)
-        self.assertIsNone(third.best)
-        self.assertEqual(third.target,2)
+        self.assertEqual((next_worker.target,next_worker.lower,next_worker.upper,next_worker.best),(12,8,16,8))
+        next_worker.observe(12,dict(snapshot,rate_limit_events=1,cooldown_remaining_seconds=30),True,12)
+        self.assertEqual((next_worker.target,next_worker.lower,next_worker.upper),(10,8,12))
+        third=AdaptiveThreads(4);third.resume(next_worker.report(13),100,snapshot)
+        self.assertEqual((third.target,third.lower,third.upper),(10,8,12))
 
     def test_only_own_previous_wave(self):
         state={"run_id":"run","epoch":"epoch","source_sha":"sha"}
