@@ -41,6 +41,12 @@ class BatchCrawlTests(unittest.TestCase):
         self.assertEqual(picked[0][0], "z")
         validate_state(state)
 
+    def test_late_worker_joins_existing_native_catalog_group(self):
+        from batch_crawl import assert_supported_catalog_groups
+        assert_supported_catalog_groups({"catalog_groups":{"store":{"format":"batch-section-v2"}}})
+        with self.assertRaises(ValueError):
+            assert_supported_catalog_groups({"catalog_groups":{"store":{"format":"old"}}})
+
     def test_category_batch_claim_fills_only_available_thread_slots(self):
         state = initial_state("r", "e", "sha", ["a"])
         q = GitQueue(ROOT, "r")

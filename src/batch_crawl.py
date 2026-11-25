@@ -25,6 +25,13 @@ def section_refresh_name(section_index, attempt, sequence, status):
             f"-sequence-{sequence}-status-{status}.body")
 
 
+def assert_supported_catalog_groups(state):
+    """Late-starting worker must join an already active native section pool."""
+    if any(group.get("format") != "batch-section-v2"
+           for group in state.get("catalog_groups", {}).values()):
+        raise ValueError("Unsupported legacy page checkpoint queue")
+
+
 def batch_name(state, index, wave):
     return f"fr-worker-{state['epoch']}-{index}-w{wave:02d}"
 
@@ -35,9 +42,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     queue = queue or runtime_queue()
     state = queue.read()
     verify_queue(state, shared, digest, ids)
-    if any(group.get("format") != "batch-section-v2"
-           for group in state.get("catalog_groups", {}).values()):
-        raise ValueError("Unsupported legacy page checkpoint queue")
+    assert_supported_catalog_groups(state)
     base = root / "data" / f"worker-batch-{index}"
     tasks = base / "tasks"
     tasks.mkdir(parents=True, exist_ok=False)
