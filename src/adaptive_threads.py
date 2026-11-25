@@ -22,6 +22,8 @@ class AdaptiveThreads:
     baseline: dict = field(default_factory=dict)
     since: float = 0.0
     saturated: bool = True
+    saturated_seconds: float = 0.0
+    last_tick: float = 0.0
     next_probe: float = 0.0
     direction: int = 1
     samples: list = field(default_factory=list)
@@ -35,6 +37,8 @@ class AdaptiveThreads:
         self.since = now
         self.baseline = dict(snapshot)
         self.saturated = True
+        self.saturated_seconds = 0.0
+        self.last_tick = now
 
     def observe(self, now, snapshot, saturated):
         if not self.baseline:
@@ -49,21 +53,25 @@ class AdaptiveThreads:
             self.reset(now, snapshot)
             self.saturated = False
             return
-        if snapshot["cooldown_remaining_seconds"] > 0 or snapshot["interval_seconds"] > 0.180001:
+        if snapshot["cooldown_remaining_seconds"] > 0:
             self.reset(now, snapshot)
             self.saturated = False
             return
-        self.saturated = self.saturated and saturated
+        self.saturated_seconds += max(0.0, now - self.last_tick) if saturated else 0.0
+        self.last_tick = now
+        self.saturated = saturated
         elapsed = now - self.since
         if elapsed < self.window_seconds:
             return
         successes = snapshot["successes"] - self.baseline["successes"]
-        if not self.saturated or successes < self.minimum_successes:
+        if self.saturated_seconds < elapsed * 0.65 or successes < self.minimum_successes:
             self.reset(now, snapshot)
             return
         rate = successes / elapsed
         self.samples.append({"threads": self.target, "successes": successes,
-                             "seconds": round(elapsed, 2), "rate": round(rate, 4)})
+                             "seconds": round(elapsed, 2), "rate": round(rate, 4),
+                              "saturated_seconds": round(self.saturated_seconds, 2),
+                              "limiter_interval": snapshot["interval_seconds"]})
         improved = self.best is None or rate > self.best_rate * 1.05
         equivalent_lower = self.best is not None and self.target < self.best and rate >= self.best_rate * 0.95
         # Refresh the reference on every saturated window of the current
