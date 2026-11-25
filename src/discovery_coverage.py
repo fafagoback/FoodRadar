@@ -1,5 +1,5 @@
 """Explicit, auditable coordinate plan. No upstream request until selected."""
-import hashlib,json,math,re
+import hashlib,json,math,re,os
 from pathlib import Path
 SOURCE="https://geo.maderaojen.me/datasets/tw-townships/releases/v1/2026-07-04.1/data.geojson"
 SOURCE_SHA256="4ab5da8297a75c3e3fd2cb272642693a91f04299a739897dffc8d7ae029d5196"
@@ -64,8 +64,11 @@ def township_points(document,spacing=.04,require_national=True):
         raise ValueError("Expected 368 districts and 22 counties")
     return validate_points(sorted(points,key=lambda p:p["id"]))
 
+def discovery_scope(config):
+    return os.getenv("FR_DISCOVERY_SCOPE") or config.get("discovery_scope","single")
+
 def get_points(config):
-    scope=config.get("discovery_scope","single")
+    scope=discovery_scope(config)
     if scope=="single":
         return validate_points([{"id":"foodradar","latitude":config["latitude"],
                     "longitude":config["longitude"],"county":"台北市"}])

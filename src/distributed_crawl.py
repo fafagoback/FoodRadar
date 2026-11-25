@@ -22,7 +22,7 @@ from pathlib import Path
 import requests
 
 from feed_core import scan_single_point, extract_stores_from_feed
-from discovery_coverage import get_points,validate_points,merge_store_points,COUNTIES,clean
+from discovery_coverage import get_points,validate_points,merge_store_points,COUNTIES,clean,discovery_scope
 from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
 from catalog_complete import is_recoverable_catalog_failure
@@ -212,7 +212,7 @@ def discover(config: dict, raw: Path, index: int, coverage=None):
             else:merge_store_points(unique[store_uuid],item)
         print("FOODRADAR_POINT_COMPLETE="+json.dumps(reports[-1]),flush=True)
     if not unique or not total_pages:raise RuntimeError("Feed discovery returned no complete store list")
-    if coverage is not None:coverage.update({"scope":config.get("discovery_scope","single"),
+    if coverage is not None:coverage.update({"scope":discovery_scope(config),
            "plan":plan,"reports":reports})
     return unique,total_pages
 
@@ -281,7 +281,7 @@ def load_shared_discovery(path: Path, config: dict, raw: Path, shard: int):
             or manifest["feed_pages"] < 1):
         raise ValueError("Shared feed manifest missing, incomplete or from another run")
     coverage=manifest.get("discovery_coverage")
-    scope=config.get("discovery_scope","single")
+    scope=discovery_scope(config)
     if coverage is None and scope!="single":raise ValueError("Missing multi-point coverage")
     if coverage is not None:
         points=validate_points(coverage["plan"])

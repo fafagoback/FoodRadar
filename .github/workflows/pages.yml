@@ -66,7 +66,12 @@ jobs:
               raise SystemExit("資料更新尚未完成，禁止部署")
           if source.get("conclusion") != "success":
               raise SystemExit("資料更新未成功，禁止部署")
-          jobs = read(f"/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
+          jobs = []
+          for page in range(1, 5):
+              chunk = read(f"/actions/runs/{run_id}/jobs?per_page=100&page={page}").get("jobs", [])
+              jobs.extend(chunk)
+              if len(chunk) < 100:
+                  break
           allowed = any(j.get("name", "").startswith("第十六台｜彙整驗證")
                         and j.get("conclusion") == "success"
                         and any(s.get("name") == "保存已驗證靜態資料為 Pages 來源 Artifact"
