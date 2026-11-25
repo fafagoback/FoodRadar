@@ -153,6 +153,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: 爬取前清空 SB 共用任務池（保留表結構）
+        run: python3 scripts/fr_clear_task_pool.py
       - name: 準備程式執行環境
         uses: actions/setup-python@v5
         with:
@@ -168,8 +170,6 @@ jobs:
           node --check web/packed-turso.js
           node --check web/static-catalog.js
           node --check web/data-contract.js
-      - name: 爬取前清空 SB 共用任務池（保留表結構）
-        run: python scripts/fr_clear_task_pool.py
       - name: 掃描設定座標並儲存原始 HTTP
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -464,10 +464,6 @@ jobs:
             data/**/shard-reconciliation.json
           if-no-files-found: ignore
           retention-days: 5
-      - name: 清空已完成的 SB 暫存任務池
-        if: ${{ success() && needs.discover_once.result == 'success' }}
-        run: python src/dynamic_crawl.py cleanup
-
       - name: 保存本次實際執行指標
         if: ${{ !cancelled() }}
         run: python scripts/action_summary.py capture
@@ -479,26 +475,6 @@ jobs:
           path: action-reports/metrics/
           if-no-files-found: warn
           retention-days: 5
-
-  pool_cleanup:
-    name: SB 任務池｜結束清空（成功、失敗或取消）
-    needs: [discover_once, crawl_shard, plan_recovery, recover_shard, ingest]
-    if: ${{ always() && needs.discover_once.result != 'skipped' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: 清除本次 RUN 的全部任務資料
-        run: |
-          PYTHONPATH=src python3 - <<'PY'
-          import os
-          from sb_task_pool import SupabaseQueue
-          q=SupabaseQueue('.',os.environ['GITHUB_RUN_ID'],int(os.environ['GITHUB_RUN_ATTEMPT']))
-          print('FOODRADAR_SB_POOL_PURGED='+str(q.purge()),flush=True)
-          PY
 
   report:
     name: 彙整本次繁體中文爬蟲報告
