@@ -73,9 +73,9 @@ def validate_group(sid, group):
 class PageJournal:
     """Replay the exact successful native page of this capture, not cached prices.
 
-    Store one independently verifiable page only for paginated chains. A
-    one-page category is persisted by its category artifact. Failures, invalid
-    paging, and independent promotion rechecks never use these checkpoints.
+    Persist every successful native page before advancing, including terminal
+    single-page categories. Failures, invalid paging, and independent promotion
+    rechecks never use these checkpoints.
     """
     def __init__(self, session, storage, prefix, recover=False, save_terminal=False):
         self.session = session
@@ -308,7 +308,7 @@ class CatalogBroker:
         try:
             if not attach_delivery_location(session,plan["item"]):
                 raise ValueError("Missing native delivery location")
-            journal=PageJournal(session,storage,prefix,recover=first is not None,save_terminal=False)
+            journal=PageJournal(session,storage,prefix,recover=first is not None,save_terminal=True)
             refresh=self._refresh(session,sid,raw,plan,"small")
             result=capture_catalog(journal,sid,data,raw,plan["headers"],capture_response,
                 store_attempt=plan["store_attempt"],refresh_native_metadata=refresh)
@@ -444,7 +444,7 @@ class CatalogBroker:
                 raise ValueError("Missing native delivery location")
             journal=PageJournal(session,self.storage,
                 self._name("page",sid,"-"+key+"-"+group["plan_sha"][:16]),
-                recover=lease["attempt"]>1)
+                recover=lease["attempt"]>1,save_terminal=True)
             refresh=self._refresh(session,sid,raw,plan,key)
             try:
                 result=capture_catalog(journal,sid,data,raw,plan["headers"],capture_response,

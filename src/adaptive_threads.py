@@ -84,9 +84,30 @@ class AdaptiveThreads:
                     self.target = candidate
         self.reset(now, snapshot)
 
-    def report(self):
+    def resume(self, prior, now, snapshot):
+        """Carry learning across job rollover without carrying process clocks."""
+        target=prior.get("target")
+        best=prior.get("optimal_threads")
+        rate=prior.get("best_rate")
+        if not valid_threads(target) or (best is not None and not valid_threads(best)):
+            raise ValueError("Invalid saved thread learning")
+        if type(rate) not in (int,float) or not 0<=rate<1e6:
+            raise ValueError("Invalid saved throughput")
+        if prior.get("direction") not in (-1,1):
+            raise ValueError("Invalid probe direction")
+        delay=prior.get("probe_delay",0)
+        if type(delay) not in (int,float) or not 0<=delay<=300:
+            raise ValueError("Invalid saved probe delay")
+        self.target,self.best,self.best_rate=target,best,rate
+        self.direction=prior["direction"]
+        self.next_probe=now+delay
+        self.reset(now,snapshot)
+
+    def report(self, now=None):
+        if now is None:now=time.monotonic()
         return {"initial_threads": self.initial, "optimal_threads": self.best,
-                "samples": self.samples}
+                "samples": self.samples,"target":self.target,"best_rate":self.best_rate,
+                "direction":self.direction,"probe_delay":min(300,max(0,self.next_probe-now))}
 
 def run_adaptive(items, capture, limiter, initial, on_result, clock=time.monotonic):
     """At most target whole stores are in flight. Never cancel a successful request."""

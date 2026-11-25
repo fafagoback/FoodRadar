@@ -61,6 +61,25 @@ class PageTests(unittest.TestCase):
 
 
 class SmallStoreResumeTests(unittest.TestCase):
+    def test_terminal_single_page_is_durable(self):
+        from catalog_complete import CATALOG_API
+        class S:
+            def __init__(self):self.calls=0
+            def post(self,url,json,headers,timeout):
+                self.calls+=1
+                return Response({"data":{"catalog":[],"pagingInfo":{"hasMore":False}}})
+        with tempfile.TemporaryDirectory() as t:
+            storage=MemoryArtifacts(t);session=S()
+            payload={"pagingInfo":{"offset":0},"storeFilters":{"storeUuid":"a"}}
+            first=PageJournal(session,storage,"terminal",save_terminal=True)
+            a=first.post(CATALOG_API,json=payload,headers={},timeout=1)
+            self.assertEqual(first.saved,1)
+            next_worker=PageJournal(session,storage,"terminal",recover=True,save_terminal=True)
+            b=next_worker.post(CATALOG_API,json=payload,headers={},timeout=1)
+            self.assertEqual(a.content,b.content)
+            self.assertEqual(session.calls,1)
+            self.assertEqual(next_worker.replayed,1)
+
     def test_one_small_store_replays_saved_page_on_another_worker(self):
         from catalog_complete import CATALOG_API
         class Crash(BaseException): pass

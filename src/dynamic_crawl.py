@@ -98,6 +98,21 @@ def validate_task(folder, state, sid, lease):
     return doc
 
 
+def restore_worker_learning(storage,state,index,wave):
+    if wave==0:return None
+    for previous in range(wave-1,-1,-1):
+        name=f"fr-worker-{state['epoch']}-{index}-w{previous:02d}"
+        with tempfile.TemporaryDirectory() as folder:
+            found=storage("recover",name,folder)
+            if found is None:continue
+            doc=json.loads((Path(folder)/"summary.json").read_text())
+            for k,v in (("run_id",state["run_id"]),("source_sha",state["source_sha"]),
+                        ("epoch",state["epoch"]),("shard_index",index),("wave",previous)):
+                if doc.get(k)!=v:raise ValueError("Saved thread learning identity mismatch")
+            return doc["thread_learning"]
+    return None
+
+
 def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
                    root=ROOT, capture=fetch_store_raw, verify=verify_suspicious_store):
     shared, digest, ids = shared_identity(discovery_file)
@@ -116,6 +131,12 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
         raise ValueError("Invalid initial threads")
     ctrl = AdaptiveThreads(initial)
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
+    wave=int(os.getenv("FR_CRAWL_WAVE","0"))
+    prior=restore_worker_learning(storage,state,index,wave)
+    if prior is not None:
+        ctrl.resume(prior,time.monotonic(),global_limiter.snapshot())
+        print("FOODRADAR_THREADS_RESUMED="+json.dumps({"worker":index,"wave":wave,
+            "target":ctrl.target,"optimal_threads":ctrl.best}),flush=True)
     transport = TransportPool()
     storage=ArtifactBudget(storage,int(os.getenv('FOODRADAR_ARTIFACT_BUDGET','450')))
     broker = (CatalogBroker(queue,state,discovered,owner,index,storage,transport.session)
@@ -291,7 +312,8 @@ def worker_reports(summary_dir,state,index):
         raise ValueError("Duplicate logical worker wave")
     final=dict(reports[-1])
     learning=[r.get("thread_learning") or {} for r in reports]
-    chosen=next((r for r in reversed(learning) if valid_threads(r.get("optimal_threads"))),learning[-1])
+    # A later 429 may have invalidated earlier learning.
+    chosen=learning[-1]
     final["thread_learning"]={**chosen,"samples":sum((r.get("samples",[]) for r in learning),[])}
     api=dict(final.get("api") or {})
     for k in ("requests","successes","rate_limit_events"):
