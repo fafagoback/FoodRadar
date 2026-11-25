@@ -37,6 +37,14 @@ class AdaptiveThreadTests(unittest.TestCase):
         c.observe(210, snap(552), True)
         self.assertEqual(c.best, 5)
 
+    def test_adapts_above_two_when_measured_higher_at_nondefault_pace(self):
+        c = AdaptiveThreads(2, window_seconds=10, minimum_successes=4)
+        c.reset(0, snap(interval=.22))
+        c.observe(10, snap(40, interval=.22), True)
+        self.assertEqual((c.best, c.target), (2, 3))
+        c.observe(20, snap(87, interval=.22), True)
+        self.assertEqual(c.best, 3)
+
     def test_tail_does_not_learn(self):
         c = AdaptiveThreads(6)
         c.reset(0, snap())

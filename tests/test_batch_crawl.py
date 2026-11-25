@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/"src"))
-from crawl_queue import GitQueue
+from crawl_queue import GitQueue, initial_state, validate_state, validate_batch_group
 
 class BatchCrawlTests(unittest.TestCase):
     def test_one_artifact_commits_multiple_stores(self):
@@ -25,6 +25,52 @@ class BatchCrawlTests(unittest.TestCase):
             self.assertEqual(q.reset_terminated_wave(), 1)
         self.assertEqual(state["pending"], ["a","b"])
         self.assertEqual(state["completed"], {"c":{}})
+    def test_heaviest_store_claimed_before_lexical_first(self):
+        state = initial_state("r", "e", "sha", ["a", "z"], {"a": 100, "z": 40000})
+        q = GitQueue(ROOT, "r")
+        with patch.object(q, "transact", side_effect=lambda edit: edit(state)[1]):
+            picked = q.claim("owner", 0, 1)
+        self.assertEqual(picked[0][0], "z")
+        validate_state(state)
+
+    def test_native_sections_fanout_finish_without_intermediate_artifacts(self):
+        state = initial_state("r", "e", "sha", ["a"], {"a": 30000})
+        q = GitQueue(ROOT, "r")
+        with patch.object(q, "transact", side_effect=lambda edit: edit(state)[1]):
+            sid, store_lease = q.claim("owner1", 0, 1)[0]
+            self.assertEqual(sid, "a")
+            self.assertEqual(q.register_catalog("a", store_lease["token"], ["cat0", "cat1"]), 2)
+            first = q.claim_catalog("owner2", 1, "a")
+            second = q.claim_catalog("owner3", 2, "a")
+            self.assertEqual({first[1], second[1]}, {"0", "1"})
+            q.mark_local_catalog_batch("owner2", {"a":{first[1]:first[2]["token"]}})
+            q.mark_local_catalog_batch("owner3", {"a":{second[1]:second[2]["token"]}})
+            self.assertEqual(state["catalog_groups"]["a"]["completed"], {})
+            q.mark_local_batch("owner1", {"a":store_lease["token"]})
+            self.assertEqual(state["leased"], {})
+            q.finish_catalog_batch("owner2", {"a":{first[1]:first[2]["token"]}}, 123, "worker1")
+            q.finish_catalog_batch("owner3", {"a":{second[1]:second[2]["token"]}}, 124, "worker2")
+            q.finish_batch("owner1", {"a":store_lease["token"]}, 122, "worker0")
+            self.assertEqual(len(state["catalog_groups"]["a"]["completed"]), 2)
+            validate_batch_group("a", state["catalog_groups"]["a"])
+            validate_state(state)
+
+    def test_failed_wave_requeues_only_not_durable_native_sections(self):
+        state = initial_state("r", "e", "sha", ["a"])
+        q = GitQueue(ROOT, "r")
+        with patch.object(q, "transact", side_effect=lambda edit: edit(state)[1]):
+            sid, lease = q.claim("owner", 0, 1)[0]
+            q.register_catalog(sid, lease["token"], ["s0", "s1"])
+            first = q.claim_catalog("other", 1, sid)
+            second = q.claim_catalog("other", 1, sid)
+            q.mark_local_catalog_batch("other", {sid: {first[1]:first[2]["token"]}})
+            q.finish_catalog_batch("other", {sid: {first[1]:first[2]["token"]}}, 99, "batch")
+            self.assertEqual(q.reset_terminated_wave(), 2)
+        group = state["catalog_groups"]["a"]
+        self.assertEqual(group["pending"], [second[1]])
+        self.assertEqual(set(group["completed"]), {first[1]})
+        self.assertEqual(state["pending"], ["a"])
+
     def test_workflow_has_one_worker_upload_and_no_old_cleanup_job(self):
         text = (ROOT/".github/workflows/crawl.yml").read_text()
         first = text.split("  crawl_shard:",1)[1].split("  plan_recovery:",1)[0]
