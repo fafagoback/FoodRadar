@@ -55,6 +55,30 @@ def validate_state(state):
     return state
 
 
+def validate_batch_group(sid, group):
+    """Cross-machine native category roster; raw bytes remain on workers."""
+    if group.get("format") != "batch-section-v2":
+        raise ValueError("Unknown cross-machine catalog group")
+    sections = group.get("sections")
+    if (not isinstance(sections, list) or not sections
+            or len(set(sections)) != len(sections)
+            or not all(isinstance(s, str) and s for s in sections)):
+        raise ValueError("Invalid native catalog section roster")
+    slots = [set(group.get("pending", [])), set(group.get("leased", {})),
+             set(group.get("local_done", {})), set(group.get("completed", {}))]
+    if any(slots[i] & slots[j] for i in range(4) for j in range(i+1,4)):
+        raise ValueError("Category belongs to multiple states")
+    if set.union(*slots) != set(map(str, range(len(sections)))):
+        raise ValueError("Native category coverage mismatch")
+    for row in (list(group["leased"].values()) + list(group["local_done"].values())
+                + list(group["completed"].values())):
+        if not (isinstance(row.get("worker"), int) and 0 <= row["worker"] < 15
+                and re.fullmatch(r"[a-f0-9]{32}", row.get("token", ""))
+                and row.get("owner")):
+            raise ValueError("Invalid category lease")
+    return group
+
+
 def artifact_name(state, sid, lease):
     return "fr-task-" + state["epoch"] + "-" + sid + "-" + lease["token"]
 
@@ -249,6 +273,85 @@ class GitQueue:
                 s["leased"].pop(sid, None)
                 changed = True
             return changed, len(records)
+        return self.transact(edit)
+
+    def register_catalog(self, sid, token, sections):
+        def edit(s):
+            group = s.setdefault("catalog_groups", {}).get(sid)
+            if group is not None:
+                if group.get("sections") != sections:
+                    raise ValueError("Native section roster changed")
+                return False, len(sections)
+            row = s["leased"].get(sid) or s.get("local_done", {}).get(sid)
+            if not row or row["token"] != token:
+                raise ValueError("Store lease missing for category expansion")
+            group = {"format":"batch-section-v2", "sections":list(sections),
+                     "pending":list(map(str, range(len(sections)))),
+                     "leased":{}, "local_done":{}, "completed":{}, "attempts":{}}
+            s["catalog_groups"][sid] = group
+            return True, len(sections)
+        return self.transact(edit)
+
+    def claim_catalog(self, owner, worker, sid):
+        token = uuid.uuid4().hex
+        def edit(s):
+            group = s.get("catalog_groups", {}).get(sid)
+            if not group or not group["pending"]:
+                return False, None
+            key = group["pending"].pop(0)
+            group["attempts"][key] = group["attempts"].get(key,0)+1
+            lease = {"owner":owner, "worker":worker, "token":token,
+                     "expires":time.time()+self.lease_seconds,
+                     "attempt":group["attempts"][key]}
+            group["leased"][key] = lease
+            validate_batch_group(sid, group)
+            return True, (sid, key, lease)
+        return self.transact(edit)
+
+    def mark_local_catalog_batch(self, owner, records):
+        def edit(s):
+            changed = False
+            for sid, keys in records.items():
+                group = s["catalog_groups"][sid]
+                for key, token in keys.items():
+                    prior = group["local_done"].get(key) or group["completed"].get(key)
+                    if prior is not None:
+                        if prior["owner"] != owner or prior["token"] != token:
+                            raise ValueError("Conflicting category completion")
+                        continue
+                    row = group["leased"].get(key)
+                    if not row or row["owner"] != owner or row["token"] != token:
+                        raise ValueError("Unowned category result")
+                    group["local_done"][key] = row
+                    del group["leased"][key]
+                    changed = True
+                validate_batch_group(sid, group)
+            return changed, sum(len(v) for v in records.values())
+        return self.transact(edit)
+
+    def finish_catalog_batch(self, owner, records, artifact_id, batch_name):
+        if type(artifact_id) is not int or artifact_id <= 0:
+            raise ValueError("Invalid durable category artifact")
+        def edit(s):
+            changed = False
+            for sid, keys in records.items():
+                group = s["catalog_groups"][sid]
+                for key, token in keys.items():
+                    prior = group["completed"].get(key)
+                    if prior is not None:
+                        if (prior["owner"],prior["token"],prior["artifact_id"]) != (owner,token,artifact_id):
+                            raise ValueError("Conflicting durable category result")
+                        continue
+                    row = group["local_done"].get(key) or group["leased"].get(key)
+                    if not row or row["owner"] != owner or row["token"] != token:
+                        raise ValueError("Stale category result")
+                    group["completed"][key] = {**row, "artifact_id":artifact_id,
+                                                "batch_name":batch_name}
+                    group["local_done"].pop(key,None)
+                    group["leased"].pop(key,None)
+                    changed = True
+                validate_batch_group(sid, group)
+            return changed, sum(len(v) for v in records.values())
         return self.transact(edit)
 
     def reset_terminated_wave(self):
