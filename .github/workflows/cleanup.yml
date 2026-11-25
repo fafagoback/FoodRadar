@@ -44,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for entry in '428808558:.github/workflows/adaptive-branch-test.yml' '429745485:.github/workflows/fr-completion-test.yml' '429729286:.github/workflows/fr-final-test.yml' '429311960:.github/workflows/fr-queue-test.yml'; do
+          for entry in '429745485:.github/workflows/fr-completion-test.yml' '429729286:.github/workflows/fr-final-test.yml' '429311960:.github/workflows/fr-queue-test.yml'; do
             wid="${entry%%:*}"
             path="${entry#*:}"
             runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$wid/runs?per_page=100" --jq ".workflow_runs[] | [.id,.status,.path,.workflow_id] | @tsv")
@@ -54,7 +54,7 @@ jobs:
               gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$id" --silent
               echo "已刪除舊 RUN $id ($path)"
             done <<< "$runs"
-            remaining=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wid/runs?per_page=1" --jq '.total_count')
+            remaining=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" --jq ".workflow_runs[] | select(.workflow_id == $wid) | .id" | wc -l | tr -d ' ')
             echo "$path remaining=$remaining" | tee -a "$GITHUB_STEP_SUMMARY"
             [[ "$remaining" == 0 ]]
           done
