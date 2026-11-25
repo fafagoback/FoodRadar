@@ -15,8 +15,8 @@ def main():
             state["epoch"] != os.environ["EPOCH"]):
         raise ValueError("Task pool identity mismatch")
     remaining=len(state["pending"])+len(state["leased"])+len(state.get("local_done", {}))
-    if state.get("catalog_groups"):
-        raise ValueError("Unexpected legacy category checkpoint")
+    remaining += sum(len(g["pending"])+len(g["leased"])+len(g["local_done"])
+                     for g in state.get("catalog_groups", {}).values())
     if remaining:
         q.reset_terminated_wave()
     count=min(15,remaining)

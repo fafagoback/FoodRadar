@@ -107,6 +107,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     session.close()
             result = capture(item, raw, session_factory=transport.session,
                              catalog_runner=only_section)
+            result["crawl_elapsed_ms"] = max(1, round((time.monotonic()-t)*1000))
             checks = body_checksums(raw)
             doc = {"run_id":state["run_id"], "source_sha":state["source_sha"],
                    "epoch":state["epoch"], "store_uuid":sid, "token":lease["token"],

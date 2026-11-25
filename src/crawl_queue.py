@@ -547,6 +547,7 @@ class SharedGitQueue:
                     row = self.lanes[lane].claim_catalog(owner, worker, sid)
                     if row:
                         _, key, lease = row
+                        lease["section_uuid"] = state["catalog_groups"][sid]["sections"][int(key)]
                         claimed.append(("section", sid, key, lease))
                 else:
                     rows = self.lanes[lane].claim(owner, worker, 1)
