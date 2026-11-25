@@ -47,6 +47,22 @@ class BatchCrawlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             assert_supported_catalog_groups({"catalog_groups":{"store":{"format":"old"}}})
 
+    def test_new_stores_and_existing_categories_share_work_with_bounded_groups(self):
+        from crawl_queue import prefer_new_store
+        state = {"pending":["new"], "leased":{},
+                 "catalog_groups":{"old":{"format":"batch-section-v2",
+                     "pending":["0","1"],"leased":{"2":{}}, "sections":["a","b","c"]}}}
+        self.assertTrue(prefer_new_store(state))
+        state["leased"] = {str(i):{} for i in range(5)}
+        self.assertFalse(prefer_new_store(state))
+        state["leased"] = {}
+        state["catalog_groups"] = {
+            str(i): {"format":"batch-section-v2","pending":["0"],
+                     "leased":{}, "sections":["a"]} for i in range(16)}
+        self.assertFalse(prefer_new_store(state))
+        state["catalog_groups"] = {}
+        self.assertTrue(prefer_new_store(state))
+
     def test_category_batch_claim_fills_only_available_thread_slots(self):
         state = initial_state("r", "e", "sha", ["a"])
         q = GitQueue(ROOT, "r")

@@ -55,6 +55,24 @@ def validate_state(state):
     return state
 
 
+def prefer_new_store(state, max_open_groups=16):
+    """Interleave new stores with unfinished native categories, without flooding the pool."""
+    pending_stores = state.get("pending", [])
+    groups = [g for g in state.get("catalog_groups", {}).values()
+              if g.get("format") == "batch-section-v2"]
+    pending_sections = sum(len(g.get("pending", [])) for g in groups)
+    if not pending_stores:
+        return False
+    if not pending_sections:
+        return True
+    open_groups = sum(bool(g.get("pending") or g.get("leased")) for g in groups)
+    if open_groups >= max_open_groups:
+        return False
+    active_stores = len(state.get("leased", {}))
+    active_sections = sum(len(g.get("leased", {})) for g in groups)
+    return active_stores < max(2, active_sections // 4)
+
+
 def validate_batch_group(sid, group):
     """Cross-machine native category roster; raw bytes remain on workers."""
     if group.get("format") != "batch-section-v2":
@@ -549,14 +567,17 @@ class SharedGitQueue:
             self._ensure()
             state = self.read()
             jobs = []
+            store_first = prefer_new_store(state)
             for sid, group in state.get("catalog_groups", {}).items():
                 if group.get("format") == "batch-section-v2" and group["pending"]:
                     weight = state.get("weights", {}).get(sid, 400)
-                    jobs.append((-1000000 - weight / len(group["sections"]),
+                    urgency = 1000000000 if not store_first else 0
+                    jobs.append((-urgency - weight / len(group["sections"]),
                                  sid, "section", self.lane_of[sid]))
             for sid in state["pending"]:
-                jobs.append((-state.get("weights", {}).get(sid, 400), sid,
-                             "store", self.lane_of[sid]))
+                urgency = 1000000000 if store_first else 0
+                jobs.append((-urgency - state.get("weights", {}).get(sid, 400),
+                             sid, "store", self.lane_of[sid]))
             jobs.sort()
             claimed = []
             for _, sid, kind, lane in jobs:
