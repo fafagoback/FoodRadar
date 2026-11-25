@@ -308,7 +308,7 @@ class CatalogBroker:
         try:
             if not attach_delivery_location(session,plan["item"]):
                 raise ValueError("Missing native delivery location")
-            journal=PageJournal(session,storage,prefix,recover=first is not None,save_terminal=len(plan['sections'])>1)
+            journal=PageJournal(session,storage,prefix,recover=first is not None,save_terminal=False)
             refresh=self._refresh(session,sid,raw,plan,"small")
             result=capture_catalog(journal,sid,data,raw,plan["headers"],capture_response,
                 store_attempt=plan["store_attempt"],refresh_native_metadata=refresh)

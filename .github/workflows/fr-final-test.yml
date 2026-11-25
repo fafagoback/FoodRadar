@@ -38,3 +38,31 @@ jobs:
             foodradar-state-v1-
           fail-on-cache-miss: true
       - run: python scripts/benchmark_production_repack.py
+
+  scale:
+    name: 3萬店任務池真實Git壓力與工作流結構
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install PyYAML
+      - run: |
+          python scripts/stress_crawl_pool.py
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          doc=yaml.safe_load(Path('.github/workflows/crawl.yml').read_text())
+          jobs=doc['jobs']
+          waves=['crawl_shard','recover_shard']+[f'recover_wave_{i:02d}' for i in range(2,15)]
+          assert all(jobs[k]['strategy']['max-parallel']==15 for k in waves)
+          assert len(waves)==15
+          assert 15*len(waves)+len(jobs)-len(waves)<=256
+          for i in range(2,15):
+              k=f'plan_wave_{i:02d}'
+              assert ('recover_shard' if i==2 else f'recover_wave_{i-1:02d}') in jobs[k]['needs']
+          assert 'plan_complete' in jobs['ingest']['needs']
+          print('FR_WORKFLOW_CAPACITY=101250; all waves sequential; max parallel=15')
+          PY

@@ -107,6 +107,19 @@ class DirectCaptureMigrationTests(unittest.TestCase):
             with patch("state_checkpoint.direct_contract_digest",return_value="unreviewed-code"):
                 self.assertFalse(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":"reviewed-old"},root))
 
+    def test_real_layout_migration_exact_contract(self):
+        from state_checkpoint import (compatible_direct_contract,DIRECT_LAYOUT_MIGRATIONS,
+            DIRECT_CONTRACTS,DIRECT_LAYOUT_CONTRACTS,_historical_digest,direct_contract_digest)
+        old,new=DIRECT_LAYOUT_MIGRATIONS[-2]
+        try:
+            previous=_historical_digest(ROOT,old,DIRECT_CONTRACTS)
+            current=_historical_digest(ROOT,new,DIRECT_LAYOUT_CONTRACTS)
+        except (OSError,subprocess.SubprocessError):
+            self.skipTest("Historical commits not available in shallow checkout")
+        self.assertEqual(direct_contract_digest(ROOT),current)
+        self.assertTrue(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":previous},ROOT))
+        self.assertFalse(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":"unknown"},ROOT))
+
     def test_real_reviewed_contract_digests(self):
         import subprocess
         from state_checkpoint import compatible_direct_contract, DIRECT_CAPTURE_MIGRATIONS, DIRECT_CONTRACTS, _historical_digest, direct_contract_digest

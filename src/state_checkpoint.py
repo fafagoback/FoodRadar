@@ -254,6 +254,7 @@ def save(source, raw_index_path, cache=CACHE, root=ROOT, *, compact=True):
 # the new bounded mutation path. No historical observations are regenerated
 # by expanding a full normalized SQL database.
 DIRECT_CONTRACTS=CONTRACTS+("src/compact_direct.py",)
+DIRECT_LAYOUT_CONTRACTS=DIRECT_CONTRACTS+("src/compact_templates.py","src/compact_repack.py")
 DIRECT_V3_ANCHOR="3ecd55f11ab6449f1eab661833833d17c97d3dab"
 DIRECT_V3_REVIEWED={
     "src/pipeline.py":"a55e5a5a71a2e3d78daf310afb011ceec93901cf",
@@ -262,7 +263,7 @@ DIRECT_V3_REVIEWED={
 
 def direct_contract_digest(root=ROOT):
     h=hashlib.sha256()
-    for file in DIRECT_CONTRACTS:
+    for file in DIRECT_LAYOUT_CONTRACTS:
         h.update(file.encode()+b"\0")
         h.update((Path(root)/file).read_bytes())
     return h.hexdigest()
@@ -302,12 +303,30 @@ DIRECT_CAPTURE_MIGRATIONS = (
      "91f9c257bfc100bb8c06258046ca6102ad53507f"),
 )
 
+# Explicit forward-only migration to the lossless physical representation.
+# Every previous dictionary token, shop row, quote and native evidence is
+# decoded exactly; the old v4 layout remains readable.
+DIRECT_LAYOUT_MIGRATIONS = (
+    ("ec8967d99c608519b8e99892fa331afacf532ab8","97fe6baca43bb8bcbd087b7fa03c6d372f2b646f"),
+    ("a7c6bfb0917d957c1119540fa31f32390fbf60bc","97fe6baca43bb8bcbd087b7fa03c6d372f2b646f"),
+    ("668b031becd4514357feee5e1fe930a030b71178","97fe6baca43bb8bcbd087b7fa03c6d372f2b646f"),
+    ("19731748a3a1672a977b644f09f288786e3192c0","97fe6baca43bb8bcbd087b7fa03c6d372f2b646f"),
+)
+
 def compatible_direct_contract(meta,root=ROOT):
     fmt=meta.get("format")
     current=direct_contract_digest(root) if fmt=="foodradar-checkpoint-v4" else None
     if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==current:
         return True
     if fmt=="foodradar-checkpoint-v4":
+        for old,new in DIRECT_LAYOUT_MIGRATIONS:
+            try:
+                if (current==_historical_digest(root,new,DIRECT_LAYOUT_CONTRACTS)
+                    and meta.get("contract_digest")==_historical_digest(root,old,DIRECT_CONTRACTS)):
+                    print("FOODRADAR_CHECKPOINT_LAYOUT_MIGRATION="+old+".."+new,flush=True)
+                    return True
+            except (OSError,subprocess.SubprocessError):
+                continue
         for old,new in DIRECT_CAPTURE_MIGRATIONS:
             try:
                 if (current==_historical_digest(root,new,DIRECT_CONTRACTS)

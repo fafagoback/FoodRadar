@@ -257,7 +257,7 @@ jobs:
         id: plan
         with:
           epoch: ${{ needs.discover_once.outputs.epoch }}
-          previous-progress: '0'
+          previous-progress: '-1'
 
   recover_shard:
     name: "接手 01｜工作機 ${{ matrix.worker }}"
@@ -1289,7 +1289,7 @@ jobs:
         id: plan
         with:
           epoch: ${{ needs.discover_once.outputs.epoch }}
-          previous-progress: '0'
+          previous-progress: '-1'
       - name: 確認無未完成店家或分類
         env:
           REMAINING: ${{ steps.plan.outputs.missing_count }}

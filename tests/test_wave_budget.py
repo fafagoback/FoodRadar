@@ -27,7 +27,7 @@ class WaveBudgetTest(unittest.TestCase):
         ids=[f"store-{i:06d}" for i in range(30000)]
         q=initial_state("run","epoch","sha",ids)
         self.assertEqual(len(validate_state(q)["pending"]),30000)
-        remaining=30000;previous=0;names=[]
+        remaining=30000;previous=-1;names=[]
         for wave in range(15):
             planned=plan({"remaining":remaining,"completed":30000-remaining},names,"epoch",previous)
             self.assertEqual(planned["missing_count"],15 if remaining else 0)

@@ -10,7 +10,7 @@ def plan(status,names,epoch,previous):
     progress=int(status["completed"])+int(status.get("sections_completed",0))+len(useful)
     if sections and not remaining:
         raise RuntimeError("Category tasks remain without a live store task")
-    if remaining and previous>0 and progress<=previous:
+    if remaining and previous>=0 and progress<=previous:
         raise RuntimeError("No durable progress in prior wave; refusing repeated blind retries")
     recovery=list(range(15)) if remaining else []
     return {"matrix":{"include":[{"shard":i,"worker":f"{i+1:02d}"} for i in recovery]},
