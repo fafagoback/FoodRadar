@@ -1,7 +1,7 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
-  # 修復分類資訊多次刷新與雙執行緒分類領取；FR_CRAWL_SPEED_TEST 完整驗證。
+  # 修正後啟動工作機可加入已有原生分類任務池；FR_CRAWL_SPEED_TEST 完整驗證。
   push:
     branches: [main]
     paths: ['.github/workflows/crawl.yml']
