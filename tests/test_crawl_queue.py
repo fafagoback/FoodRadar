@@ -102,6 +102,18 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(set(clients[0].read()["completed"]), set(ids))
         clients[0].cleanup()
 
+    def test_graceful_rollover_expires_only_old_owner(self):
+        a,b=self.client(0),self.client(1)
+        a.initialize(initial_state("123","epoch","sha",["a","b"]))
+        [(sid,lease)]=a.claim("old",0,1)
+        b.claim("new",1,1)
+        self.assertEqual(a.expire_owner("old"),1)
+        b.recover_expired(lambda name:None)
+        state=b.read()
+        self.assertEqual(state["pending"],[sid])
+        self.assertEqual(len(state["leased"]),1)
+        self.assertEqual(next(iter(state["leased"].values()))["owner"],"new")
+
     def test_bad_roster_is_rejected(self):
         s = initial_state("123", "epoch", "sha", ["a"])
         s["pending"].append("unexpected")

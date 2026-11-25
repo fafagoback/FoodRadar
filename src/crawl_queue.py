@@ -171,6 +171,17 @@ class GitQueue:
             return bool(rows), len(rows)
         return self.transact(edit)
 
+    def expire_owner(self,owner):
+        """Called only after that process has joined every active capture."""
+        def edit(s):
+            rows=[v for v in s["leased"].values() if v["owner"]==owner]
+            for group in s.get("catalog_groups",{}).values():
+                rows.extend(v for v in group["leased"].values() if v["owner"]==owner)
+            changed=[row for row in rows if row["expires"]>0]
+            for row in changed:row["expires"]=0
+            return bool(changed),len(changed)
+        return self.transact(edit)
+
     def finish(self, sid, token, artifact_id, recovered=False):
         if type(artifact_id) is not int or artifact_id <= 0:
             raise ValueError("Invalid durable artifact ID")
@@ -332,6 +343,12 @@ class SharedGitQueue:
                     lanes.discard(i)
                 total += n
             return total
+
+    def expire_owner(self,owner):
+        with self.lock:
+            self._ensure()
+            return sum(self.lanes[i].expire_owner(owner)
+                       for i in list(self.owner_lanes.get(owner,set())))
 
     def finish(self, sid, token, artifact_id, recovered=False):
         with self.lock:

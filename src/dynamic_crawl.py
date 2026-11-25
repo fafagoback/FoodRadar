@@ -23,6 +23,7 @@ from menu_core import global_limiter
 from promo_api_recheck import verify_suspicious_store
 from raw_capture import fetch_store_raw, CheckpointStorageError
 from catalog_broker import CatalogBroker, validate_group
+from artifact_budget import ArtifactBudget
 
 HELPER = ROOT / ".github/actions/fr-dynamic-crawl/artifact.cjs"
 
@@ -116,6 +117,7 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
     ctrl = AdaptiveThreads(initial)
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
     transport = TransportPool()
+    storage=ArtifactBudget(storage,int(os.getenv('FOODRADAR_ARTIFACT_BUDGET','450')))
     broker = (CatalogBroker(queue,state,discovered,owner,index,storage,transport.session)
               if capture is fetch_store_raw else None)
     stop = threading.Event()
@@ -201,7 +203,9 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
                 if snap["rate_limit_events"] > ctrl.baseline["rate_limit_events"]:
                     ctrl.observe(now, snap, False)
                 free = ctrl.target - len(active)
-                if free > 0 and snap["cooldown_remaining_seconds"] <= 0 and now >= next_poll:
+                if storage.exhausted and not active:
+                    break
+                if not storage.exhausted and free > 0 and snap["cooldown_remaining_seconds"] <= 0 and now >= next_poll:
                     claims = queue.claim(owner, index, free)
                     for sid, lease in claims:
                         active[pool.submit(one, sid, lease)] = (sid, lease)
@@ -230,11 +234,18 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
                                  len(active) >= ctrl.target and has_pending)
                     for future in done:
                         task = active.pop(future)
+                        try:
+                            result=future.result()
+                        except CheckpointStorageError:
+                            if storage.exhausted:
+                                # Only durable results are accepted. Unfinished leases
+                                # are expired after all capture threads have joined.
+                                continue
+                            raise
                         if task is None:
-                            future.result()
                             next_poll = 0
                             continue
-                        sid, lease, artifact_id, folder = future.result()
+                        sid, lease, artifact_id, folder = result
                         if not queue.finish(sid, lease["token"], artifact_id):
                             # A stale worker never overwrites a recovered task.
                             print("FOODRADAR_STALE_TASK_RESULT_IGNORED=" + sid, flush=True)
@@ -248,15 +259,48 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
         stop.set()
         pulse.join(timeout=45)
         transport.close()
+        if storage.exhausted:
+            queue.expire_owner(owner)
     summary = {"run_id": state["run_id"], "source_sha": state["source_sha"],
                "epoch": state["epoch"], "shard_index": index, "public_ip": public_ip(),
                "thread_learning": ctrl.report(), "api": global_limiter.snapshot(),
-               "completed": captured_count, "catalog_helpers": broker.metrics if broker else {}}
+               "completed": captured_count, "wave":int(os.getenv("FR_CRAWL_WAVE","0")),
+               "artifact_uploads":storage.used,"budget_exhausted":storage.exhausted,
+               "catalog_helpers": broker.metrics if broker else {}}
     output = root / "data" / ("worker-summary-" + str(index))
     output.mkdir(parents=True, exist_ok=True)
     (output / "summary.json").write_text(json.dumps(summary), encoding="utf8")
     print("FOODRADAR_DYNAMIC_WORKER=" + json.dumps(summary), flush=True)
     return summary
+
+
+def worker_reports(summary_dir,state,index):
+    base=f"fr-worker-{state['epoch']}-{index}"
+    paths=[summary_dir/base/"summary.json"]+sorted(summary_dir.glob(base+"-w[0-9][0-9]/summary.json"))
+    reports=[]
+    for path in paths:
+        if not path.exists():continue
+        summary=json.loads(path.read_text())
+        if any(summary.get(k)!=v for k,v in (("run_id",state["run_id"]),("source_sha",state["source_sha"]),
+                ("epoch",state["epoch"]),("shard_index",index))):
+            raise ValueError("Wrong worker summary")
+        reports.append(summary)
+    if not reports:return {}
+    reports.sort(key=lambda r:r.get("wave",0))
+    if len({r.get("wave",0) for r in reports})!=len(reports):
+        raise ValueError("Duplicate logical worker wave")
+    final=dict(reports[-1])
+    learning=[r.get("thread_learning") or {} for r in reports]
+    chosen=next((r for r in reversed(learning) if valid_threads(r.get("optimal_threads"))),learning[-1])
+    final["thread_learning"]={**chosen,"samples":sum((r.get("samples",[]) for r in learning),[])}
+    api=dict(final.get("api") or {})
+    for k in ("requests","successes","rate_limit_events"):
+        api[k]=sum(r.get("api",{}).get(k,0) for r in reports)
+    final["api"]=api
+    final["wave_count"]=len(reports)
+    final["artifact_uploads"]=sum(r.get("artifact_uploads",0) for r in reports)
+    final["worker_ips"]=list(dict.fromkeys(r["public_ip"] for r in reports if r.get("public_ip")))
+    return final
 
 
 def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
@@ -293,12 +337,7 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
             checks_by_worker[worker][relative] = checksum
         by_worker[worker].append(doc["store"])
     for index in range(15):
-        summary_path = summary_dir / f"fr-worker-{state['epoch']}-{index}" / "summary.json"
-        summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
-        if summary and any(summary.get(k) != v for k, v in (
-            ("run_id", state["run_id"]), ("source_sha", state["source_sha"]),
-            ("epoch", state["epoch"]), ("shard_index", index))):
-            raise ValueError("Wrong worker summary")
+        summary=worker_reports(summary_dir,state,index)
         stores = sorted(by_worker[index], key=lambda s: s["store_uuid"])
         if not summary:
             print("FOODRADAR_WORKER_METRICS_UNAVAILABLE=" + str(index), flush=True)
@@ -309,13 +348,13 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
                 "discovered_store_uuids": ids,
                 "assigned_store_uuids": [s["store_uuid"] for s in stores],
                 "stores": stores, "thread_learning": summary.get("thread_learning", {}),
-                "api": summary.get("api", {}), "responses": checks_by_worker[index]}
+                "api": summary.get("api", {}), "responses": checks_by_worker[index],
+                "worker_waves":summary.get("wave_count",0),"worker_ips":summary.get("worker_ips",[])}
         (output / f"foodradar-raw-shard-{index}" / "shard.json").write_text(
             json.dumps(meta, ensure_ascii=False), encoding="utf8")
     print("FOODRADAR_DYNAMIC_POOL_COMPLETE=" + json.dumps({
         "stores": len(ids), "workers": 15, "per_worker": [len(x) for x in by_worker],
-        "metrics_missing": sum(not (summary_dir / f"fr-worker-{state['epoch']}-{i}" / "summary.json").exists()
-                               for i in range(15))}), flush=True)
+        "metrics_missing":sum(not worker_reports(summary_dir,state,i) for i in range(15))}),flush=True)
 
 
 def main():
@@ -335,8 +374,11 @@ def main():
     elif args.command == "status":
         state = q.read()
         verify_queue(state, shared, digest, ids)
+        groups=state.get("catalog_groups",{}).values()
         print(json.dumps({"remaining": len(state["pending"]) + len(state["leased"]),
-                          "completed": len(state["completed"])}))
+                          "completed": len(state["completed"]),
+                          "sections_remaining":sum(len(g["pending"])+len(g["leased"]) for g in groups),
+                          "sections_completed":sum(len(g["completed"]) for g in groups)}))
     elif args.command == "worker":
         capture_worker(config, args.index, args.discovery_file, queue=q)
     elif args.command == "cleanup":

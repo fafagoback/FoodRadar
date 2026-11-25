@@ -1,0 +1,41 @@
+name: FR 任務池接手檢查
+description: Verify the same roster; continue only if durable progress occurred.
+inputs:
+  epoch:
+    required: true
+    description: Immutable discovery epoch
+  previous-progress:
+    required: true
+    description: Prior wave durable progress count
+outputs:
+  matrix:
+    value: ${{ steps.check.outputs.matrix }}
+  missing_count:
+    value: ${{ steps.check.outputs.missing_count }}
+  progress:
+    value: ${{ steps.check.outputs.progress }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: pip
+        cache-dependency-path: requirements-crawl.txt
+    - shell: bash
+      run: pip install -r requirements-crawl.txt
+    - uses: actions/download-artifact@v4
+      with:
+        name: foodradar-shared-feed-${{ inputs.epoch }}
+        path: data/discovery
+    - id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PREVIOUS_PROGRESS: ${{ inputs.previous-progress }}
+        EPOCH: ${{ inputs.epoch }}
+      run: |
+        set -euo pipefail
+        python src/dynamic_crawl.py status > "$RUNNER_TEMP/fr-queue-status.json"
+        gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .name' > "$RUNNER_TEMP/fr-artifacts"
+        python scripts/plan_crawl_wave.py

@@ -308,7 +308,7 @@ class CatalogBroker:
         try:
             if not attach_delivery_location(session,plan["item"]):
                 raise ValueError("Missing native delivery location")
-            journal=PageJournal(session,storage,prefix,recover=first is not None,save_terminal=True)
+            journal=PageJournal(session,storage,prefix,recover=first is not None,save_terminal=len(plan['sections'])>1)
             refresh=self._refresh(session,sid,raw,plan,"small")
             result=capture_catalog(journal,sid,data,raw,plan["headers"],capture_response,
                 store_attempt=plan["store_attempt"],refresh_native_metadata=refresh)
@@ -430,6 +430,8 @@ class CatalogBroker:
                 self._finish(sid,key,row,saved["id"] if saved else None,expired=True)
 
     def run_partition(self,claim):
+        if getattr(self.storage,'exhausted',False):
+            raise CheckpointStorageError('Physical job must roll over')
         sid,key,lease=claim
         group=self._group(sid)
         with tempfile.TemporaryDirectory() as temp:
@@ -472,6 +474,8 @@ class CatalogBroker:
     def finish_catalog(self,sid,raw):
         # Owner contributes work as well; never waits exclusively for helpers.
         while True:
+            if getattr(self.storage,'exhausted',False):
+                raise CheckpointStorageError('Physical job must roll over')
             group=self._group(sid)
             if group is None:
                 raise RuntimeError("Catalog group disappeared")
