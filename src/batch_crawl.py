@@ -182,102 +182,181 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         return kind, sid, key, lease["token"]
 
     try:
-        # Claim no more than the available execution slots. Store bodies remain
-        # local until a single final worker artifact upload.
-        with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
-            while True:
-                now = time.monotonic()
-                snap = global_limiter.snapshot()
-                if snap["rate_limit_events"] > ctrl.baseline["rate_limit_events"]:
-                    ctrl.observe(now, snap, False)
-                    last_saturated = False
-                if claim_future is not None and claim_future.done():
-                    rows, elapsed = claim_future.result()
-                    claim_seconds += elapsed
-                    claim_future = None
-                    if not rows:
-                        next_claim_at = now + 2.0
-                    reserved.extend(rows)
-                if sync_future is not None and sync_future.done():
-                    amount, elapsed = sync_future.result()
-                    local_commit_seconds += elapsed
-                    sync_future = None
-                if snap["cooldown_remaining_seconds"] <= 0:
-                    while reserved and len(active) < ctrl.target:
-                        kind, sid, key, lease = reserved.popleft()
-                        active[pool.submit(one, kind, sid, key, lease)] = (kind, sid, key)
-                if status_future is not None and status_future.done():
-                    state_now = status_future.result()
-                    status_future = None
-                    if state_now["pending"]:
-                        next_claim_at = now
-                    groups = state_now.get("catalog_groups", {})
-                    categories_done = all(
-                        g.get("format") == "batch-section-v2"
-                        and not g["pending"] and not g["leased"]
-                        and len(g["local_done"]) + len(g["completed"]) == len(g["sections"])
-                        for g in groups.values())
-                    if (not active and not reserved and not uncommitted and not uncommitted_sections
-                            and sync_future is None and claim_future is None
-                            and not state_now["pending"] and not state_now["leased"]
-                            and categories_done and
-                            len(state_now.get("local_done", {}))
-                            + len(state_now["completed"]) == len(ids)):
+        if hasattr(queue,"exchange"):
+            # Keep active HTTP work running while a single coordinator returns
+            # completed leases and immediately claims exactly the free slots.
+            pending_exchange=None
+            last_exchange=0.0
+            next_probe=0.0
+            empty_delay=0.6
+            drained=False
+            with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
+                while True:
+                    now=time.monotonic()
+                    snap=global_limiter.snapshot()
+                    if pending_exchange is not None and pending_exchange.done():
+                        jobs,drained,elapsed=pending_exchange.result()
+                        claim_seconds+=elapsed
+                        pending_exchange=None
+                        reserved.extend(jobs)
+                        if jobs:
+                            empty_delay=0.6
+                            next_probe=now
+                        else:
+                            next_probe=now+empty_delay
+                            empty_delay=min(2.5,empty_delay*1.4)
+                    if snap["cooldown_remaining_seconds"]<=0:
+                        while reserved and len(active)<ctrl.target:
+                            kind,sid,key,lease=reserved.popleft()
+                            active[pool.submit(one,kind,sid,key,lease)]=(kind,sid,key)
+                    if drained and not active and not reserved and not uncommitted and not uncommitted_sections and pending_exchange is None:
                         break
-                if sync_future is None and (uncommitted or uncommitted_sections) and (
-                        len(uncommitted) + sum(map(len, uncommitted_sections.values())) >= 3
-                        or not active or now - last_flush_at >= 3):
-                    staged = dict(uncommitted)
-                    staged_sections = {sid:dict(rows) for sid,rows in uncommitted_sections.items()}
-                    uncommitted.clear()
-                    uncommitted_sections.clear()
-                    last_flush_at = now
-                    def sync(rows=staged, sections=staged_sections):
-                        begin = time.monotonic()
-                        n = queue.mark_local_batch(owner, rows) if rows else 0
-                        n += queue.mark_local_sections(owner, sections) if sections else 0
-                        return n, time.monotonic() - begin
-                    sync_future = coordinator.submit(sync)
-                if (snap["cooldown_remaining_seconds"] <= 0
-                        and claim_future is None and now >= next_claim_at):
-                    free_slots = max(0, ctrl.target - len(active) - len(reserved))
-                    if free_slots and not reserved and not uncommitted and not uncommitted_sections:
-                        claim_future = coordinator.submit(claim, free_slots)
-                if (not active and not reserved and not uncommitted and not uncommitted_sections and claim_future is None
-                        and sync_future is None and status_future is None
-                        and now >= next_status_at):
-                    status_future = coordinator.submit(queue.read)
-                    next_status_at = now + 2.0
-                saturated = len(active) >= ctrl.target
-                ctrl.observe(time.monotonic(), global_limiter.snapshot(), saturated)
-                last_saturated = saturated
-                waiting = set(active)
-                for future in (claim_future, sync_future, status_future):
-                    if future is not None:
-                        waiting.add(future)
-                if not waiting:
-                    time.sleep(.15)
-                    continue
-                idle_start = time.monotonic() if not active else None
-                done, _ = wait(waiting, timeout=.25, return_when=FIRST_COMPLETED)
-                if idle_start is not None:
-                    idle_seconds += time.monotonic() - idle_start
-                for future in done:
-                    if future not in active:
-                        continue
-                    kind, sid, key, token = future.result()
-                    last_task_finished = time.monotonic()
-                    del active[future]
-                    if kind == "section":
-                        if key in section_finished.get(sid, {}):
-                            raise ValueError("Duplicate native category")
-                        section_finished.setdefault(sid, {})[key] = token
-                        uncommitted_sections.setdefault(sid, {})[key] = token
+                    free=max(0,ctrl.target-len(active)-len(reserved))
+                    if snap["cooldown_remaining_seconds"]>0:
+                        free=0
+                    done_count=len(uncommitted)+sum(map(len,uncommitted_sections.values()))
+                    # No artificial delay when a task just finished. Backoff is
+                    # only for an empty pool; heartbeat keeps long work leased.
+                    if pending_exchange is None and (
+                            (free and (done_count or now>=next_probe))
+                            or done_count>=3 or (done_count and now-last_exchange>=1)
+                            or now-last_exchange>=30):
+                        stores=dict(uncommitted)
+                        sections={sid:dict(keys) for sid,keys in uncommitted_sections.items()}
+                        uncommitted.clear()
+                        uncommitted_sections.clear()
+                        last_exchange=now
+                        def do_exchange(slots=free,stores=stores,sections=sections):
+                            begin=time.monotonic()
+                            jobs,done=queue.exchange(owner,index,slots,stores,sections)
+                            return jobs,done,time.monotonic()-begin
+                        pending_exchange=coordinator.submit(do_exchange)
+                    ctrl.observe(time.monotonic(),global_limiter.snapshot(),len(active)>=ctrl.target)
+                    waiting=set(active)
+                    if pending_exchange is not None:
+                        waiting.add(pending_exchange)
+                    idle_start=time.monotonic() if not active else None
+                    if waiting:
+                        done,_=wait(waiting,timeout=.15,return_when=FIRST_COMPLETED)
                     else:
-                        if sid in finished:
-                            raise ValueError("Duplicate local store")
-                        finished[sid] = token
-                        uncommitted[sid] = token
+                        time.sleep(.1)
+                        done=set()
+                    if idle_start is not None:
+                        idle_seconds+=time.monotonic()-idle_start
+                    for future in done:
+                        if future not in active:
+                            continue
+                        kind,sid,key,token=future.result()
+                        last_task_finished=time.monotonic()
+                        del active[future]
+                        drained=False
+                        if kind=="section":
+                            if key in section_finished.get(sid,{}):
+                                raise ValueError("Duplicate native category")
+                            section_finished.setdefault(sid,{})[key]=token
+                            uncommitted_sections.setdefault(sid,{})[key]=token
+                        else:
+                            if sid in finished:
+                                raise ValueError("Duplicate local store")
+                            finished[sid]=token
+                            uncommitted[sid]=token
+        else:
+            # Claim no more than the available execution slots. Store bodies remain
+            # local until a single final worker artifact upload.
+            with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
+                while True:
+                    now = time.monotonic()
+                    snap = global_limiter.snapshot()
+                    if snap["rate_limit_events"] > ctrl.baseline["rate_limit_events"]:
+                        ctrl.observe(now, snap, False)
+                        last_saturated = False
+                    if claim_future is not None and claim_future.done():
+                        rows, elapsed = claim_future.result()
+                        claim_seconds += elapsed
+                        claim_future = None
+                        if not rows:
+                            next_claim_at = now + 2.0
+                        reserved.extend(rows)
+                    if sync_future is not None and sync_future.done():
+                        amount, elapsed = sync_future.result()
+                        local_commit_seconds += elapsed
+                        sync_future = None
+                    if snap["cooldown_remaining_seconds"] <= 0:
+                        while reserved and len(active) < ctrl.target:
+                            kind, sid, key, lease = reserved.popleft()
+                            active[pool.submit(one, kind, sid, key, lease)] = (kind, sid, key)
+                    if status_future is not None and status_future.done():
+                        state_now = status_future.result()
+                        status_future = None
+                        if state_now["pending"]:
+                            next_claim_at = now
+                        groups = state_now.get("catalog_groups", {})
+                        categories_done = all(
+                            g.get("format") == "batch-section-v2"
+                            and not g["pending"] and not g["leased"]
+                            and len(g["local_done"]) + len(g["completed"]) == len(g["sections"])
+                            for g in groups.values())
+                        if (not active and not reserved and not uncommitted and not uncommitted_sections
+                                and sync_future is None and claim_future is None
+                                and not state_now["pending"] and not state_now["leased"]
+                                and categories_done and
+                                len(state_now.get("local_done", {}))
+                                + len(state_now["completed"]) == len(ids)):
+                            break
+                    if sync_future is None and (uncommitted or uncommitted_sections) and (
+                            len(uncommitted) + sum(map(len, uncommitted_sections.values())) >= 3
+                            or not active or now - last_flush_at >= 3):
+                        staged = dict(uncommitted)
+                        staged_sections = {sid:dict(rows) for sid,rows in uncommitted_sections.items()}
+                        uncommitted.clear()
+                        uncommitted_sections.clear()
+                        last_flush_at = now
+                        def sync(rows=staged, sections=staged_sections):
+                            begin = time.monotonic()
+                            n = queue.mark_local_batch(owner, rows) if rows else 0
+                            n += queue.mark_local_sections(owner, sections) if sections else 0
+                            return n, time.monotonic() - begin
+                        sync_future = coordinator.submit(sync)
+                    if (snap["cooldown_remaining_seconds"] <= 0
+                            and claim_future is None and now >= next_claim_at):
+                        free_slots = max(0, ctrl.target - len(active) - len(reserved))
+                        if free_slots and not reserved and not uncommitted and not uncommitted_sections:
+                            claim_future = coordinator.submit(claim, free_slots)
+                    if (not active and not reserved and not uncommitted and not uncommitted_sections and claim_future is None
+                            and sync_future is None and status_future is None
+                            and now >= next_status_at):
+                        status_future = coordinator.submit(queue.read)
+                        next_status_at = now + 2.0
+                    saturated = len(active) >= ctrl.target
+                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), saturated)
+                    last_saturated = saturated
+                    waiting = set(active)
+                    for future in (claim_future, sync_future, status_future):
+                        if future is not None:
+                            waiting.add(future)
+                    if not waiting:
+                        time.sleep(.15)
+                        continue
+                    idle_start = time.monotonic() if not active else None
+                    done, _ = wait(waiting, timeout=.25, return_when=FIRST_COMPLETED)
+                    if idle_start is not None:
+                        idle_seconds += time.monotonic() - idle_start
+                    for future in done:
+                        if future not in active:
+                            continue
+                        kind, sid, key, token = future.result()
+                        last_task_finished = time.monotonic()
+                        del active[future]
+                        if kind == "section":
+                            if key in section_finished.get(sid, {}):
+                                raise ValueError("Duplicate native category")
+                            section_finished.setdefault(sid, {})[key] = token
+                            uncommitted_sections.setdefault(sid, {})[key] = token
+                        else:
+                            if sid in finished:
+                                raise ValueError("Duplicate local store")
+                            finished[sid] = token
+                            uncommitted[sid] = token
     finally:
         transport.close()
     manifest = {"run_id": state["run_id"], "source_sha": state["source_sha"],
@@ -297,6 +376,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                            "local_commit_seconds": round(local_commit_seconds, 2),
                            "last_task_finish_seconds": round((last_task_finished or started)-started, 2),
                            "barrier_wait_seconds": round(time.monotonic()-(last_task_finished or started),2)}}
+    if hasattr(queue,"metrics"):
+        summary["sb_queue"]=queue.metrics()
     (base / "summary.json").write_text(json.dumps(summary), encoding="utf8")
     print("FOODRADAR_DYNAMIC_WORKER=" + json.dumps(summary), flush=True)
     return summary
@@ -327,8 +408,11 @@ def finalize(index, artifact_id, discovery_file, queue=None, root=ROOT):
     if actual_folders != expected_folders:
         raise ValueError("Worker native section folders do not match manifest")
     t = time.monotonic()
-    count = q.finish_batch(doc["owner"], doc["records"], artifact_id, doc["name"])
-    section_count = q.finish_section_batch(doc["owner"], sections, artifact_id, doc["name"])
+    if hasattr(q,"finalize_batch"):
+        count,section_count=q.finalize_batch(doc["owner"],doc["records"],sections,artifact_id,doc["name"])
+    else:
+        count = q.finish_batch(doc["owner"], doc["records"], artifact_id, doc["name"])
+        section_count = q.finish_section_batch(doc["owner"], sections, artifact_id, doc["name"])
     print("FOODRADAR_BATCH_FINALIZED=" + json.dumps({"worker": index, "wave": wave,
           "stores": count, "sections": section_count, "artifact_id": artifact_id, "queue_commit_seconds": round(time.monotonic()-t, 2)}), flush=True)
 

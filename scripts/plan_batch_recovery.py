@@ -5,9 +5,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"src"))
 from crawl_queue import SharedGitQueue
+from sb_task_pool import SupabaseQueue
 
 def main():
-    q=SharedGitQueue(Path(__file__).resolve().parents[1],os.environ["GITHUB_RUN_ID"],
+    cls=SupabaseQueue if os.environ.get("FR_QUEUE_BACKEND")=="sb" else SharedGitQueue
+    q=cls(Path(__file__).resolve().parents[1],os.environ["GITHUB_RUN_ID"],
                      int(os.environ.get("GITHUB_RUN_ATTEMPT","1")))
     state=q.read()
     if (state["run_id"] != os.environ["GITHUB_RUN_ID"] or

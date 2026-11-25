@@ -31,6 +31,7 @@ on:
         type: string
 env:
   FR_DISCOVERY_SCOPE: ${{ inputs.discovery_scope || 'single' }}
+  FR_QUEUE_BACKEND: sb
 permissions:
   contents: read
 concurrency:
@@ -200,6 +201,7 @@ jobs:
       max-parallel: 15
       matrix: ${{ fromJSON(needs.discover_once.outputs.matrix) }}
     permissions:
+      id-token: write
       contents: write
       actions: read
     steps:
@@ -249,6 +251,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      id-token: write
       actions: read
       contents: write
     outputs:
@@ -274,6 +277,7 @@ jobs:
       max-parallel: 15
       matrix: ${{ fromJSON(needs.plan_recovery.outputs.matrix) }}
     permissions:
+      id-token: write
       contents: write
       actions: read
     steps:
@@ -323,6 +327,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
+      id-token: write
       contents: write
     environment:
       name: github-pages
@@ -452,7 +457,7 @@ jobs:
             data/**/shard-reconciliation.json
           if-no-files-found: ignore
           retention-days: 5
-      - name: 移除已完成的臨時任務池分支
+      - name: 清空已完成的 SB 暫存任務池
         if: ${{ success() && needs.discover_once.result == 'success' }}
         run: python src/dynamic_crawl.py cleanup
 
@@ -467,6 +472,26 @@ jobs:
           path: action-reports/metrics/
           if-no-files-found: warn
           retention-days: 5
+
+  pool_cleanup:
+    name: SB 任務池｜結束清空（成功、失敗或取消）
+    needs: [discover_once, crawl_shard, plan_recovery, recover_shard, ingest]
+    if: ${{ always() && needs.discover_once.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 清除本次 RUN 的全部任務資料
+        run: |
+          PYTHONPATH=src python3 - <<'PY'
+          import os
+          from sb_task_pool import SupabaseQueue
+          q=SupabaseQueue('.',os.environ['GITHUB_RUN_ID'],int(os.environ['GITHUB_RUN_ATTEMPT']))
+          print('FOODRADAR_SB_POOL_PURGED='+str(q.purge()),flush=True)
+          PY
 
   report:
     name: 彙整本次繁體中文爬蟲報告
