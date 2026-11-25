@@ -56,7 +56,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
 
     def claim(count):
         t = time.monotonic()
-        rows = queue.claim(owner, index, count)
+        rows = queue.claim_work(owner, index, count)
         return rows, time.monotonic() - t
 
     def one(kind, sid, key, lease):
@@ -175,10 +175,10 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     claim_future = None
                     if not rows:
                         next_claim_at = now + 2.0
-                    for sid, lease in rows:
+                    for kind, sid, key, lease in rows:
                         if len(active) >= ctrl.target:
                             raise ValueError("Claimed more than free execution slots")
-                        active[pool.submit(one, sid, lease)] = sid
+                        active[pool.submit(one, kind, sid, key, lease)] = (kind, sid, key)
                 if sync_future is not None and sync_future.done():
                     amount, elapsed = sync_future.result()
                     local_commit_seconds += elapsed
@@ -188,28 +188,39 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     status_future = None
                     if state_now["pending"]:
                         next_claim_at = now
-                    if (not active and not uncommitted and sync_future is None
-                            and claim_future is None and not state_now["pending"]
-                            and not state_now["leased"]
-                            and (len(state_now.get("local_done", {}))
-                                 + len(state_now["completed"]) == len(ids))):
+                    groups = state_now.get("catalog_groups", {})
+                    categories_done = all(
+                        g.get("format") == "batch-section-v2"
+                        and not g["pending"] and not g["leased"]
+                        and len(g["local_done"]) + len(g["completed"]) == len(g["sections"])
+                        for g in groups.values())
+                    if (not active and not uncommitted and not uncommitted_sections
+                            and sync_future is None and claim_future is None
+                            and not state_now["pending"] and not state_now["leased"]
+                            and categories_done and
+                            len(state_now.get("local_done", {}))
+                            + len(state_now["completed"]) == len(ids)):
                         break
-                if sync_future is None and uncommitted and (
-                        len(uncommitted) >= 3 or not active or now - last_flush_at >= 3):
+                if sync_future is None and (uncommitted or uncommitted_sections) and (
+                        len(uncommitted) + sum(map(len, uncommitted_sections.values())) >= 3
+                        or not active or now - last_flush_at >= 3):
                     staged = dict(uncommitted)
+                    staged_sections = {sid:dict(rows) for sid,rows in uncommitted_sections.items()}
                     uncommitted.clear()
+                    uncommitted_sections.clear()
                     last_flush_at = now
-                    def sync(rows=staged):
+                    def sync(rows=staged, sections=staged_sections):
                         begin = time.monotonic()
-                        n = queue.mark_local_batch(owner, rows)
+                        n = queue.mark_local_batch(owner, rows) if rows else 0
+                        n += queue.mark_local_sections(owner, sections) if sections else 0
                         return n, time.monotonic() - begin
                     sync_future = coordinator.submit(sync)
                 if (snap["cooldown_remaining_seconds"] <= 0
                         and claim_future is None and now >= next_claim_at):
                     free_slots = max(0, ctrl.target - len(active))
-                    if free_slots and not uncommitted:
+                    if free_slots and not uncommitted and not uncommitted_sections:
                         claim_future = coordinator.submit(claim, free_slots)
-                if (not active and not uncommitted and claim_future is None
+                if (not active and not uncommitted and not uncommitted_sections and claim_future is None
                         and sync_future is None and status_future is None
                         and now >= next_status_at):
                     status_future = coordinator.submit(queue.read)
@@ -234,22 +245,30 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                 for future in done:
                     if future not in active:
                         continue
-                    sid, token = future.result()
+                    kind, sid, key, token = future.result()
                     del active[future]
-                    if sid in finished:
-                        raise ValueError("Duplicate local store")
-                    finished[sid] = token
-                    uncommitted[sid] = token
+                    if kind == "section":
+                        if key in section_finished.get(sid, {}):
+                            raise ValueError("Duplicate native category")
+                        section_finished.setdefault(sid, {})[key] = token
+                        uncommitted_sections.setdefault(sid, {})[key] = token
+                    else:
+                        if sid in finished:
+                            raise ValueError("Duplicate local store")
+                        finished[sid] = token
+                        uncommitted[sid] = token
     finally:
         transport.close()
     manifest = {"run_id": state["run_id"], "source_sha": state["source_sha"],
                 "epoch": state["epoch"], "owner": owner, "worker": index,
-                "wave": wave, "name": batch_name(state, index, wave), "records": finished}
+                "wave": wave, "name": batch_name(state, index, wave), "records": finished,
+                 "sections": section_finished}
     (base / "batch.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf8")
     summary = {"run_id": state["run_id"], "source_sha": state["source_sha"],
                "epoch": state["epoch"], "shard_index": index, "public_ip": public_ip(),
                "thread_learning": ctrl.report(), "api": global_limiter.snapshot(),
-               "completed": len(finished), "wave": wave, "artifact_uploads": 1,
+               "completed": len(finished), "sections_completed": sum(len(x) for x in section_finished.values()),
+                "wave": wave, "artifact_uploads": 1,
                "budget_exhausted": False,
                "timing": {"worker_seconds": round(time.monotonic()-started, 2),
                           "claim_seconds": round(claim_seconds, 2),
@@ -278,10 +297,17 @@ def finalize(index, artifact_id, discovery_file, queue=None, root=ROOT):
         artifact_name(state, sid, {"token": token}) for sid, token in doc["records"].items()
     }:
         raise ValueError("Worker batch task folders do not match manifest")
+    sections = doc.get("sections", {})
+    expected_folders = {sid + "-" + key + "-" + token
+                        for sid, keys in sections.items() for key, token in keys.items()}
+    actual_folders = {p.name for p in (base/"sections").iterdir()} if (base/"sections").exists() else set()
+    if actual_folders != expected_folders:
+        raise ValueError("Worker native section folders do not match manifest")
     t = time.monotonic()
     count = q.finish_batch(doc["owner"], doc["records"], artifact_id, doc["name"])
+    section_count = q.finish_section_batch(doc["owner"], sections, artifact_id, doc["name"])
     print("FOODRADAR_BATCH_FINALIZED=" + json.dumps({"worker": index, "wave": wave,
-          "stores": count, "artifact_id": artifact_id, "queue_commit_seconds": round(time.monotonic()-t, 2)}), flush=True)
+          "stores": count, "sections": section_count, "artifact_id": artifact_id, "queue_commit_seconds": round(time.monotonic()-t, 2)}), flush=True)
 
 def reset_terminated_wave(discovery_file, queue=None):
     q = queue or runtime_queue()
