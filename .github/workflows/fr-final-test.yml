@@ -1,0 +1,40 @@
+name: FR 開發驗收｜逐頁接手與共享商品
+on:
+  push:
+    branches: [feature/fr-final-resume-pool]
+permissions:
+  contents: read
+concurrency:
+  group: fr-final-resume-pool
+  cancel-in-progress: true
+jobs:
+  tests:
+    name: 回歸及跨店獨立更新驗證
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+  actual-db:
+    name: 實際資料｜共享商品無損容量效能實測
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-final-readonly-${{ github.run_id }}
+          restore-keys: |
+            foodradar-state-v1-
+          fail-on-cache-miss: true
+      - run: python scripts/benchmark_production_repack.py

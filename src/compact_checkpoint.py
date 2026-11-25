@@ -155,6 +155,8 @@ def expand(source: str | Path, target: str | Path, *, append=False, finalize=Tru
     compact = sqlite3.connect(f"file:{source.resolve()}?mode=ro", uri=True)
     compact.execute("PRAGMA query_only=ON")
     dictionaries = {key: _unpack(blob) for key, blob in compact.execute("SELECT key,payload FROM dictionary")}
+    from compact_templates import Templates
+    templates = Templates(dictionaries)
     scols, pcols, batches = (dictionaries[key] for key in
                            ("__store_columns", "__product_columns", "__batch_keys"))
 
@@ -195,7 +197,7 @@ def expand(source: str | Path, target: str | Path, *, append=False, finalize=Tru
                    [s[k] for k in ins])
         stores += 1
         p_rows = []
-        for record in product_data:
+        for record in templates.rows(product_data):
             p = dict(zip(pcols, [decode(c, v) for c, v in zip(pcols, record)]))
             p["store_uuid"] = sid
             p["state_hash"] = canonical_hash({k: p[k] for k in PRODUCT_HASH_FIELDS})

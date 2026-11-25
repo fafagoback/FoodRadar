@@ -27,6 +27,7 @@ on:
       - 'src/dynamic_crawl.py'
       - 'src/catalog_broker.py'
       - 'src/compact_repack.py'
+      - 'src/compact_templates.py'
       - '.github/actions/fr-dynamic-crawl/**'
       - 'src/crawl_transport.py'
       - 'scripts/save_crawl_settings.py'

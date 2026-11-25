@@ -20,6 +20,7 @@ from pathlib import Path
 
 import msgpack
 import zstandard as zstd
+from compact_templates import Templates, KEY, choose_pool
 
 TABLES = (("dictionary", "key"), ("shop_state", "store"), ("price_history", "store"))
 SCHEMA = """CREATE TABLE dictionary(key TEXT PRIMARY KEY,payload BLOB NOT NULL) WITHOUT ROWID;
@@ -41,21 +42,38 @@ def digest(path):
         tables = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if tables != {t for t, _ in TABLES}:
             raise ValueError("Unexpected compact database schema")
+        dictionary={k:msgpack.unpackb(d.decompress(v),raw=False,strict_map_key=False)
+                    for k,v in db.execute("SELECT key,payload FROM dictionary")}
+        templates=Templates(dictionary)
         for table, key in TABLES:
             h.update(table.encode("utf8") + b"\0")
             for identity, blob in db.execute(f"SELECT {key},payload FROM {table} ORDER BY {key}"):
+                if table=="dictionary" and identity==KEY:continue
                 token = msgpack.packb(identity, use_bin_type=True)
                 value = d.decompress(blob)
+                if table=="shop_state" and templates.pool:
+                    header,rows=msgpack.unpackb(value,raw=False,strict_map_key=False)
+                    value=msgpack.packb([header,templates.rows(rows)],use_bin_type=True)
                 h.update(struct.pack(">QQ", len(token), len(value)))
                 h.update(token)
                 h.update(value)
     return h.hexdigest()
 
 
-def build(source, target, page_size, levels=(12, 16)):
+def build(source, target, page_size, levels=(12, 16), *, share=False):
     d = zstd.ZstdDecompressor()
     codecs = [zstd.ZstdCompressor(level=n, write_content_size=True) for n in levels]
     with ro(source) as old, sqlite3.connect(target) as new:
+        info={}
+        prior=new_codec=None
+        if share:
+            dictionary={k:msgpack.unpackb(d.decompress(v),raw=False,strict_map_key=False)
+                        for k,v in old.execute("SELECT key,payload FROM dictionary")}
+            prior=Templates(dictionary)
+            pool,info=choose_pool(prior,(msgpack.unpackb(d.decompress(v),raw=False,strict_map_key=False)[1]
+                for v, in old.execute("SELECT payload FROM shop_state")))
+            dictionary[KEY]=pool
+            new_codec=Templates(dictionary)
         new.execute("PRAGMA page_size=" + str(page_size))
         new.execute("PRAGMA journal_mode=OFF")
         new.execute("PRAGMA synchronous=OFF")
@@ -63,15 +81,24 @@ def build(source, target, page_size, levels=(12, 16)):
         for table, key in TABLES:
             def rows():
                 for identity, blob in old.execute(f"SELECT {key},payload FROM {table} ORDER BY {key}"):
+                    if share and table=="dictionary" and identity==KEY:continue
                     raw = d.decompress(blob)
                     best = blob
+                    if share and table=="shop_state":
+                        header,rows=msgpack.unpackb(raw,raw=False,strict_map_key=False)
+                        raw=msgpack.packb([header,new_codec.encode_rows(prior.rows(rows))],use_bin_type=True)
+                        best=codecs[0].compress(raw)
                     for codec in codecs:
                         candidate = codec.compress(raw)
                         if len(candidate) < len(best):
                             best = candidate
                     yield identity, best
             new.executemany(f"INSERT INTO {table} VALUES(?,?)", rows())
+        if share and new_codec.pool:
+            raw=msgpack.packb(new_codec.pool,use_bin_type=True)
+            new.execute("INSERT INTO dictionary VALUES(?,?)",(KEY,min((c.compress(raw) for c in codecs),key=len)))
         new.commit()
+        return info
 
 
 def benchmark(path, repeats=3):
@@ -98,13 +125,15 @@ def benchmark(path, repeats=3):
             dictionary = {k: decode(v) for k, v in db.execute("SELECT key,payload FROM dictionary")}
             if not dictionary:
                 raise ValueError("Missing compact dictionary")
+            templates=Templates(dictionary)
             opens.append(time.perf_counter() - t)
             a, b, both = [], [], []
             t = time.perf_counter()
             for sid in ids:
                 q = time.perf_counter()
                 state = db.execute("SELECT payload FROM shop_state WHERE store=?", (sid,)).fetchone()
-                decode(state[0])
+                header,rows=decode(state[0])
+                templates.rows(rows)
                 middle = time.perf_counter()
                 history = db.execute("SELECT payload FROM price_history WHERE store=?", (sid,)).fetchone()
                 decode(history[0])
@@ -123,7 +152,7 @@ def benchmark(path, repeats=3):
             "pair_p95_us": statistics.median(pair_p95) * 1e6}
 
 
-def select(path, directory, *, measure=benchmark, candidates=(512, 1024)):
+def select(path, directory, *, measure=benchmark, candidates=(512, 1024), include_templates=True):
     """Return the best passing file or None. Source remains untouched."""
     path, directory = Path(path), Path(directory)
     expected = digest(path)
@@ -134,11 +163,15 @@ def select(path, directory, *, measure=benchmark, candidates=(512, 1024)):
     winner = None
     if baseline is None:
         return winner, report
-    for size in candidates:
-        target = directory / f"candidate-{size}.db"
+    modes=[(n,False) for n in candidates]
+    if include_templates:modes += [(n,True) for n in candidates]
+    for size,share in modes:
+        target = directory / f"candidate-{size}-{int(share)}.db"
         started = time.perf_counter()
         try:
-            build(path, target, size)
+            info=build(path, target, size, share=share)
+            if share and not info.get("shared_groups"):
+                target.unlink();continue
             if digest(target) != expected:
                 raise ValueError("Repacked checkpoint changed exact logical bytes")
             n = target.stat().st_size
@@ -146,7 +179,7 @@ def select(path, directory, *, measure=benchmark, candidates=(512, 1024)):
             # No arbitrary tolerance: smaller files are only eligible if
             # every measured read metric is at least as good as baseline.
             passes = bool(metrics and all(metrics[k] <= v for k, v in baseline.items()))
-            row = {"page_size": size, "bytes": n, "exact": True,
+            row = {"page_size": size, "shared_templates":share, **info, "bytes": n, "exact": True,
                    "build_seconds": round(time.perf_counter() - started, 3),
                    "metrics": metrics, "read_gate_pass": passes}
             report["candidates"].append(row)
@@ -156,6 +189,7 @@ def select(path, directory, *, measure=benchmark, candidates=(512, 1024)):
                 winner = target
                 report["after_bytes"] = n
                 report["selected_page_size"] = size
+                report["selected_shared_templates"]=share
             else:
                 target.unlink()
         except Exception:
@@ -175,7 +209,7 @@ def optimize_part(part):
     marker = path.with_suffix(path.suffix + ".physical.json")
     if marker.exists():
         prior = json.loads(marker.read_text())
-        if prior.get("version") == 1 and path.stat().st_size <= prior["bytes"] * 1.10:
+        if prior.get("version") == 2 and path.stat().st_size <= prior["bytes"] * 1.10:
             return {"skipped": "within_last_verified_size", "bytes": path.stat().st_size}
     with tempfile.TemporaryDirectory(prefix="fr-compact-", dir=path.parent) as folder:
         winner, report = select(path, folder)
@@ -187,6 +221,10 @@ def optimize_part(part):
                 part.conn = sqlite3.connect(path)
                 part.conn.execute("PRAGMA journal_mode=MEMORY")
                 part.conn.execute("PRAGMA temp_store=MEMORY")
-        marker.write_text(json.dumps({"version": 1, "bytes": path.stat().st_size}))
+                part.d={k:msgpack.unpackb(zstd.ZstdDecompressor().decompress(v),raw=False,strict_map_key=False)
+                        for k,v in part.conn.execute("SELECT key,payload FROM dictionary")}
+                part.templates=Templates(part.d)
+                part.tokens.clear()
+        marker.write_text(json.dumps({"version": 2, "bytes": path.stat().st_size}))
         print("FOODRADAR_PHYSICAL_COMPACTION=" + json.dumps(report), flush=True)
         return report

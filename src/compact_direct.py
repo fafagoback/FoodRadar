@@ -14,6 +14,7 @@ from fractions import Fraction
 from pathlib import Path
 from compact_checkpoint import (_pack,_unpack,binary_uuid,text_uuid,KINDS,OMITTED,
     STORE_HASH_FIELDS,PRODUCT_HASH_FIELDS)
+from compact_templates import Templates
 from serving_state import ensure_schema_and_migrations,canonical_hash,apply_snapshot,store_identity
 from verified_weekly import TW,_two_decimals,iter_weekly_price_evidence
 
@@ -50,6 +51,7 @@ class CompactStore:
         else:
             self.d={k:_unpack(v) for k,v in self.conn.execute("SELECT key,payload FROM dictionary")}
         self.sc=self.d["__store_columns"];self.pc=self.d["__product_columns"]
+        self.templates=Templates(self.d)
         self.batches=[tuple(x) for x in self.d["__batch_keys"]]
         self.bidx={x:i for i,x in enumerate(self.batches)}
         self.tokens={}
@@ -79,6 +81,7 @@ class CompactStore:
         with self.conn:
             for sid in sorted(self.ids):
                 header,rows=_unpack(self._payload(sid,"shop_state"))
+                rows=self.templates.rows(rows)
                 changed=False
                 for row in rows:
                     old=row[ci]
@@ -86,7 +89,7 @@ class CompactStore:
                     removed+=len(old)-len(new)
                     if new!=old:
                         row[ci]=new;changed=True
-                if changed:self._replace("shop_state",sid,[header,rows])
+                if changed:self._replace("shop_state",sid,[header,self.templates.encode_rows(rows)])
             self.d["catalog_key"]=keys[:index]+keys[index+1:]
             self.d.pop("catalog:image_url",None)
             self.tokens.pop("catalog_key",None)
@@ -146,6 +149,7 @@ class CompactStore:
         return s
     def _state(self,sid):
         state,rows=_unpack(self._payload(sid,"shop_state"))
+        rows=self.templates.rows(rows)
         store={c:self.decode(c,v) for c,v in zip(self.sc,state)}
         store["store_uuid"]=sid
         store["state_hash"]=canonical_hash({k:store[k] for k in STORE_HASH_FIELDS})
@@ -180,6 +184,7 @@ class CompactStore:
         return quotes
     def quote_rows(self,sid):
         _,rows=_unpack(self._payload(sid,"shop_state"))
+        rows=self.templates.rows(rows)
         index=self.pc.index("product_uuid")
         return self._quotes(sid,[text_uuid(r[index]) for r in rows])
     def read_shop(self,sid,*,derive_history=False):
@@ -208,7 +213,7 @@ class CompactStore:
         sid=store["store_uuid"]
         products=sorted(products,key=lambda p:p["product_uuid"])
         self._replace("shop_state",sid,[[self.encode(c,store[c]) for c in self.sc],
-            [[self.encode(c,p[c]) for c in self.pc] for p in products]])
+            self.templates.encode_rows([[self.encode(c,p[c]) for c in self.pc] for p in products])])
         if quotes is not None:
             ids={p["product_uuid"]:i for i,p in enumerate(products)}
             groups=defaultdict(lambda:defaultdict(int))
