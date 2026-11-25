@@ -316,7 +316,10 @@ DIRECT_LAYOUT_MIGRATIONS = (
 
 # Exact reviewed codec upgrade. Earlier verified checkpoints retain their
 # original schema and remain readable; no arbitrary digest bypass.
-CODEC_UPGRADE="37fc80992b90312a8a777435d0351aa4dabdf0ab"
+# Nested scheduling changes live capture only; immutable Raw decoding and
+# the direct compact physical layout are unchanged. Pin exact reviewed blobs.
+CODEC_UPGRADE="d29f8d12beaabe407136559802077764b14492f6"
+CODEC_PREVIOUS_CURRENT_LAYOUTS=("37fc80992b90312a8a777435d0351aa4dabdf0ab",)
 CODEC_OLD_LAYOUTS=("97fe6baca43bb8bcbd087b7fa03c6d372f2b646f","7fb36f3df7f43399278eba3582a4f0899b6a7f9d")
 CODEC_OLD_CONTRACTS=tuple(dict.fromkeys(old for old,new in DIRECT_LAYOUT_MIGRATIONS))
 
@@ -328,7 +331,7 @@ def compatible_direct_contract(meta,root=ROOT):
     if fmt=="foodradar-checkpoint-v4":
         try:
             if current==_historical_digest(root,CODEC_UPGRADE,DIRECT_LAYOUT_CONTRACTS):
-                for old,files in [(r,PREVIOUS_LAYOUT_CONTRACTS) for r in CODEC_OLD_LAYOUTS]+[(r,DIRECT_CONTRACTS) for r in CODEC_OLD_CONTRACTS]:
+                for old,files in [(r,DIRECT_LAYOUT_CONTRACTS) for r in CODEC_PREVIOUS_CURRENT_LAYOUTS]+[(r,PREVIOUS_LAYOUT_CONTRACTS) for r in CODEC_OLD_LAYOUTS]+[(r,DIRECT_CONTRACTS) for r in CODEC_OLD_CONTRACTS]:
                     if meta.get("contract_digest")==_historical_digest(root,old,files):
                         print("FOODRADAR_CHECKPOINT_CODEC_MIGRATION="+old,flush=True)
                         return True

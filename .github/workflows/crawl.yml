@@ -39,6 +39,7 @@ concurrency:
   # A checkpoint-only republish must preserve the currently running crawl.
   cancel-in-progress: ${{ !(github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION') || contains(github.event.head_commit.message, 'FR_POOL_LOAD_TEST'))) }}
 jobs:
+  # 原生子分類與 checkpoint 相容驗收
   pool_load_test:
     name: SB 共用池｜15並行客戶端壓力測試
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_POOL_LOAD_TEST') }}
