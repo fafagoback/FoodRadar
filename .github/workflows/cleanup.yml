@@ -1,0 +1,31 @@
+name: FoodRadar 03｜儲存空間清理
+run-name: 'FoodRadar 03｜儲存空間清理｜執行編號 #${{ github.run_number }}'
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只盤點，不刪除資料包'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: foodradar-artifact-cleanup
+  cancel-in-progress: false
+jobs:
+  cleanup:
+    name: 盤點並清理已無用途的歷史資料包
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 清理歷史 Artifact 並產生中文報告
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FR_CLEANUP_DRY_RUN: ${{ inputs.dry_run || false }}
+        run: python3 -u scripts/cleanup_artifacts.py
