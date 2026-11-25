@@ -1,7 +1,9 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
-  # Paused by owner. Only an explicit manual run can start production.
+  # 每日台灣時間 06:30、18:30（UTC 22:30、10:30）。
+  schedule:
+    - cron: '30 10,22 * * *'
   workflow_dispatch:
     inputs:
       mode:
