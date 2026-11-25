@@ -372,7 +372,87 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(folder / "raw" / relative, dest)
             checks_by_worker[worker][relative] = checksum
-        by_worker[worker].append(doc["store"])
+        store_result = doc["store"]
+        group = state.get("catalog_groups", {}).get(sid)
+        if store_result.get("catalog_deferred"):
+            if group is None:
+                raise ValueError("Deferred store has no section task group")
+            pages, reports, failures = [], [], []
+            total_requests = store_result.get("crawl_api_requests", 0)
+            elapsed = store_result.get("crawl_elapsed_ms", 0)
+            helpers = set()
+            for key in map(str, range(len(group["sections"]))):
+                row = group["completed"][key]
+                batch = row.get("batch_name")
+                if not __import__("re").fullmatch(
+                        r"fr-worker-[0-9a-f]{16}-[0-9]+-w[0-9]{2}", batch or ""):
+                    raise ValueError("Invalid category result artifact")
+                source_dir = (summary_dir / batch / "sections" /
+                              (sid + "-" + key + "-" + row["token"]))
+                section_doc = json.loads((source_dir/"section.json").read_text(encoding="utf8"))
+                for field, value in (("run_id",state["run_id"]),
+                        ("source_sha",state["source_sha"]),("epoch",state["epoch"]),
+                        ("store_uuid",sid),("worker",row["worker"]),
+                        ("token",row["token"]),("section_index",int(key)),
+                        ("section_uuid",group["sections"][int(key)])):
+                    if section_doc.get(field) != value:
+                        raise ValueError("Wrong category provenance: " + field)
+                checks = section_doc["responses"]
+                if checks != body_checksums(source_dir/"raw"):
+                    raise ValueError("Native category original HTTP SHA256 mismatch")
+                sec = section_doc["result"]
+                if sec.get("store_uuid") != sid:
+                    raise ValueError("Category result belongs to another store")
+                prefix = "cross-sections/" + sid + "/" + key + "/"
+                for relative, checksum in checks.items():
+                    dest_rel = prefix + relative
+                    if dest_rel in checks_by_worker[worker]:
+                        raise ValueError("Duplicate category response path")
+                    dest = raw / dest_rel
+                    dest.parent.mkdir(parents=True,exist_ok=True)
+                    shutil.copyfile(source_dir/"raw"/relative, dest)
+                    checks_by_worker[worker][dest_rel] = checksum
+                helpers.add(row["worker"])
+                total_requests += len(checks)
+                elapsed += sec.get("crawl_elapsed_ms", 0)
+                if sec.get("success") is not True or sec.get("catalog_complete") is not True:
+                    failures.append(str(sec.get("error") or "Unverified native category"))
+                    continue
+                sec_reports = sec.get("catalog_section_reports") or []
+                if (len(sec_reports) != 1 or
+                        sec_reports[0].get("section_uuid") != group["sections"][int(key)] or
+                        sec_reports[0].get("terminal_has_more") is not False):
+                    raise ValueError("Native category terminal pagination unverified")
+                for page in sec.get("catalog_responses", []):
+                    if page["path"] not in checks:
+                        raise ValueError("Missing original category HTTP response")
+                    pages.append({**page, "path":prefix + page["path"]})
+                reports.extend(sec_reports)
+            store_result["crawl_api_requests"] = total_requests
+            store_result["crawl_elapsed_ms"] = max(1, elapsed)
+            store_result["catalog_worker_indices"] = sorted(helpers)
+            if failures:
+                store_result["success"] = False
+                store_result["catalog_complete"] = False
+                store_result["error"] = "; ".join(failures)
+            else:
+                if len(reports) != len(group["sections"]):
+                    raise ValueError("Incomplete native catalog section roster")
+                store_result["catalog_responses"] = pages
+                store_result["catalog_section_reports"] = reports
+                store_result["catalog_sections_finished"] = len(reports)
+                store_result["catalog_complete"] = True
+                store_result["catalog_item_occurrences"] = sum(p["item_count"] for p in pages)
+                store_result["catalog_reused_partitions"] = 0
+                store_result["catalog_independent_inventory_verified"] = False
+                store_result["catalog_unique_skus"] = 0
+            print("FOODRADAR_CROSS_WORKER_MERGE=" + json.dumps({
+                "store_uuid":sid, "sections":len(group["sections"]),
+                "workers":sorted(helpers), "pages":len(pages),
+                "failed":len(failures)}),flush=True)
+        elif group is not None:
+            raise ValueError("Category task group without deferred store")
+        by_worker[worker].append(store_result)
     for index in range(15):
         summary=worker_reports(summary_dir,state,index)
         stores = sorted(by_worker[index], key=lambda s: s["store_uuid"])
