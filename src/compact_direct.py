@@ -15,6 +15,7 @@ from pathlib import Path
 from compact_checkpoint import (_pack,_unpack,binary_uuid,text_uuid,KINDS,OMITTED,
     STORE_HASH_FIELDS,PRODUCT_HASH_FIELDS)
 from compact_templates import Templates
+from compact_payload import PayloadCodec, KEY as PAYLOAD_KEY
 from serving_state import ensure_schema_and_migrations,canonical_hash,apply_snapshot,store_identity
 from verified_weekly import TW,_two_decimals,iter_weekly_price_evidence
 
@@ -52,6 +53,7 @@ class CompactStore:
             self.d={k:_unpack(v) for k,v in self.conn.execute("SELECT key,payload FROM dictionary")}
         self.sc=self.d["__store_columns"];self.pc=self.d["__product_columns"]
         self.templates=Templates(self.d)
+        self.payload_codec=PayloadCodec(self.d.get(PAYLOAD_KEY))
         self.batches=[tuple(x) for x in self.d["__batch_keys"]]
         self.bidx={x:i for i,x in enumerate(self.batches)}
         self.tokens={}
@@ -80,7 +82,7 @@ class CompactStore:
         # Read one shop at a time; all other encoded values stay exactly equal.
         with self.conn:
             for sid in sorted(self.ids):
-                header,rows=_unpack(self._payload(sid,"shop_state"))
+                header,rows=self.payload_codec.unpack(self._payload(sid,"shop_state"))
                 rows=self.templates.rows(rows)
                 changed=False
                 for row in rows:
@@ -142,13 +144,13 @@ class CompactStore:
         self.max_shop_bytes=max(self.max_shop_bytes,len(row[0]))
         return row[0]
     def store_header(self,sid):
-        state,_=_unpack(self._payload(sid,"shop_state"))
+        state,_=self.payload_codec.unpack(self._payload(sid,"shop_state"))
         s={c:self.decode(c,v) for c,v in zip(self.sc,state)}
         s["store_uuid"]=sid
         s["state_hash"]=canonical_hash({k:s[k] for k in STORE_HASH_FIELDS})
         return s
     def _state(self,sid):
-        state,rows=_unpack(self._payload(sid,"shop_state"))
+        state,rows=self.payload_codec.unpack(self._payload(sid,"shop_state"))
         rows=self.templates.rows(rows)
         store={c:self.decode(c,v) for c,v in zip(self.sc,state)}
         store["store_uuid"]=sid
@@ -165,7 +167,7 @@ class CompactStore:
         return store,products
     def _quotes(self,sid,ids):
         quotes=[]
-        for ordinal,variants in _unpack(self._payload(sid,"price_history")):
+        for ordinal,variants in self.payload_codec.unpack(self._payload(sid,"price_history")):
             if not 0<=ordinal<len(ids):raise ValueError("Invalid SKU ordinal")
             pid=ids[ordinal]
             for fields,mask in variants:
@@ -183,7 +185,7 @@ class CompactStore:
         self.max_shop_observations=max(self.max_shop_observations,len(quotes))
         return quotes
     def quote_rows(self,sid):
-        _,rows=_unpack(self._payload(sid,"shop_state"))
+        _,rows=self.payload_codec.unpack(self._payload(sid,"shop_state"))
         rows=self.templates.rows(rows)
         index=self.pc.index("product_uuid")
         return self._quotes(sid,[text_uuid(r[index]) for r in rows])
@@ -204,9 +206,9 @@ class CompactStore:
                     ensure_ascii=False)
         return store,products,quotes
     def _replace(self,table,sid,value):
-        payload=_pack(value);key=binary_uuid(sid)
+        payload=self.payload_codec.pack(value);key=binary_uuid(sid)
         old=self.conn.execute(f"SELECT payload FROM {table} WHERE store=?",(key,)).fetchone()
-        if old is None or not _same_wire(old[0],payload):
+        if old is None or (old[0]!=payload and self.payload_codec.raw(old[0])!=self.payload_codec.raw(payload)):
             self.conn.execute(f"INSERT OR REPLACE INTO {table} VALUES(?,?)",(key,payload))
             self.writes+=1
     def put_shop(self,store,products,quotes=None):
@@ -379,8 +381,8 @@ class CompactCollection:
         counts=Counter()
         for sid in self.ids():
             part=self.lookup[sid]
-            _,rows=_unpack(part._payload(sid,"shop_state"))
-            quotes=_unpack(part._payload(sid,"price_history"))
+            _,rows=part.payload_codec.unpack(part._payload(sid,"shop_state"))
+            quotes=part.payload_codec.unpack(part._payload(sid,"price_history"))
             counts["stores"]+=1;counts["products"]+=len(rows)
             counts["observations"]+=sum(int.from_bytes(mask,"little").bit_count()
                     for _,variants in quotes for _,mask in variants)

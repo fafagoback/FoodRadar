@@ -157,6 +157,8 @@ def expand(source: str | Path, target: str | Path, *, append=False, finalize=Tru
     dictionaries = {key: _unpack(blob) for key, blob in compact.execute("SELECT key,payload FROM dictionary")}
     from compact_templates import Templates
     templates = Templates(dictionaries)
+    from compact_payload import PayloadCodec, KEY as PAYLOAD_KEY
+    payload_codec=PayloadCodec(dictionaries.get(PAYLOAD_KEY))
     scols, pcols, batches = (dictionaries[key] for key in
                            ("__store_columns", "__product_columns", "__batch_keys"))
 
@@ -188,7 +190,7 @@ def expand(source: str | Path, target: str | Path, *, append=False, finalize=Tru
     stores = products = 0
     for blob_sid, state_blob in compact.execute("SELECT store,payload FROM shop_state"):
         sid = text_uuid(blob_sid)
-        state, product_data = _unpack(state_blob)
+        state, product_data = payload_codec.unpack(state_blob)
         s = dict(zip(scols, [decode(c, v) for c, v in zip(scols, state)]))
         s["store_uuid"] = sid
         s["state_hash"] = canonical_hash({k: s[k] for k in STORE_HASH_FIELDS})
@@ -207,7 +209,7 @@ def expand(source: str | Path, target: str | Path, *, append=False, finalize=Tru
         price_blob = compact.execute("SELECT payload FROM price_history WHERE store=?", (blob_sid,)).fetchone()
         if price_blob is None:
             raise ValueError("Missing store price history")
-        raw_prices = _unpack(price_blob[0])
+        raw_prices = payload_codec.unpack(price_blob[0])
         histories = defaultdict(list)
         for ordinal, variants in raw_prices:
             if ordinal >= len(p_rows):
