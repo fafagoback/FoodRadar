@@ -20,13 +20,14 @@ LEASE_SECONDS = 180
 HEARTBEAT_SECONDS = 30
 
 
-def initial_state(run_id, epoch, source_sha, stores):
+def initial_state(run_id, epoch, source_sha, stores, weights=None):
     ids = sorted(set(stores))
     if not ids:
         raise ValueError("Empty task pool")
     return {"version": 1, "run_id": str(run_id), "epoch": epoch,
             "source_sha": source_sha, "tasks": ids, "pending": ids.copy(),
-            "leased": {}, "completed": {}}
+            "weights": {sid: max(1, int((weights or {}).get(sid, 400))) for sid in ids},
+            "leased": {}, "local_done": {}, "completed": {}}
 
 
 def validate_state(state):
@@ -35,14 +36,17 @@ def validate_state(state):
     tasks = state["tasks"]
     pending = state["pending"]
     leased, completed = state["leased"], state["completed"]
+    local_done = state.get("local_done", {})
+    if any(type(v) is not int or v < 1 for v in state.get("weights", {}).values()):
+        raise ValueError("Invalid workload weight")
     if len(set(tasks)) != len(tasks) or len(set(pending)) != len(pending):
         raise ValueError("Duplicate task ID")
-    groups = [set(pending), set(leased), set(completed)]
+    groups = [set(pending), set(leased), set(local_done), set(completed)]
     if any(groups[i] & groups[j] for i in range(3) for j in range(i + 1, 3)):
         raise ValueError("Task has more than one state")
     if set(tasks) != set.union(*groups):
         raise ValueError("Task roster changed")
-    for sid, row in {**leased, **completed}.items():
+    for sid, row in {**leased, **local_done, **completed}.items():
         if (not isinstance(row.get("worker"), int) or not 0 <= row["worker"] < 15
                 or not row.get("owner") or not re.fullmatch("[a-f0-9]{32}", row.get("token", ""))):
             raise ValueError("Invalid task lease identity")
@@ -143,10 +147,11 @@ class GitQueue:
                         if v["owner"] == owner and v["token"] == token]
             if existing:
                 return False, existing
-            ids = s["pending"][:slots]
+            ids = sorted(s["pending"], key=lambda sid: (-s.get("weights", {}).get(sid, 400), sid))[:slots]
             if not ids:
                 return False, []
-            s["pending"] = s["pending"][len(ids):]
+            selected = set(ids)
+            s["pending"] = [sid for sid in s["pending"] if sid not in selected]
             now = time.time()
             result = []
             attempts = s.setdefault("attempts", {})
@@ -203,6 +208,27 @@ class GitQueue:
             return True, True
         return self.transact(edit)
 
+    def mark_local_batch(self, owner, records):
+        """Release a worker's locally saved results from active leases."""
+        def edit(s):
+            local = s.setdefault("local_done", {})
+            changed = False
+            for sid, token in records.items():
+                prior = local.get(sid) or s["completed"].get(sid)
+                if prior is not None:
+                    if prior["owner"] != owner or prior["token"] != token:
+                        raise ValueError("Conflicting locally completed store")
+                    continue
+                row = s["leased"].get(sid)
+                if not row or row["owner"] != owner or row["token"] != token:
+                    raise ValueError("Invalid local task lease")
+                local[sid] = row
+                s.get("local_done", {}).pop(sid, None)
+                s["leased"].pop(sid, None)
+                changed = True
+            return changed, len(records)
+        return self.transact(edit)
+
     def finish_batch(self, owner, records, artifact_id, batch_name):
         """Only mark stores complete after the entire worker artifact exists."""
         if type(artifact_id) is not int or artifact_id <= 0:
@@ -215,7 +241,7 @@ class GitQueue:
                     if (prior["owner"], prior["token"], prior["artifact_id"], prior.get("batch_name")) != (owner, token, artifact_id, batch_name):
                         raise ValueError("Conflicting completed store")
                     continue
-                row = s["leased"].get(sid)
+                row = s.get("local_done", {}).get(sid) or s["leased"].get(sid)
                 if not row or row["owner"] != owner or row["token"] != token:
                     raise ValueError("Stale or unowned batch task")
                 s["completed"][sid] = {"owner": owner, "worker": row["worker"],
@@ -230,11 +256,12 @@ class GitQueue:
         def edit(s):
             if s.get("catalog_groups"):
                 raise ValueError("Legacy category checkpoints cannot use batch recovery")
-            ids = sorted(s["leased"])
+            ids = sorted(set(s["leased"]) | set(s.get("local_done", {})))
             if not ids:
                 return False, 0
             s["pending"] = sorted(s["pending"] + ids)
             s["leased"].clear()
+            s.get("local_done", {}).clear()
             return True, len(ids)
         return self.transact(edit)
 
