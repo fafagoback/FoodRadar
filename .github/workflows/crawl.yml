@@ -1,6 +1,10 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
+  # 僅明確標記 FR_CRAWL_SPEED_TEST 的流程更新可啟動額外完整爬取。
+  push:
+    branches: [main]
+    paths: ['.github/workflows/crawl.yml']
   # 每日台灣時間 06:30、18:30（UTC 22:30、10:30）。
   schedule:
     - cron: '30 10,22 * * *'
@@ -35,6 +39,7 @@ concurrency:
   cancel-in-progress: ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION')) }}
 jobs:
   prepare_run:
+    if: ${{ github.event_name != 'push' || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST') }}
     name: 停止同類舊任務並清理臨時執行紀錄
     runs-on: ubuntu-latest
     timeout-minutes: 20
