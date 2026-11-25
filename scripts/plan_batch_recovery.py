@@ -14,7 +14,7 @@ def main():
             state["source_sha"] != os.environ["GITHUB_SHA"] or
             state["epoch"] != os.environ["EPOCH"]):
         raise ValueError("Task pool identity mismatch")
-    remaining=len(state["pending"])+len(state["leased"])
+    remaining=len(state["pending"])+len(state["leased"])+len(state.get("local_done", {}))
     if state.get("catalog_groups"):
         raise ValueError("Unexpected legacy category checkpoint")
     if remaining:

@@ -42,7 +42,7 @@ def validate_state(state):
     if len(set(tasks)) != len(tasks) or len(set(pending)) != len(pending):
         raise ValueError("Duplicate task ID")
     groups = [set(pending), set(leased), set(local_done), set(completed)]
-    if any(groups[i] & groups[j] for i in range(3) for j in range(i + 1, 3)):
+    if any(groups[i] & groups[j] for i in range(len(groups)) for j in range(i + 1, len(groups))):
         raise ValueError("Task has more than one state")
     if set(tasks) != set.union(*groups):
         raise ValueError("Task roster changed")
@@ -223,8 +223,7 @@ class GitQueue:
                 if not row or row["owner"] != owner or row["token"] != token:
                     raise ValueError("Invalid local task lease")
                 local[sid] = row
-                s.get("local_done", {}).pop(sid, None)
-                s["leased"].pop(sid, None)
+                del s["leased"][sid]
                 changed = True
             return changed, len(records)
         return self.transact(edit)
@@ -246,7 +245,8 @@ class GitQueue:
                     raise ValueError("Stale or unowned batch task")
                 s["completed"][sid] = {"owner": owner, "worker": row["worker"],
                     "token": token, "artifact_id": artifact_id, "batch_name": batch_name}
-                del s["leased"][sid]
+                s.get("local_done", {}).pop(sid, None)
+                s["leased"].pop(sid, None)
                 changed = True
             return changed, len(records)
         return self.transact(edit)
