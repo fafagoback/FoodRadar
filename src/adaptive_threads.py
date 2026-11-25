@@ -188,9 +188,7 @@ def run_adaptive(items, capture, limiter, initial, on_result, clock=time.monoton
                 on_result(future.result())
     return ctrl.report()
 
-def average_best(reports):
+def maximum_best(reports):
     values = [r.get("optimal_threads") for r in reports]
     values = [v for v in values if valid_threads(v)]
-    if not values:
-        return None
-    return (2 * sum(values) + len(values)) // (2 * len(values))
+    return max(values, default=None)

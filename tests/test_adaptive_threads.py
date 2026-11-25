@@ -2,7 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from adaptive_threads import AdaptiveThreads, average_best, run_adaptive, DEFAULT_THREADS, MAX_THREADS, valid_threads
+from adaptive_threads import AdaptiveThreads, maximum_best, run_adaptive, DEFAULT_THREADS, MAX_THREADS, valid_threads
 
 def snap(successes=0, throttles=0, cooldown=0, interval=.18):
     return dict(successes=successes, rate_limit_events=throttles,
@@ -67,10 +67,11 @@ class AdaptiveThreadTests(unittest.TestCase):
         c.observe(50,snap(16,1),True,1)
         self.assertEqual((c.best,c.target),(1,2))
 
-    def test_average_half_up_and_ignore_insufficient_samples(self):
-        self.assertEqual(average_best([{"optimal_threads":5},{"optimal_threads":6},
-                                      {"optimal_threads":None}]),6)
-        self.assertIsNone(average_best([{}]))
+    def test_maximum_and_ignore_invalid_or_insufficient_samples(self):
+        self.assertEqual(maximum_best([{"optimal_threads":4},{"optimal_threads":8},
+                                       {"optimal_threads":16},{"optimal_threads":None},
+                                       {"optimal_threads":65},{"optimal_threads":True}]),16)
+        self.assertIsNone(maximum_best([{},{"optimal_threads":None},{"optimal_threads":0}]))
 
     def test_every_item_once(self):
         class Limiter:

@@ -399,7 +399,7 @@ jobs:
         if: ${{ needs.discover_once.result == 'success' }}
         run: python src/dynamic_crawl.py assemble
 
-      - name: 保存所有工作機平均最佳執行緒至 Repo
+      - name: 保存所有工作機最大最佳執行緒至 Repo
         if: ${{ success() && needs.discover_once.result == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import save_crawl_settings as saver
 
 class SaveCrawlSettingsTests(unittest.TestCase):
-    def test_valid_worker_average_survives_isolated_store_failure(self):
+    def test_valid_worker_maximum_survives_isolated_store_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             files = []
@@ -21,7 +21,7 @@ class SaveCrawlSettingsTests(unittest.TestCase):
                 path.write_text(json.dumps({
                     "shard_index": i, "run_id": "run", "source_sha": "sha",
                     "stores": [{"success": i != 0}],
-                    "thread_learning": {"optimal_threads": 16 if i < 2 else None},
+                    "thread_learning": {"optimal_threads": 16 if i == 0 else 4 if i < 14 else None},
                 }))
                 files.append(path)
             original = {"sha": "old", "content": base64.b64encode(

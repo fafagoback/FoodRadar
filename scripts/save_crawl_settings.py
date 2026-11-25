@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from adaptive_threads import average_best, valid_threads
+from adaptive_threads import maximum_best, valid_threads
 
 def gh(*args):
     return subprocess.check_output(["gh", "api", *args], text=True)
@@ -27,7 +27,7 @@ def main():
     reports = [m.get("thread_learning") or {} for m in manifests]
     # The controller only assigns optimal_threads after a valid busy window.
     print("有效最佳值：" + json.dumps([r.get("optimal_threads") for r in reports]))
-    best = average_best(reports)
+    best = maximum_best(reports)
     if best is None:
         print("樣本不足，保留原始設定")
         return

@@ -147,7 +147,7 @@ def main(kind):
             add("爬蟲工作機數", integer(m.get("runners")))
             add("同時工作機上限", integer(m.get("max_parallel_runners", 15)))
             add("有效執行緒學習樣本", integer(m.get("learning_samples")))
-            add("本次最佳執行緒平均", integer(m.get("learned_initial_threads")))
+            add("本次最佳執行緒最大值", integer(m.get("learned_initial_threads")))
             for row in m.get("worker_learning", []):
                 add("工作機 %02d 執行緒" % row["worker"],
                     "初始 %s；最佳 %s；結束 %s；成功下限 %s；失敗上限 %s" %

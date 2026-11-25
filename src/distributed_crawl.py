@@ -27,7 +27,7 @@ from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
 from catalog_complete import is_recoverable_catalog_failure
 from promo_api_recheck import verify_suspicious_store
-from adaptive_threads import run_adaptive, valid_threads, DEFAULT_THREADS, average_best
+from adaptive_threads import run_adaptive, valid_threads, DEFAULT_THREADS, maximum_best
 from crawl_batches import plan_batches, MAX_BATCHES, MAX_PARALLEL
 from crawl_transport import TransportPool
 
@@ -727,7 +727,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
     complete = not failures
     report = {
         "batch": batch, "runners": count, "max_parallel_runners": min(count, MAX_PARALLEL),
-        "learned_initial_threads": average_best([m.get("thread_learning") or {} for m in metadata]),
+        "learned_initial_threads": maximum_best([m.get("thread_learning") or {} for m in metadata]),
         "learning_samples": sum((m.get("thread_learning") or {}).get("optimal_threads") is not None for m in metadata),
         "worker_learning": [{"worker": m["shard_index"]+1,
             **{k: (m.get("thread_learning") or {}).get(k) for k in
