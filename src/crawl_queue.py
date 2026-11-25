@@ -320,6 +320,7 @@ class SharedGitQueue:
             lane.lock = self.lock
         self.lane_of = {sid: i % count for i, sid in enumerate(state["tasks"])}
         self.available = set(range(count))
+        self.pending_by_lane = {}
 
     def _ensure(self):
         if self.meta is None:
@@ -327,13 +328,14 @@ class SharedGitQueue:
 
     def initialize(self, state):
         with self.lock:
-            # Lanes are fixed by roster size, never by predicted store work.
+            # Lanes partition queue metadata, not physical-worker ownership.
             state = dict(state, lane_count=min(16, max(1, (len(state["tasks"]) + 7) // 8)))
             self._configure(state)
             commits = [(self.root.make_commit(state), self.root.ref)]
             for index, lane in enumerate(self.lanes):
                 part = initial_state(state["run_id"], state["epoch"], state["source_sha"],
-                                     [sid for sid, i in self.lane_of.items() if i == index])
+                                     [sid for sid, i in self.lane_of.items() if i == index],
+                                     weights=state.get("weights", {}))
                 commits.append((lane.make_commit(part), lane.ref))
             args = ["push", "--atomic"]
             args += ["--force-with-lease=" + ref + ":" for _, ref in commits]
@@ -354,9 +356,10 @@ class SharedGitQueue:
             # Fetch all lane heads in one network operation.
             refs = [f"+{q.ref}:refs/fr-local/lane-{i:02d}" for i, q in enumerate(self.lanes)]
             self.root.git("fetch", "--no-tags", "--depth=1", self.root.remote, *refs)
-            merged = {k: self.meta[k] for k in ("version", "run_id", "epoch", "source_sha", "tasks")}
-            merged.update(pending=[], leased={}, completed={}, catalog_groups={})
+            merged = {k: self.meta[k] for k in ("version", "run_id", "epoch", "source_sha", "tasks", "weights") if k in self.meta}
+            merged.update(pending=[], leased={}, local_done={}, completed={}, catalog_groups={})
             available = set()
+            pending_by_lane = {}
             for i, lane in enumerate(self.lanes):
                 state = validate_state(json.loads(self.root.git("show", f"refs/fr-local/lane-{i:02d}:queue.json").stdout))
                 if (any(state[k] != self.meta[k] for k in ("run_id", "epoch", "source_sha"))
@@ -364,33 +367,43 @@ class SharedGitQueue:
                     raise ValueError("Synchronization lane identity changed")
                 if state["pending"]:
                     available.add(i)
+                    pending_by_lane[i] = sorted(state["pending"], key=lambda sid: (-self.meta.get("weights", {}).get(sid, 400), sid))
                 merged["pending"].extend(state["pending"])
                 merged["leased"].update(state["leased"])
+                merged["local_done"].update(state.get("local_done", {}))
                 merged["completed"].update(state["completed"])
                 for sid, group in state.get("catalog_groups", {}).items():
                     if sid not in state["tasks"] or sid in merged["catalog_groups"]:
                         raise ValueError("Invalid catalog task group owner")
                     merged["catalog_groups"][sid] = group
             self.available = available
+            self.pending_by_lane = pending_by_lane
             merged["pending"].sort()
             return validate_state(merged)
 
     def claim(self, owner, worker, slots):
+        """Pick the heaviest unclaimed store across all synchronization lanes."""
         if slots < 1:
             return []
         with self.lock:
             self._ensure()
-            if not self.available:
+            if not self.pending_by_lane:
                 self.read()
-            order = list(self.available)
-            random.shuffle(order)
+            order = sorted(self.available, key=lambda i: (
+                -self.meta.get("weights", {}).get(self.pending_by_lane[i][0], 400),
+                self.pending_by_lane[i][0]))
             for index in order:
                 claimed = self.lanes[index].claim(owner, worker, slots)
                 if claimed:
                     self.owner_lanes.setdefault(owner, set()).add(index)
-                    if len(claimed) < slots:
+                    used = {sid for sid, _ in claimed}
+                    self.pending_by_lane[index] = [
+                        sid for sid in self.pending_by_lane[index] if sid not in used]
+                    if not self.pending_by_lane[index]:
+                        self.pending_by_lane.pop(index)
                         self.available.discard(index)
                     return claimed
+                self.pending_by_lane.pop(index, None)
                 self.available.discard(index)
             return []
 
@@ -431,6 +444,15 @@ class SharedGitQueue:
                 else:
                     lane.finish(sid, row["token"], artifact_id, recovered=True)
 
+    def mark_local_batch(self, owner, records):
+        with self.lock:
+            self._ensure()
+            groups = {}
+            for sid, token in records.items():
+                groups.setdefault(self.lane_of[sid], {})[sid] = token
+            return sum(self.lanes[i].mark_local_batch(owner, rows)
+                       for i, rows in sorted(groups.items()))
+
     def finish_batch(self, owner, records, artifact_id, batch_name):
         with self.lock:
             self._ensure()
@@ -443,14 +465,14 @@ class SharedGitQueue:
     def reset_terminated_wave(self):
         with self.lock:
             state = self.read()
-            affected = {self.lane_of[sid] for sid in state["leased"]}
+            affected = {self.lane_of[sid] for sid in set(state["leased"]) | set(state.get("local_done", {}))}
             return sum(self.lanes[i].reset_terminated_wave() for i in sorted(affected))
 
     def cleanup(self):
         with self.lock:
             self._ensure()
             state = self.read()
-            if state["pending"] or state["leased"]:
+            if state["pending"] or state["leased"] or state.get("local_done"):
                 raise RuntimeError("Cannot delete an incomplete task pool")
             refs = [self.root.ref] + [q.ref for q in self.lanes]
             self.root.git("push", "--atomic", self.root.remote, *[":" + ref for ref in refs])
