@@ -285,6 +285,14 @@ DIRECT_CAPTURE_MIGRATIONS = (
      "19731748a3a1672a977b644f09f288786e3192c0"),
     ("a7c6bfb0917d957c1119540fa31f32390fbf60bc",
      "19731748a3a1672a977b644f09f288786e3192c0"),
+    # Native partition task scheduling and page capture provenance only:
+    # the persisted observation decoder and database schema remain identical.
+    ("ec8967d99c608519b8e99892fa331afacf532ab8",
+     "d7ce089c208e0b0d2337779b8de6d1c742eab6f6"),
+    ("a7c6bfb0917d957c1119540fa31f32390fbf60bc",
+     "d7ce089c208e0b0d2337779b8de6d1c742eab6f6"),
+    ("19731748a3a1672a977b644f09f288786e3192c0",
+     "d7ce089c208e0b0d2337779b8de6d1c742eab6f6"),
 )
 
 def compatible_direct_contract(meta,root=ROOT):
