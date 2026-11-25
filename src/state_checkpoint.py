@@ -254,7 +254,8 @@ def save(source, raw_index_path, cache=CACHE, root=ROOT, *, compact=True):
 # the new bounded mutation path. No historical observations are regenerated
 # by expanding a full normalized SQL database.
 DIRECT_CONTRACTS=CONTRACTS+("src/compact_direct.py",)
-DIRECT_LAYOUT_CONTRACTS=DIRECT_CONTRACTS+("src/compact_templates.py","src/compact_repack.py")
+PREVIOUS_LAYOUT_CONTRACTS=DIRECT_CONTRACTS+("src/compact_templates.py","src/compact_repack.py")
+DIRECT_LAYOUT_CONTRACTS=PREVIOUS_LAYOUT_CONTRACTS+("src/compact_payload.py",)
 DIRECT_V3_ANCHOR="3ecd55f11ab6449f1eab661833833d17c97d3dab"
 DIRECT_V3_REVIEWED={
     "src/pipeline.py":"a55e5a5a71a2e3d78daf310afb011ceec93901cf",
@@ -313,12 +314,26 @@ DIRECT_LAYOUT_MIGRATIONS = (
     ("19731748a3a1672a977b644f09f288786e3192c0","97fe6baca43bb8bcbd087b7fa03c6d372f2b646f"),
 )
 
+# Exact reviewed codec upgrade. Earlier verified checkpoints retain their
+# original schema and remain readable; no arbitrary digest bypass.
+CODEC_UPGRADE="37fc80992b90312a8a777435d0351aa4dabdf0ab"
+CODEC_OLD_LAYOUTS=("97fe6baca43bb8bcbd087b7fa03c6d372f2b646f","7fb36f3df7f43399278eba3582a4f0899b6a7f9d")
+CODEC_OLD_CONTRACTS=tuple(dict.fromkeys(old for old,new in DIRECT_LAYOUT_MIGRATIONS))
+
 def compatible_direct_contract(meta,root=ROOT):
     fmt=meta.get("format")
     current=direct_contract_digest(root) if fmt=="foodradar-checkpoint-v4" else None
     if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==current:
         return True
     if fmt=="foodradar-checkpoint-v4":
+        try:
+            if current==_historical_digest(root,CODEC_UPGRADE,DIRECT_LAYOUT_CONTRACTS):
+                for old,files in [(r,PREVIOUS_LAYOUT_CONTRACTS) for r in CODEC_OLD_LAYOUTS]+[(r,DIRECT_CONTRACTS) for r in CODEC_OLD_CONTRACTS]:
+                    if meta.get("contract_digest")==_historical_digest(root,old,files):
+                        print("FOODRADAR_CHECKPOINT_CODEC_MIGRATION="+old,flush=True)
+                        return True
+        except (OSError,subprocess.SubprocessError):
+            pass
         for old,new in DIRECT_LAYOUT_MIGRATIONS:
             try:
                 if (current==_historical_digest(root,new,DIRECT_LAYOUT_CONTRACTS)

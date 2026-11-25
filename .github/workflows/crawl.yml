@@ -1,38 +1,1465 @@
 name: FoodRadar 01｜資料爬取與更新
-run-name: FoodRadar｜暫停爬蟲並移除指定舊任務
+run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/crawl.yml']
+  # Paused by owner. Only an explicit manual run can start production.
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'crawl=新抓取；republish=從既有 Raw 重發 Pages；full-rebuild=從 Raw 重建靜態資料'
+        required: true
+        type: choice
+        options:
+          - crawl
+          - republish
+          - full-rebuild
+        default: crawl
+      confirm_reset:
+        description: 'full-rebuild 必須輸入 REBUILD_V2，其餘模式留白'
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
   group: foodradar-crawl-pipeline-v2
-  cancel-in-progress: true
+  # A checkpoint-only republish must preserve the currently running crawl.
+  cancel-in-progress: ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION')) }}
 jobs:
-  stop:
-    if: ${{ contains(github.event.head_commit.message, 'FR_PAUSE_AND_DELETE_461') }}
-    name: 停止並刪除指定 RUN #461（不爬取、不部署）
+  prepare_run:
+    name: 停止同類舊任務並清理臨時執行紀錄
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: 確認舊版執行已停止後才開始資料作業
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GH_REPO/actions"
+          runs=$(gh api "$api/workflows/crawl.yml/runs?branch=main&per_page=100" --jq '.workflow_runs[] | [.id,.run_number,.status] | map(tostring) | join("|")')
+          while IFS="|" read -r id number state; do
+            [[ -n "$id" && "$id" != "$GITHUB_RUN_ID" && "$number" -lt "$GITHUB_RUN_NUMBER" && "$state" != completed ]] || continue
+            if ! gh api -X POST "$api/runs/$id/force-cancel"; then
+              state=$(gh api "$api/runs/$id" --jq .status)
+              [[ "$state" == completed ]] || gh api -X POST "$api/runs/$id/cancel"
+            fi
+            for i in {1..60}; do
+              state=$(gh api "$api/runs/$id" --jq .status)
+              [[ "$state" == completed ]] && break
+              sleep 3
+            done
+            [[ "$state" == completed ]] || { echo "舊任務 #$number 未停止，禁止開始新作業" >&2; exit 1; }
+            if [[ "$(gh api "$api/runs/$id" --jq .conclusion)" == cancelled ]]; then
+              gh api -X DELETE "$api/runs/$id"
+            fi
+            echo "已停止舊版 #$number" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$runs"
+
+      - name: 一次性清除本次以前所有已結束的 Workflow 紀錄
+        if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GH_REPO/actions"
+          # Snapshot IDs before deleting, so pagination cannot skip shifted entries.
+          gh api --paginate "$api/runs?status=completed&per_page=100" --jq '.workflow_runs[].id' > "$RUNNER_TEMP/fr-old-runs.txt"
+          count=0
+          while IFS= read -r id; do
+            [[ -n "$id" && "$id" != "$GITHUB_RUN_ID" ]] || continue
+            gh api -X DELETE "$api/runs/$id"
+            count=$((count+1))
+          done < "$RUNNER_TEMP/fr-old-runs.txt"
+          echo "已刪除 $count 筆歷史執行紀錄；保留仍在執行的獨立研究及本次爬取。" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 清除已結束的臨時診斷及維護執行
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GH_REPO/actions"
+          ids=$(gh api "$api/runs?per_page=100" --jq '.workflow_runs[] | select(.status=="completed" and ((.head_branch // "") | test("^(maintenance|diagnostic)/"))) | .id')
+          count=0
+          while IFS= read -r id; do
+            [[ -n "$id" && "$id" != "$GITHUB_RUN_ID" ]] || continue
+            gh api -X DELETE "$api/runs/$id"
+            count=$((count+1))
+          done <<< "$ids"
+          echo "已清理臨時執行 $count 筆；保留 01、02 正式歷史。" >> "$GITHUB_STEP_SUMMARY"
+
+  discover_once:
+    name: 統一探索設定範圍，建立 15 台共用任務池
+    needs: prepare_run
+    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    outputs:
+      batch_count: ${{ steps.plan.outputs.batch_count }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      initial_threads: ${{ steps.plan.outputs.initial_threads }}
+      epoch: ${{ steps.plan.outputs.epoch }}
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件
+        run: pip install -r requirements-crawl.txt
+      - name: 掃描設定座標並儲存原始 HTTP
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python src/distributed_crawl.py discover --dynamic
+      - name: 原子建立本次共用任務池（不使用歷史耗時）
+        run: python src/dynamic_crawl.py init
+      - name: 啟動固定 15 台工作機及讀取最佳執行緒
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          count=$(jq -er '.owner_count | select(. == 15)' data/discovery/discovery.json)
+          matrix=$(jq -cn --argjson count "$count" '{include:[range(0;$count) | {shard:.,worker:(.+1|tostring|if length==1 then "0"+. else . end)}]}')
+          value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er '.optimal_threads | select(type == "number" and . >= 1 and . <= 12 and . == floor)')
+          epoch=$(sha256sum data/discovery/discovery.json | cut -c1-16)
+          printf 'batch_count=%s\nmatrix=%s\ninitial_threads=%s\nepoch=%s\n' "$count" "$matrix" "$value" "$epoch" >> "$GITHUB_OUTPUT"
+          echo "共用任務池由固定 $count 台工作機動態領取，每台持續執行及學習，初始執行緒 $value" >> "$GITHUB_STEP_SUMMARY"
+      - name: 上傳全機器共用店家清單
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ steps.plan.outputs.epoch }}
+          path: data/discovery/
+          if-no-files-found: error
+          retention-days: 3
+
+  crawl_shard:
+    name: "爬蟲工作機 ${{ matrix.worker }}"
+    needs: discover_once
+    continue-on-error: true
+    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.discover_once.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '0'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w00
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+  plan_recovery:
+    name: 任務池檢查｜接手輪次 01
+    needs: [discover_once, crawl_shard]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: write
+      actions: read
       contents: read
-    env:
-      GH_TOKEN: ${{ github.token }}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
     steps:
-      - shell: bash
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: '-1'
+
+  recover_shard:
+    name: "接手 01｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_recovery]
+    if: ${{ !cancelled() && needs.plan_recovery.result == 'success' && needs.plan_recovery.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_recovery.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '1'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w01
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_02:
+    name: 任務池檢查｜接手輪次 02
+    needs: [discover_once, recover_shard, plan_recovery]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_recovery.result == 'success' && needs.plan_recovery.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_recovery.outputs.progress }}
+
+  recover_wave_02:
+    name: "接手 02｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_02]
+    if: ${{ !cancelled() && needs.plan_wave_02.result == 'success' && needs.plan_wave_02.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_02.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '2'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w02
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_03:
+    name: 任務池檢查｜接手輪次 03
+    needs: [discover_once, recover_wave_02, plan_wave_02]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_02.result == 'success' && needs.plan_wave_02.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_02.outputs.progress }}
+
+  recover_wave_03:
+    name: "接手 03｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_03]
+    if: ${{ !cancelled() && needs.plan_wave_03.result == 'success' && needs.plan_wave_03.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_03.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '3'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w03
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_04:
+    name: 任務池檢查｜接手輪次 04
+    needs: [discover_once, recover_wave_03, plan_wave_03]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_03.result == 'success' && needs.plan_wave_03.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_03.outputs.progress }}
+
+  recover_wave_04:
+    name: "接手 04｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_04]
+    if: ${{ !cancelled() && needs.plan_wave_04.result == 'success' && needs.plan_wave_04.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_04.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '4'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w04
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_05:
+    name: 任務池檢查｜接手輪次 05
+    needs: [discover_once, recover_wave_04, plan_wave_04]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_04.result == 'success' && needs.plan_wave_04.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_04.outputs.progress }}
+
+  recover_wave_05:
+    name: "接手 05｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_05]
+    if: ${{ !cancelled() && needs.plan_wave_05.result == 'success' && needs.plan_wave_05.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_05.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '5'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w05
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_06:
+    name: 任務池檢查｜接手輪次 06
+    needs: [discover_once, recover_wave_05, plan_wave_05]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_05.result == 'success' && needs.plan_wave_05.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_05.outputs.progress }}
+
+  recover_wave_06:
+    name: "接手 06｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_06]
+    if: ${{ !cancelled() && needs.plan_wave_06.result == 'success' && needs.plan_wave_06.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_06.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '6'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w06
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_07:
+    name: 任務池檢查｜接手輪次 07
+    needs: [discover_once, recover_wave_06, plan_wave_06]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_06.result == 'success' && needs.plan_wave_06.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_06.outputs.progress }}
+
+  recover_wave_07:
+    name: "接手 07｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_07]
+    if: ${{ !cancelled() && needs.plan_wave_07.result == 'success' && needs.plan_wave_07.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_07.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '7'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w07
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_08:
+    name: 任務池檢查｜接手輪次 08
+    needs: [discover_once, recover_wave_07, plan_wave_07]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_07.result == 'success' && needs.plan_wave_07.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_07.outputs.progress }}
+
+  recover_wave_08:
+    name: "接手 08｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_08]
+    if: ${{ !cancelled() && needs.plan_wave_08.result == 'success' && needs.plan_wave_08.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_08.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '8'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w08
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_09:
+    name: 任務池檢查｜接手輪次 09
+    needs: [discover_once, recover_wave_08, plan_wave_08]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_08.result == 'success' && needs.plan_wave_08.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_08.outputs.progress }}
+
+  recover_wave_09:
+    name: "接手 09｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_09]
+    if: ${{ !cancelled() && needs.plan_wave_09.result == 'success' && needs.plan_wave_09.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_09.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '9'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w09
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_10:
+    name: 任務池檢查｜接手輪次 10
+    needs: [discover_once, recover_wave_09, plan_wave_09]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_09.result == 'success' && needs.plan_wave_09.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_09.outputs.progress }}
+
+  recover_wave_10:
+    name: "接手 10｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_10]
+    if: ${{ !cancelled() && needs.plan_wave_10.result == 'success' && needs.plan_wave_10.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_10.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '10'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w10
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_11:
+    name: 任務池檢查｜接手輪次 11
+    needs: [discover_once, recover_wave_10, plan_wave_10]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_10.result == 'success' && needs.plan_wave_10.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_10.outputs.progress }}
+
+  recover_wave_11:
+    name: "接手 11｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_11]
+    if: ${{ !cancelled() && needs.plan_wave_11.result == 'success' && needs.plan_wave_11.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_11.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '11'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w11
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_12:
+    name: 任務池檢查｜接手輪次 12
+    needs: [discover_once, recover_wave_11, plan_wave_11]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_11.result == 'success' && needs.plan_wave_11.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_11.outputs.progress }}
+
+  recover_wave_12:
+    name: "接手 12｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_12]
+    if: ${{ !cancelled() && needs.plan_wave_12.result == 'success' && needs.plan_wave_12.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_12.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '12'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w12
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_13:
+    name: 任務池檢查｜接手輪次 13
+    needs: [discover_once, recover_wave_12, plan_wave_12]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_12.result == 'success' && needs.plan_wave_12.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_12.outputs.progress }}
+
+  recover_wave_13:
+    name: "接手 13｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_13]
+    if: ${{ !cancelled() && needs.plan_wave_13.result == 'success' && needs.plan_wave_13.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_13.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '13'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w13
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_wave_14:
+    name: 任務池檢查｜接手輪次 14
+    needs: [discover_once, recover_wave_13, plan_wave_13]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' && needs.plan_wave_13.result == 'success' && needs.plan_wave_13.outputs.missing_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      missing_count: ${{ steps.plan.outputs.missing_count }}
+      progress: ${{ steps.plan.outputs.progress }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: ${{ needs.plan_wave_13.outputs.progress }}
+
+  recover_wave_14:
+    name: "接手 14｜工作機 ${{ matrix.worker }}"
+    needs: [discover_once, plan_wave_14]
+    if: ${{ !cancelled() && needs.plan_wave_14.result == 'success' && needs.plan_wave_14.outputs.missing_count != '0' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.plan_wave_14.outputs.matrix) }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-crawl.txt
+      - name: 安裝程式所需套件及逐店儲存工具
+        run: |
+          pip install -r requirements-crawl.txt
+          npm install --prefix .github/actions/fr-dynamic-crawl --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @actions/artifact@2.3.2
+      - name: 下載同一份店家清單
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 動態領取店家、獨立調整執行緒及逐店保存
+        uses: ./.github/actions/fr-dynamic-crawl
+        with:
+          index: ${{ matrix.shard }}
+        env:
+          FR_CRAWL_WAVE: '14'
+          FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
+          FOODRADAR_PARALLEL_SECTIONS: '1'
+          FOODRADAR_CATALOG_429_RETRIES: '10'
+          FOODRADAR_STORE_RETRIES: '9'
+      - name: 上傳本機執行緒學習與請求統計
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-worker-${{ needs.discover_once.outputs.epoch }}-${{ matrix.shard }}-w14
+          path: data/worker-summary-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+          compression-level: 1
+
+
+  plan_complete:
+    name: 驗證全部任務池已完整結束
+    needs: [discover_once, crawl_shard, plan_recovery, recover_shard, plan_wave_02, recover_wave_02, plan_wave_03, recover_wave_03, plan_wave_04, recover_wave_04, plan_wave_05, recover_wave_05, plan_wave_06, recover_wave_06, plan_wave_07, recover_wave_07, plan_wave_08, recover_wave_08, plan_wave_09, recover_wave_09, plan_wave_10, recover_wave_10, plan_wave_11, recover_wave_11, plan_wave_12, recover_wave_12, plan_wave_13, recover_wave_13, plan_wave_14, recover_wave_14]
+    if: ${{ !cancelled() && needs.discover_once.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fr-crawl-plan
+        id: plan
+        with:
+          epoch: ${{ needs.discover_once.outputs.epoch }}
+          previous-progress: '-1'
+      - name: 確認無未完成店家或分類
+        env:
+          REMAINING: ${{ steps.plan.outputs.missing_count }}
+        run: |
+          test "$REMAINING" = 0 || { echo '仍有未完成任務，禁止寫入資料庫及部署'; exit 1; }
+
+
+  ingest:
+    name: 第十六台｜彙整驗證與發布靜態資料
+    needs: [prepare_run, discover_once, crawl_shard, plan_recovery, recover_shard, plan_complete]
+    if: "${{ !cancelled() && needs.prepare_run.result == 'success' && ((needs.discover_once.result == 'success' && needs.plan_complete.result == 'success') || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')))) }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    environment:
+      name: github-pages
+    concurrency:
+      group: foodradar-database-publisher
+      cancel-in-progress: false
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 準備程式執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安裝程式所需套件
+        run: pip install -r requirements.txt
+      # 任何手動資料庫更新前，都重新驗證核心程式。
+      - name: 更新資料前再次執行核心程式回歸測試
+        run: |
+          python -m unittest discover -s tests -v
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/static-catalog.js
+          node --check web/data-contract.js
+
+      - name: 禁止未確認的正式資料庫重建
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild' }}
+        env:
+          CONFIRM_RESET: ${{ inputs.confirm_reset }}
+        run: |
+          if [ "$CONFIRM_RESET" != "REBUILD_V2" ]; then
+            echo '全量重建需明確輸入 REBUILD_V2' >&2
+            exit 1
+          fi
+
+      - name: 下載本次所有逐店保存成果
+        if: ${{ needs.discover_once.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fr-task-${{ needs.discover_once.outputs.epoch }}-*
+          path: data/tasks
+          merge-multiple: false
+      - name: 下載工作機統計
+        if: ${{ needs.discover_once.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fr-worker-${{ needs.discover_once.outputs.epoch }}-*
+          path: data/worker-summaries
+          merge-multiple: false
+      - name: 下載本次驗證過的原始店家清單
+        if: ${{ needs.discover_once.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
+          path: data/discovery
+      - name: 驗證共用任務池全部完成且無重複店家，再組裝既有格式
+        if: ${{ needs.discover_once.result == 'success' }}
+        run: python src/dynamic_crawl.py assemble
+
+      - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
+        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_RESET_20261124') || contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
+        env:
+          HF_TOKEN: "${{ secrets.HF_TOKEN }}"
+        # Preserve strict per-store verification, discovery coverage and HTTP hashes.
+        # Restore the previously tested fail-closed quarantine policy for known
+        # deterministic catalog gaps only (<=5%, >=50 verified stores).
+        # The failed stores' previous verified state is retained, not overwritten.
+        # Unknown errors and missing or invalid artifacts still abort publication.
+        run: python src/distributed_crawl.py merge --count ${{ needs.discover_once.outputs.batch_count }} --input-dir data/parts --upload --discovery-file data/discovery/discovery.json
+
+      - name: 保存所有工作機平均最佳執行緒至 Repo
+        if: ${{ success() && needs.discover_once.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
+        run: python scripts/save_crawl_settings.py
+      - name: 恢復經驗證的 SQLite 加速快取（不影響 HF Raw）
+        if: ${{ inputs.mode != 'full-rebuild' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            foodradar-state-v1-
+      - name: 直接更新精簡資料庫、完整稽核並建置網站資料
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
+        run: python scripts/prepare_hf_release.py
+      - name: 保存經完整資料與網站雜湊驗收的精簡資料庫
+        if: ${{ success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 整理已驗證資料供 Pages Artifact 使用（不提交 Git、不上傳 HF 靜態副本）
+        run: |
+          BATCH=$(cat data/latest.txt)
+          mkdir -p pages-static-source
+          cp -a "data/$BATCH/static-public/." pages-static-source/
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from build_static_catalog import verify
+          manifest = verify(Path('pages-static-source'))
+          print('FOODRADAR_ARTIFACT_SOURCE_VERIFIED=' + manifest['batch'], flush=True)
+          PY
+      - name: 保存已驗證靜態資料為 Pages 來源 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-static-source
+          path: pages-static-source/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: 保存驗證報告
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-data-validation
+          path: |
+            data/**/report.json
+            data/**/store-identity-report.json
+            data/**/direct-db-report.json
+            data/**/quarantine-report.json
+            packed-report.json
+            data/**/static-public/current.json
+            data/**/shard-reconciliation.json
+          if-no-files-found: ignore
+          retention-days: 5
+      - name: 移除已完成的臨時任務池分支
+        if: ${{ success() && needs.discover_once.result == 'success' }}
+        run: python src/dynamic_crawl.py cleanup
+
+      - name: 保存本次實際執行指標
+        if: ${{ !cancelled() }}
+        run: python scripts/action_summary.py capture
+      - name: 上傳本次統計指標
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-run-metrics
+          path: action-reports/metrics/
+          if-no-files-found: warn
+          retention-days: 5
+
+  report:
+    name: 彙整本次繁體中文爬蟲報告
+    needs: [prepare_run, discover_once, crawl_shard, plan_recovery, recover_shard, plan_complete, ingest]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 下載本次統計指標
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: foodradar-run-metrics
+          path: action-reports/metrics
+      - name: 產生繁體中文抓取與更新報告
+        env:
+          DISCOVER_RESULT: ${{ needs.discover_once.result }}
+          SHARD_RESULT: ${{ needs.crawl_shard.result }}
+          RECOVERY_PLAN_RESULT: ${{ needs.plan_recovery.result }}
+          RECOVERY_RESULT: ${{ needs.recover_shard.result }}
+          RECOVERY_COUNT: ${{ needs.plan_recovery.outputs.missing_count }}
+          INGEST_RESULT: ${{ needs.ingest.result }}
+        run: python scripts/action_summary.py crawl
+
+  request-deployment:
+    name: 資料與稽核全部成功後才啟動網站部署
+    needs: [ingest, report]
+    if: ${{ !cancelled() && needs.ingest.result == 'success' && needs.report.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: 核對來源版本並通知網站部署
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          target="repos/$GITHUB_REPOSITORY/actions/runs/45522293376"
-          status=$(gh api "$target" --jq .status)
-          if [[ "$status" != completed ]]; then
-            gh api -X POST "$target/force-cancel" || gh api -X POST "$target/cancel" || true
+          head=$(gh api "repos/$GH_REPO/branches/main" --jq .commit.sha)
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo '有更新版本排隊，舊版資料不部署。' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
-          for i in {1..50}; do
-            [[ "$(gh api "$target" --jq .status)" == completed ]] && break
-            sleep 3
-          done
-          test "$(gh api "$target" --jq .status)" = completed
-          gh api -X DELETE "$target"
-          echo '已刪除指定 RUN #461；排程、爬取、資料庫更新及部署全部不執行。' >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run pages.yml --ref main -f source_run_id="$GITHUB_RUN_ID" -f source_sha="$GITHUB_SHA"
+          echo '來源資料與稽核均已成功，已通知 02；02 仍會等待整個 01 完成才發布。' >> "$GITHUB_STEP_SUMMARY"
