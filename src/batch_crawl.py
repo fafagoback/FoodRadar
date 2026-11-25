@@ -8,14 +8,11 @@ import uuid
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
-from catalog_complete import _section_ids, _subsections_for, capture_catalog
-from menu_core import attach_delivery_location, response_retry_after
-from raw_capture import capture_response
+from adaptive_threads import AdaptiveThreads
 from crawl_queue import artifact_name
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip
-from dynamic_crawl import runtime_queue, shared_identity, verify_queue, body_checksums, validate_task, validate_learning_summary
+from dynamic_crawl import runtime_queue, shared_identity, verify_queue, body_checksums, validate_task
 from menu_core import global_limiter
 from raw_capture import fetch_store_raw
 
@@ -47,7 +44,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     queue = queue or runtime_queue()
     state = queue.read()
     verify_queue(state, shared, digest, ids)
-    assert_supported_catalog_groups(state)
+    if state.get("catalog_groups"):
+        raise ValueError("Store-only workers cannot consume a legacy split-catalog run")
     base = root / "data" / f"worker-batch-{index}"
     tasks = base / "tasks"
     tasks.mkdir(parents=True, exist_ok=False)
@@ -56,17 +54,10 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         raise ValueError("Static ownership is not allowed")
     wave = int(os.getenv("FR_CRAWL_WAVE", "0"))
     owner = f"{index}-{uuid.uuid4().hex}"
-    initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
-    if not valid_threads(initial):
-        raise ValueError("Invalid initial threads")
-    ctrl = AdaptiveThreads(initial)
+    # One active whole-store lease per machine. In-store HTTP concurrency is
+    # independent; do not learn or publish a store-slot count greater than one.
+    ctrl = AdaptiveThreads(1)
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
-    if wave:
-        previous = root / 'data' / 'previous-worker-learning' / 'summary.json'
-        if previous.is_file():
-            prior = validate_learning_summary(json.loads(previous.read_text()), state, index, wave-1)
-            ctrl.resume(prior, time.monotonic(), global_limiter.snapshot())
-            print('FOODRADAR_THREADS_RESUMED=' + json.dumps(ctrl.report()), flush=True)
     transport = TransportPool()
     active, finished, uncommitted = {}, {}, {}
     reserved = deque()
@@ -83,122 +74,18 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         return rows, time.monotonic() - t
 
     def one(kind, sid, key, lease):
+        if kind != "store" or key is not None:
+            raise ValueError("Only whole-store tasks are accepted")
         item = discovered[sid]
-        section = kind == "section"
-        folder = ((base / "sections" / (sid + "-" + key + "-" + lease["token"]))
-                  if section else tasks / artifact_name(state, sid, lease))
+        folder = tasks / artifact_name(state, sid, lease)
         raw = folder / "raw"
         raw.mkdir(parents=True)
         t = time.monotonic()
-
-        if section:
-            expected_uuid = lease["section_uuid"]
-            sub_path = lease.get("sub_path",[])
-            def only_section(store, root, relative, data, headers, attempt):
-                section_ids = _section_ids(data)
-                if expected_uuid not in section_ids:
-                    raise ValueError("Native catalog category identity changed")
-                section_index = section_ids.index(expected_uuid)
-                session = transport.session()
-                try:
-                    if not attach_delivery_location(session, item):
-                        raise ValueError("Missing delivery location for section worker")
-                    refresh_count = 0
-                    def refresh_native():
-                        nonlocal refresh_count
-                        refresh_count += 1
-                        global_limiter.wait()
-                        response = session.post(
-                            "https://www.ubereats.com/api/getStoreV1",
-                            json={"storeUuid": sid, "sfNuggetCount": 24},
-                            headers=headers, timeout=12)
-                        capture_response(root, section_refresh_name(
-                            section_index, attempt, refresh_count, response.status_code), response)
-                        if response.status_code == 429:
-                            global_limiter.trigger_backoff(30, "Section refresh HTTP 429",
-                                                           retry_after=response_retry_after(response))
-                        if response.status_code != 200:
-                            raise RuntimeError("Section refresh HTTP " + str(response.status_code))
-                        body = response.json()
-                        data = body.get("data")
-                        if (body.get("status") == "failure" or not isinstance(data, dict)
-                                or set(_section_ids(data)) != set(section_ids)):
-                            raise RuntimeError("Native catalog category metadata changed")
-                        global_limiter.record_success()
-                        return data
-                    def split_children(children):
-                        queue.register_children(sid,key,lease["token"],children)
-                        print("FOODRADAR_SUBSECTION_SPLIT="+json.dumps({
-                            "store_uuid":sid,"section_key":key,"subsections":len(children),
-                            "worker":index}),flush=True)
-                    return capture_catalog(
-                        session, sid, data, root, headers, capture_response,
-                        store_attempt=attempt, section_indices=[section_index],
-                        refresh_native_metadata=refresh_native,subsection_path=sub_path,
-                        defer_children=split_children if hasattr(queue,"register_children") else None)
-                finally:
-                    session.close()
-            result = capture(item, raw, session_factory=transport.session,
-                             catalog_runner=only_section)
-            result["crawl_elapsed_ms"] = max(1, round((time.monotonic()-t)*1000))
-            checks = body_checksums(raw)
-            doc = {"run_id":state["run_id"], "source_sha":state["source_sha"],
-                   "epoch":state["epoch"], "store_uuid":sid, "token":lease["token"],
-                   "worker":index, "section_index":int(key.split(".")[0]),
-                   "section_uuid":expected_uuid, "sub_path":sub_path,
-                   "result":result, "responses":checks}
-            (folder / "section.json").write_text(json.dumps(doc, ensure_ascii=False),
-                                                 encoding="utf8")
-            if (result.get("store_uuid") != sid or
-                    result.get("catalog_section_count", 0) not in (0, 1)):
-                raise ValueError("Invalid native section result")
-            return kind, sid, key, lease["token"]
-
-        catalog_options={}
-        def dispatch(store, root, relative, data, headers, attempt):
-            sections = _section_ids(data)
-            estimate = shared.get("workload_weights", {}).get(sid, 400)
-            if capture is not fetch_store_raw:
-                return None
-            if (data.get("catalogSectionPagingInfo") or {}).get("hasMore") is True:
-                return None  # original catalog enumeration gate must reject this
-            native_counts={sec:len(_subsections_for(data,sec)) for sec in sections}
-            historical=shared.get("section_workload_weights",{}).get(sid,{})
-            weights={sec:max(int(historical.get(sec,0)),native_counts[sec]*500,
-                              estimate//max(1,len(sections))) for sec in sections}
-            existing=state.get("catalog_groups",{}).get(sid)
-            if existing:
-                deferred_roster=existing["sections"]
-                if not set(deferred_roster)<=set(sections):
-                    raise ValueError("Native deferred store roster changed")
-                local_indices=[i for i,sec in enumerate(sections) if sec not in deferred_roster]
-                if local_indices:
-                    catalog_options.update(section_indices=local_indices,deferred_roster=deferred_roster)
-                    return None
-                sections=deferred_roster
-            elif not should_split_catalog(len(sections), estimate,max(native_counts.values(),default=0)):
-                if hasattr(queue,"register_children"):
-                    def promote(remaining):
-                        queue.register_catalog(sid,lease["token"],remaining,weights)
-                        print("FOODRADAR_STORE_PROMOTED="+json.dumps({
-                            "store_uuid":sid,"remaining_sections":len(remaining),"worker":index}),flush=True)
-                    catalog_options["promote_store"]=promote
-                return None
-            if hasattr(queue,"register_children"):
-                queue.register_catalog(sid,lease["token"],sections,weights)
-            else:
-                queue.register_catalog(sid,lease["token"],sections)
-            print("FOODRADAR_CATEGORY_SPLIT=" + json.dumps({
-                "store_uuid": sid, "sections": len(sections), "estimated_work": estimate,
-                "worker":index}), flush=True)
-            return {"catalog_responses":[], "catalog_complete":False,
-                    "catalog_section_count":len(sections),
-                    "catalog_sections_finished":0, "catalog_item_occurrences":0,
-                    "catalog_deferred":True}
-
-        result = capture(item, raw, session_factory=transport.session,
-                         catalog_runner=dispatch,catalog_options=catalog_options) if capture is fetch_store_raw else capture(
-                             item, raw, session_factory=transport.session)
+        # No catalog_runner, promote_store or defer_children: all menu pages
+        # and native subcategories are processed locally by this worker.
+        result = capture(item, raw, session_factory=transport.session)
+        if result.get("catalog_deferred") or result.get("catalog_deferred_children"):
+            raise ValueError("Whole-store capture must not defer categories")
         result["crawl_elapsed_ms"] = max(1, round((time.monotonic()-t)*1000))
         checks = body_checksums(raw)
         result["crawl_api_requests"] = len(checks)
@@ -218,16 +105,17 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
             next_probe=0.0
             empty_delay=0.6
             drained=False
-            with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
+            with ThreadPoolExecutor(max_workers=1) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
                 while True:
                     now=time.monotonic()
                     snap=global_limiter.snapshot()
-                    ctrl.observe(now, snap, len(active)>=ctrl.target, len(active))
                     if pending_exchange is not None and pending_exchange.done():
                         jobs,drained,elapsed=pending_exchange.result()
                         claim_seconds+=elapsed
                         pending_exchange=None
                         reserved.extend(jobs)
+                        if len(jobs)>1 or any(kind!="store" or key is not None for kind,sid,key,lease in jobs):
+                            raise ValueError("Store-only worker received invalid work")
                         if jobs:
                             empty_delay=0.6
                             next_probe=now
@@ -235,14 +123,13 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             next_probe=now+empty_delay
                             empty_delay=min(2.5,empty_delay*1.4)
                     if snap["cooldown_remaining_seconds"]<=0:
-                        while reserved and len(active)<ctrl.target:
+                        while reserved and not active:
                             kind,sid,key,lease=reserved.popleft()
                             active[pool.submit(one,kind,sid,key,lease)]=(kind,sid,key)
                     if drained and not active and not reserved and not uncommitted and not uncommitted_sections and pending_exchange is None:
                         break
-                    # The SB RPC accepts at most 12 slots per exchange. Refill
-                    # repeatedly until the current target is reached.
-                    free=min(12,max(0,ctrl.target-len(active)-len(reserved)))
+                    # Report the completed store and claim at most one next store.
+                    free=max(0,1-len(active)-len(reserved))
                     if snap["cooldown_remaining_seconds"]>0:
                         free=0
                     done_count=len(uncommitted)+sum(map(len,uncommitted_sections.values()))
@@ -262,7 +149,6 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             jobs,done=queue.exchange(owner,index,slots,stores,sections)
                             return jobs,done,time.monotonic()-begin
                         pending_exchange=coordinator.submit(do_exchange)
-                    ctrl.observe(time.monotonic(),global_limiter.snapshot(),len(active)>=ctrl.target,len(active))
                     waiting=set(active)
                     if pending_exchange is not None:
                         waiting.add(pending_exchange)
@@ -294,11 +180,10 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         else:
             # Claim no more than the available execution slots. Store bodies remain
             # local until a single final worker artifact upload.
-            with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
+            with ThreadPoolExecutor(max_workers=1) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
                 while True:
                     now = time.monotonic()
                     snap = global_limiter.snapshot()
-                    ctrl.observe(now, snap, len(active)>=ctrl.target, len(active))
                     if claim_future is not None and claim_future.done():
                         rows, elapsed = claim_future.result()
                         claim_seconds += elapsed
@@ -311,7 +196,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         local_commit_seconds += elapsed
                         sync_future = None
                     if snap["cooldown_remaining_seconds"] <= 0:
-                        while reserved and len(active) < ctrl.target:
+                        while reserved and not active:
                             kind, sid, key, lease = reserved.popleft()
                             active[pool.submit(one, kind, sid, key, lease)] = (kind, sid, key)
                     if status_future is not None and status_future.done():
@@ -348,8 +233,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         sync_future = coordinator.submit(sync)
                     if (snap["cooldown_remaining_seconds"] <= 0
                             and claim_future is None and now >= next_claim_at):
-                        free_slots = max(0, ctrl.target - len(active) - len(reserved))
-                        if free_slots and not reserved and not uncommitted and not uncommitted_sections:
+                        free_slots = max(0, 1 - len(active) - len(reserved))
+                        if free_slots and not reserved and not uncommitted and not uncommitted_sections and sync_future is None:
                             claim_future = coordinator.submit(claim, free_slots)
                     if (not active and not reserved and not uncommitted and not uncommitted_sections and claim_future is None
                             and sync_future is None and status_future is None
@@ -357,7 +242,6 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         status_future = coordinator.submit(queue.read)
                         next_status_at = now + 2.0
                     saturated = len(active) >= ctrl.target
-                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), saturated, len(active))
                     last_saturated = saturated
                     waiting = set(active)
                     for future in (claim_future, sync_future, status_future):
@@ -414,8 +298,14 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
 def finalize(index, artifact_id, discovery_file, queue=None, root=ROOT):
     shared, digest, ids = shared_identity(discovery_file)
     q = queue or runtime_queue()
-    state = q.read()
-    verify_queue(state, shared, digest, ids)
+    # The server validates the run-scoped owner and fencing token for each
+    # finalized task; a worker does not need to read the entire shared pool.
+    if hasattr(q, "finalize_batch"):
+        state = {"run_id": shared["run_id"], "source_sha": shared["source_sha"],
+                 "epoch": digest[:16]}
+    else:
+        state = q.read()
+        verify_queue(state, shared, digest, ids)
     base = root / "data" / f"worker-batch-{index}"
     doc = json.loads((base / "batch.json").read_text())
     wave = int(os.getenv("FR_CRAWL_WAVE", "0"))
@@ -431,6 +321,8 @@ def finalize(index, artifact_id, discovery_file, queue=None, root=ROOT):
     }:
         raise ValueError("Worker batch task folders do not match manifest")
     sections = doc.get("sections", {})
+    if sections:
+        raise ValueError("Store-only batch must not contain category tasks")
     expected_folders = {sid + "-" + key + "-" + token
                         for sid, keys in sections.items() for key, token in keys.items()}
     actual_folders = {p.name for p in (base/"sections").iterdir()} if (base/"sections").exists() else set()
