@@ -357,15 +357,22 @@ class GitQueue:
     def reset_terminated_wave(self):
         """Only after the entire previous Actions matrix has terminated."""
         def edit(s):
-            if s.get("catalog_groups"):
-                raise ValueError("Legacy category checkpoints cannot use batch recovery")
             ids = sorted(set(s["leased"]) | set(s.get("local_done", {})))
-            if not ids:
+            total = len(ids)
+            for sid, group in s.get("catalog_groups", {}).items():
+                validate_batch_group(sid, group)
+                keys = sorted(set(group["leased"]) | set(group["local_done"]), key=int)
+                if keys:
+                    group["pending"] = sorted(group["pending"] + keys, key=int)
+                    group["leased"].clear()
+                    group["local_done"].clear()
+                    total += len(keys)
+            if not total:
                 return False, 0
             s["pending"] = sorted(s["pending"] + ids)
             s["leased"].clear()
             s.get("local_done", {}).clear()
-            return True, len(ids)
+            return True, total
         return self.transact(edit)
 
     def release_expired(self, sid, token):
@@ -510,6 +517,64 @@ class SharedGitQueue:
                 self.available.discard(index)
             return []
 
+    def register_catalog(self, sid, token, sections):
+        with self.lock:
+            self._ensure()
+            return self.lanes[self.lane_of[sid]].register_catalog(sid, token, sections)
+
+    def claim_work(self, owner, worker, slots):
+        """Globally claim available category work before any new whole store."""
+        if slots < 1:
+            return []
+        with self.lock:
+            self._ensure()
+            state = self.read()
+            jobs = []
+            for sid, group in state.get("catalog_groups", {}).items():
+                if group.get("format") == "batch-section-v2" and group["pending"]:
+                    weight = state.get("weights", {}).get(sid, 400)
+                    jobs.append((-1000000 - weight / len(group["sections"]),
+                                 sid, "section", self.lane_of[sid]))
+            for sid in state["pending"]:
+                jobs.append((-state.get("weights", {}).get(sid, 400), sid,
+                             "store", self.lane_of[sid]))
+            jobs.sort()
+            claimed = []
+            for _, sid, kind, lane in jobs:
+                if len(claimed) >= slots:
+                    break
+                if kind == "section":
+                    row = self.lanes[lane].claim_catalog(owner, worker, sid)
+                    if row:
+                        _, key, lease = row
+                        claimed.append(("section", sid, key, lease))
+                else:
+                    rows = self.lanes[lane].claim(owner, worker, 1)
+                    if rows:
+                        _, lease = rows[0]
+                        claimed.append(("store", sid, None, lease))
+                if claimed:
+                    self.owner_lanes.setdefault(owner, set()).add(lane)
+            return claimed
+
+    def mark_local_sections(self, owner, records):
+        with self.lock:
+            self._ensure()
+            groups = {}
+            for sid, keys in records.items():
+                groups.setdefault(self.lane_of[sid], {})[sid] = keys
+            return sum(self.lanes[i].mark_local_catalog_batch(owner, rows)
+                       for i, rows in sorted(groups.items()))
+
+    def finish_section_batch(self, owner, records, artifact_id, batch_name):
+        with self.lock:
+            self._ensure()
+            groups = {}
+            for sid, keys in records.items():
+                groups.setdefault(self.lane_of[sid], {})[sid] = keys
+            return sum(self.lanes[i].finish_catalog_batch(owner, rows, artifact_id, batch_name)
+                       for i, rows in sorted(groups.items()))
+
     def renew(self, owner):
         with self.lock:
             self._ensure()
@@ -569,13 +634,17 @@ class SharedGitQueue:
         with self.lock:
             state = self.read()
             affected = {self.lane_of[sid] for sid in set(state["leased"]) | set(state.get("local_done", {}))}
+            affected |= {self.lane_of[sid] for sid,g in state.get("catalog_groups",{}).items()
+                         if g.get("leased") or g.get("local_done")}
             return sum(self.lanes[i].reset_terminated_wave() for i in sorted(affected))
 
     def cleanup(self):
         with self.lock:
             self._ensure()
             state = self.read()
-            if state["pending"] or state["leased"] or state.get("local_done"):
+            if (state["pending"] or state["leased"] or state.get("local_done")
+                    or any(g["pending"] or g["leased"] or g["local_done"]
+                           for g in state.get("catalog_groups", {}).values())):
                 raise RuntimeError("Cannot delete an incomplete task pool")
             refs = [self.root.ref] + [q.ref for q in self.lanes]
             self.root.git("push", "--atomic", self.root.remote, *[":" + ref for ref in refs])
