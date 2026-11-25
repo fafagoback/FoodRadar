@@ -70,6 +70,10 @@ def validate_group(sid, group):
     return group
 
 
+class CheckpointStorageError(RuntimeError):
+    """A storage operation failed; do not turn it into an upstream result."""
+
+
 class PageJournal:
     """Replay the exact successful native page of this capture, not cached prices.
 
@@ -110,7 +114,10 @@ class PageJournal:
         name = self.prefix + "-" + key
         if self.recover:
             with tempfile.TemporaryDirectory() as temp:
-                found = self.storage("recover", name, temp)
+                try:
+                    found = self.storage("recover", name, temp)
+                except Exception as exc:
+                    raise CheckpointStorageError("Could not verify saved native catalog page") from exc
                 if found is not None:
                     self.replayed += 1
                     response = self._read(Path(temp), json)
@@ -134,7 +141,10 @@ class PageJournal:
             body = response.content
             (folder / "response.body").write_bytes(body)
             (folder / "page.json").write_bytes(wire({"request": json, "sha256": sha(body), "status": 200}))
-            self.storage("upload", name, folder)
+            try:
+                self.storage("upload", name, folder)
+            except Exception as exc:
+                raise CheckpointStorageError("Could not durably save native catalog page") from exc
             self.saved += 1
         self.local[key] = response
         return response
@@ -366,6 +376,8 @@ class CatalogBroker:
             try:
                 result=capture_catalog(journal,sid,data,raw,plan["headers"],capture_response,
                     store_attempt=plan["store_attempt"],section_indices=[int(key)],refresh_native_metadata=refresh)
+            except CheckpointStorageError:
+                raise
             except (requests.RequestException,ValueError,RuntimeError,TypeError) as exc:
                 result={"catalog_complete":False,"error":type(exc).__name__+": "+str(exc)}
             finally:

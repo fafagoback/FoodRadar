@@ -22,7 +22,7 @@ from distributed_crawl import ROOT, load_shared_discovery, public_ip, _validate_
 from menu_core import global_limiter
 from promo_api_recheck import verify_suspicious_store
 from raw_capture import fetch_store_raw
-from catalog_broker import CatalogBroker
+from catalog_broker import CatalogBroker, validate_group
 
 HELPER = ROOT / ".github/actions/fr-dynamic-crawl/artifact.cjs"
 
@@ -263,6 +263,10 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
     verify_queue(state, shared, digest, ids)
     if state["pending"] or state["leased"] or set(state["completed"]) != set(ids):
         raise RuntimeError("Task pool incomplete; no HF/DB update")
+    for sid, group in state.get("catalog_groups", {}).items():
+        validate_group(sid,group)
+        if group["pending"] or group["leased"]:
+            raise RuntimeError("Native category task pool incomplete; no HF/DB update")
     owners = {sid: state["completed"][sid]["worker"] for sid in ids}
     by_worker = [[] for _ in range(15)]
     checks_by_worker = [{} for _ in range(15)]
