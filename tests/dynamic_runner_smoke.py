@@ -82,8 +82,7 @@ def partition_worker(index):
             os._exit(73)
         return result
     with patch("dynamic_crawl.TransportPool",Transport),patch("raw_capture.attach_delivery_location",return_value=True),patch("catalog_broker.attach_delivery_location",return_value=True):
-        dc.capture_worker(CFG,index,DISCOVERY,queue=q,storage=storage,capture=fetch_store_raw,
-            verify=lambda item,raw,result,*args,**kwargs:result)
+        dc.capture_worker(CFG,index,DISCOVERY,queue=q,storage=storage,capture=fetch_store_raw)
 
 
 def worker(index):

@@ -35,9 +35,9 @@ class DistributionTests(unittest.TestCase):
         loads=[sum(weights[s] for s in stores if owners[s]==i) for i in range(15)]
         self.assertLess(max(loads),240)
 
-    def test_workload_includes_promo_second_pass(self):
+    def test_workload_excludes_obsolete_promo_second_pass(self):
         base = {"catalog_responses": [1] * 100, "catalog_section_count": 10}
-        self.assertGreater(workload_weight({**base, "promo_recheck": {
+        self.assertEqual(workload_weight({**base, "promo_recheck": {
             "status": "MATCHED", "second_catalog_pages": 100}}), workload_weight(base))
         self.assertEqual(workload_weight({**base, "crawl_elapsed_ms": 12345}), 12345)
 

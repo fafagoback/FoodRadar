@@ -17,7 +17,6 @@ from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip
 from dynamic_crawl import runtime_queue, shared_identity, verify_queue, body_checksums, validate_task, validate_learning_summary
 from menu_core import global_limiter
-from promo_api_recheck import verify_suspicious_store
 from raw_capture import fetch_store_raw
 
 def section_refresh_name(section_index, attempt, sequence, status):
@@ -42,7 +41,7 @@ def batch_name(state, index, wave):
     return f"fr-worker-{state['epoch']}-{index}-w{wave:02d}"
 
 def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
-                   capture=fetch_store_raw, verify=verify_suspicious_store):
+                   capture=fetch_store_raw):
     started = time.monotonic()
     shared, digest, ids = shared_identity(discovery_file)
     queue = queue or runtime_queue()
@@ -55,7 +54,6 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     discovered, _, _, owners = load_shared_discovery(discovery_file, config, base, -1)
     if owners is not None:
         raise ValueError("Static ownership is not allowed")
-    baseline = shared.get("previous_promotion_stats") or {}
     wave = int(os.getenv("FR_CRAWL_WAVE", "0"))
     owner = f"{index}-{uuid.uuid4().hex}"
     initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
@@ -201,17 +199,6 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         result = capture(item, raw, session_factory=transport.session,
                          catalog_runner=dispatch,catalog_options=catalog_options) if capture is fetch_store_raw else capture(
                              item, raw, session_factory=transport.session)
-        if (result.get("success") is True and not result.get("inactive")
-                and not result.get("catalog_deferred")):
-            prior = baseline.get(sid) or {}
-            try:
-                result = verify(item, raw, result, prior.get("stats"), prior.get("batch", ""),
-                                previous_watch=prior.get("promotion_watch"))
-            except Exception as exc:
-                result["promo_recheck"] = {"status":"UNAVAILABLE", "trigger":"verifier_exception",
-                    "error":str(exc)[:180], "previous_stats":prior.get("stats"),
-                    "previous_batch":prior.get("batch", ""),
-                    "previous_watch":prior.get("promotion_watch") or {}}
         result["crawl_elapsed_ms"] = max(1, round((time.monotonic()-t)*1000))
         checks = body_checksums(raw)
         result["crawl_api_requests"] = len(checks)

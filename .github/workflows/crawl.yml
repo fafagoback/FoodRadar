@@ -1,7 +1,7 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
-  # SB 共用池：大店優先與原生子分類接手驗收；保留每日排程。
+  # 移除促銷二次爬取；保留原生目錄完整性、Raw SHA256 與每日排程。
   push:
     branches: [main]
     paths: ['.github/workflows/crawl.yml']

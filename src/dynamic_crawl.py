@@ -20,7 +20,6 @@ from crawl_queue import SharedGitQueue, HEARTBEAT_SECONDS, initial_state, artifa
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip, _validate_references
 from menu_core import global_limiter
-from promo_api_recheck import verify_suspicious_store
 from raw_capture import fetch_store_raw, CheckpointStorageError
 from catalog_broker import CatalogBroker, validate_group
 from artifact_budget import ArtifactBudget
@@ -127,7 +126,7 @@ def restore_worker_learning(storage,state,index,wave):
 
 
 def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
-                   root=ROOT, capture=fetch_store_raw, verify=verify_suspicious_store):
+                   root=ROOT, capture=fetch_store_raw):
     shared, digest, ids = shared_identity(discovery_file)
     queue = queue or runtime_queue()
     state = queue.read()
@@ -137,7 +136,6 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
     discovered, _, _, owners = load_shared_discovery(discovery_file, config, base / "feed-check", -1)
     if owners is not None:
         raise ValueError("Preassigned stores are forbidden in dynamic worker")
-    baseline = shared.get("previous_promotion_stats") or {}
     owner = f"{index}-{uuid.uuid4().hex}"
     initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
     if not valid_threads(initial):
@@ -185,16 +183,6 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
         except Exception as exc:
             result = {"store_uuid": sid, "store_url": item["store_url"], "success": False,
                       "error": type(exc).__name__ + ": " + str(exc)}
-        if result.get("success") is True and not result.get("inactive"):
-            prior = baseline.get(sid) or {}
-            try:
-                result = verify(item, raw, result, prior.get("stats"), prior.get("batch", ""),
-                                previous_watch=prior.get("promotion_watch"))
-            except Exception as exc:
-                result["promo_recheck"] = {"status": "UNAVAILABLE", "trigger": "verifier_exception",
-                                           "error": str(exc)[:180], "previous_stats": prior.get("stats"),
-                                           "previous_batch": prior.get("batch", ""),
-                                           "previous_watch": prior.get("promotion_watch") or {}}
         result["crawl_elapsed_ms"] = max(1, round((time.monotonic() - started) * 1000))
         checks = body_checksums(raw)
         result["crawl_api_requests"] = len(checks)

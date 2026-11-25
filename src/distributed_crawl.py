@@ -26,7 +26,6 @@ from discovery_coverage import get_points,validate_points,merge_store_points,COU
 from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
 from catalog_complete import is_recoverable_catalog_failure
-from promo_api_recheck import verify_suspicious_store
 from adaptive_threads import run_adaptive, valid_threads, DEFAULT_THREADS, maximum_best
 from crawl_batches import plan_batches, MAX_BATCHES, MAX_PARALLEL
 from crawl_transport import TransportPool
@@ -61,7 +60,7 @@ def weighted_owners(store_ids, count, historical_weights):
 
 
 def workload_weight(store):
-    """Milliseconds of estimated work, including independent promotion recheck."""
+    """Milliseconds of estimated capture work."""
     measured = store.get("crawl_elapsed_ms")
     requests = store.get("crawl_api_requests") or 0
     request_cost = 250*requests if type(requests) is int and requests>0 else 0
@@ -69,11 +68,7 @@ def workload_weight(store):
         return max(100, measured, request_cost)
     pages = len(store.get("catalog_responses") or [])
     sections = int(store.get("catalog_section_count") or 0)
-    recheck = store.get("promo_recheck") or {}
-    second = int(recheck.get("second_catalog_pages") or 0)
-    if recheck.get("status") and not second:
-        second = pages
-    return max(400, request_cost, 400 * (1 + pages + second) + 100 * sections)
+    return max(400, request_cost, 400 * (1 + pages) + 100 * sections)
 
 
 def latest_raw_workload_weights(config, section_weights=None):
@@ -241,7 +236,6 @@ def save_shared_discovery(config: dict, root: Path = ROOT, dynamic=False):
         p.relative_to(raw).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(raw.rglob("*.body"))
     }
-    previous_promotions = latest_raw_promotion_baseline(config)
     section_weights={}
     if dynamic:
         ownership, batch_count = None, 15
@@ -267,7 +261,6 @@ def save_shared_discovery(config: dict, root: Path = ROOT, dynamic=False):
         "source_sha": os.getenv("GITHUB_SHA", "local"),
         "latitude": config["latitude"], "longitude": config["longitude"],
         "feed_pages": pages, "stores": [stores[sid] for sid in sorted(stores)],
-        "previous_promotion_stats": previous_promotions,
         "raw_checksums": bodies, "discovery_coverage":coverage,
     }
     path = folder / "discovery.json"
@@ -372,16 +365,12 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
     assigned = sorted(
         sid for sid in discovered
         if (owners[sid] if owners is not None else shard_for_uuid(sid, count)) == index)
-    baseline = {}
     if discovery_file is not None:
         shared = json.loads(discovery_file.read_text(encoding="utf8"))
         if owners is not None and shared.get("owner_count") != count:
             raise ValueError("Matrix count differs from verified discovery")
         weights = shared.get("workload_weights") or {}
         assigned.sort(key=lambda sid: (-weights.get(sid, 400), sid))
-        baseline = shared.get("previous_promotion_stats") or {}
-        if not isinstance(baseline, dict):
-            raise ValueError("Invalid previous promotion baseline in shared discovery")
     captured = []
     transport = TransportPool()
     def capture_one(store_uuid):
@@ -394,25 +383,6 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
                 "store_uuid": store_uuid, "store_url": item["store_url"],
                 "success": False, "error": f"{type(exc).__name__}: {exc}",
             }
-        if result.get("success") is True and not result.get("inactive"):
-            prior = baseline.get(store_uuid) or {}
-            try:
-                result = verify_suspicious_store(
-                    item, raw, result, prior.get("stats"), prior.get("batch", ""),
-                    previous_watch=prior.get("promotion_watch"))
-            except Exception as exc:
-                # A new diagnostic must never rewrite a successfully captured
-                # HTTP observation into a claim that the crawler failed.
-                result["promotion_stats_error"] = type(exc).__name__ + ": " + str(exc)[:180]
-                # A broken verifier must NOT silently publish an unverified
-                # first observation as a confirmed historical price.
-                result["promo_recheck"] = {
-                    "status": "UNAVAILABLE", "trigger": "verifier_exception",
-                    "error": result["promotion_stats_error"],
-                }
-                print("FOODRADAR_PROMO_DIAGNOSTIC_UNAVAILABLE=" + json.dumps({
-                    "store_uuid": store_uuid, "reason": result["promotion_stats_error"]
-                }), flush=True)
         result["crawl_elapsed_ms"] = max(1, round((time.monotonic() - started) * 1000))
         # Process-wide request counters cannot be attributed to one thread.
         result["crawl_api_requests"] = (len(list((raw / "stores").glob(f"{store_uuid}-*.body")))
@@ -690,42 +660,11 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             shutil.copyfile(shard_raw / relative, target)
     if len(copied) != total_responses:
         raise RuntimeError("Lost HTTP response body during shard merge")
-    # Category helpers keep original bytes in their worker's sole artifact.
-    # The owner is reconstructed above; now perform the unchanged promotion
-    # verifier against the complete native HTTP catalog before HF publication.
-    deferred_count, deferred_extra_requests = 0, 0
-    if discovery_file is not None:
-        shared = json.loads(discovery_file.read_text(encoding="utf8"))
-        originals = {row["store_uuid"]: row for row in shared["stores"]}
-        baselines = shared.get("previous_promotion_stats") or {}
-        from promo_api_recheck import verify_suspicious_store
-        for sid, store in all_captured.items():
-            if not store.pop("catalog_deferred", False):
-                continue
-            deferred_count += 1
-            if store.get("success") is not True or store.get("inactive"):
-                continue
-            baseline = baselines.get(sid) or {}
-            before = len(list(raw.rglob("*.body")))
-            try:
-                verify_suspicious_store(
-                    originals[sid], raw, store, baseline.get("stats"),
-                    baseline.get("batch", ""),
-                    previous_watch=baseline.get("promotion_watch"))
-            except Exception as exc:
-                store["promo_recheck"] = {
-                    "status":"UNAVAILABLE", "trigger":"verifier_exception",
-                    "error":str(exc)[:180], "previous_stats":baseline.get("stats"),
-                    "previous_batch":baseline.get("batch", ""),
-                    "previous_watch":baseline.get("promotion_watch") or {}}
-            added = len(list(raw.rglob("*.body"))) - before
-            if added < 0:
-                raise RuntimeError("Promotion verification deleted original raw")
-            deferred_extra_requests += added
-            store["crawl_api_requests"] = store.get("crawl_api_requests",0) + added
-    total_responses += deferred_extra_requests
-    print("FOODRADAR_DEFERRED_PROMOTION_VERIFICATION=" + json.dumps({
-        "stores":deferred_count, "extra_original_bodies":deferred_extra_requests}),flush=True)
+    # Deferred catalog partitions have already been assembled and verified.
+    # No promotion-based API re-capture is performed by the merger.
+    for store in all_captured.values():
+        if store.pop("catalog_deferred", False) and store.get("success") is True and store.get("catalog_complete") is not True:
+            raise ValueError("Unassembled deferred catalog")
     ip_list = [m.get("public_ip") for m in metadata]
     ip_unique = len(set(ip for ip in ip_list if ip))
     stores = [all_captured[sid] for sid in sorted(all_captured)]
@@ -761,10 +700,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         "worker_timing": [{"worker":m["shard_index"]+1,"stores":len(m["stores"]),
                            "requests":m.get("api",{}).get("requests",0),
                            "uploads":m.get("artifact_uploads",0),**m.get("timing",{})} for m in metadata],
-        "promo_api_rechecks": {
-            state: sum((s.get("promo_recheck") or {}).get("status") == state for s in stores)
-            for state in ("MATCHED", "CONFLICT", "UNAVAILABLE")
-        },
+        "promo_api_rechecks": {"MATCHED": 0, "CONFLICT": 0, "UNAVAILABLE": 0},
     }
     (output / "shard-reconciliation.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
