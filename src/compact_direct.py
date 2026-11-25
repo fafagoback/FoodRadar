@@ -7,6 +7,7 @@ Immutable HF Raw remains the source of price proof.
 """
 from __future__ import annotations
 import json, sqlite3, contextlib
+from time import perf_counter
 import zstandard as zstd
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta
@@ -66,6 +67,7 @@ class CompactStore:
         self.max_shop_observations=0
         self.max_scratch_bytes=0
         self.writes=0
+        self.apply_timing=Counter()
         self.flush()
 
     def remove_image_urls(self):
@@ -249,26 +251,34 @@ class CompactStore:
         and bounded recent quotes; the new native observations append to the
         compact bitsets. Global weekly rules are recalculated separately.
         """
+        t=perf_counter()
         old=self.read_shop(sid,derive_history=True) if sid in self.ids else None
+        self.apply_timing["read_prior_shop_seconds"]+=perf_counter()-t
+        t=perf_counter()
         with contextlib.closing(sqlite3.connect(":memory:")) as db:
             from working_quotes import initialize
             db.row_factory=sqlite3.Row
             db.execute("PRAGMA temp_store=MEMORY")
             initialize(db);ensure_schema_and_migrations(db)
             if previous:db.execute("INSERT INTO metadata VALUES('latest_batch',?)",(previous,))
-            def insert(table,row):
-                cols=list(row)
-                db.execute(f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' for _ in cols)})",
-                           tuple(row[c] for c in cols))
+            self.apply_timing["scratch_schema_seconds"]+=perf_counter()-t;t=perf_counter()
+            def insert_many(table,rows):
+                if not rows:return
+                cols=list(rows[0])
+                db.executemany(f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' for _ in cols)})",
+                               (tuple(row[c] for c in cols) for row in rows))
             if old:
-                insert("stores",old[0])
-                for p in old[1]:insert("products",p)
+                insert_many("stores",[old[0]])
+                insert_many("products",old[1])
+            self.apply_timing["scratch_load_seconds"]+=perf_counter()-t;t=perf_counter()
             counts=apply_snapshot(db,[doc],batch,baseline=baseline,refresh_search=False)
+            self.apply_timing["lifecycle_seconds"]+=perf_counter()-t;t=perf_counter()
             store=db.execute("SELECT * FROM stores").fetchone()
             if store is not None:
                 products=[dict(r) for r in db.execute("SELECT * FROM products ORDER BY product_uuid")]
                 new_quotes=[tuple(r) for r in db.execute("SELECT * FROM product_price_observations")]
                 self.put_shop(dict(store),products,(old[2] if old else [])+new_quotes)
+            self.apply_timing["compact_encode_seconds"]+=perf_counter()-t
             scratch=db.execute("PRAGMA page_count").fetchone()[0]*db.execute("PRAGMA page_size").fetchone()[0]
             self.max_scratch_bytes=max(self.max_scratch_bytes,scratch)
             return counts
@@ -364,6 +374,9 @@ class CompactCollection:
         self.batches.append((batch,now,counts["stores"],counts["products"],counts["fallback_stores"],counts["fallback_products"]))
         self.meta["latest_batch"]=batch
         self.flush()
+        timing=Counter()
+        for part in self.parts:timing.update(part.apply_timing);part.apply_timing.clear()
+        print("FOODRADAR_SQLITE_APPLY_DETAIL="+json.dumps({k:round(v,3) for k,v in timing.items()}),flush=True)
         return dict(counts)
     def refresh_weekly(self,batch):
         results=Counter()

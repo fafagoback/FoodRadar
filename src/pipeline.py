@@ -173,7 +173,8 @@ def restore_history(config, rebuild_all=False):
             downloaded = Path(hf_hub_download(
                 config['hf_repo_id'], meta['archive_path'], repo_type='dataset',
                 token=os.environ.get('HF_TOKEN')))
-            digest = hashlib.sha256(downloaded.read_bytes()).hexdigest()
+            from state_checkpoint import digest_file
+            digest = digest_file(downloaded)
             if digest != meta.get('archive_sha256'):
                 raise ValueError('HF immutable Raw archive SHA-256 mismatch')
             dl = perf_counter()-t

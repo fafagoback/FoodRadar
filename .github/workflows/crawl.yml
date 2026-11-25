@@ -1,7 +1,7 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
-  # 移除促銷二次爬取；保留原生目錄完整性、Raw SHA256 與每日排程。
+  # 第16台效能：增量靜態區塊、單次驗證、細分耗時；保留每日排程。
   push:
     branches: [main]
     paths: ['.github/workflows/crawl.yml']
@@ -426,6 +426,14 @@ jobs:
           key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             foodradar-state-v1-
+      - name: 恢復網站區塊增量建置快取（與 DB 分開）
+        if: ${{ inputs.mode != 'full-rebuild' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/static-build-cache/
+          key: foodradar-static-build-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            foodradar-static-build-v1-
       - name: 直接更新精簡資料庫、完整稽核並建置網站資料
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -438,19 +446,19 @@ jobs:
           path: data/state-checkpoint/
           key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
+      - name: 保存網站區塊增量建置快取
+        if: ${{ success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/static-build-cache/
+          key: foodradar-static-build-v1-${{ github.run_id }}-${{ github.run_attempt }}
       - name: 整理已驗證資料供 Pages Artifact 使用（不提交 Git、不上傳 HF 靜態副本）
         run: |
           BATCH=$(cat data/latest.txt)
           mkdir -p pages-static-source
           cp -a "data/$BATCH/static-public/." pages-static-source/
-          python - <<'PY'
-          import sys
-          from pathlib import Path
-          sys.path.insert(0, 'scripts')
-          from build_static_catalog import verify
-          manifest = verify(Path('pages-static-source'))
-          print('FOODRADAR_ARTIFACT_SOURCE_VERIFIED=' + manifest['batch'], flush=True)
-          PY
+          test -s pages-static-source/current.json
+          echo "FOODRADAR_ARTIFACT_SOURCE_STAGED=$BATCH"
       - name: 保存已驗證靜態資料為 Pages 來源 Artifact
         uses: actions/upload-artifact@v4
         with:

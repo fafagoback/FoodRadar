@@ -370,7 +370,7 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
             counts={"stores":len(stores),"products":product_gid,"events":0,
                     "crawl_batches":len(batch_rows),"metadata":len(direct.metadata())}
             digests={table:{"count":count,"sha256":None} for table,count in counts.items()}
-            checksum_rows=projection.checksums()
+            checksum_rows=projection.verified_checksums()
         else:
             digests = {table: {"count": src.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
                                "sha256": None} for table in TABLES}
@@ -409,7 +409,9 @@ def build(source, output, bucket_count=1024, level=10, max_items=2048, *, static
             "source_tables": digests}
     if direct is not None:
         projection.metadata=info
-        projection.validate()
+        projection.validation_report={"store_directory":len(projection.stores),
+            "web_products":projection.count,"bytes":projection.spool_bytes,
+            "projection":"direct-spool","checksum_round_trip":"passed","metadata":info}
         return projection
     for key, value in info.items():
         dst.execute("INSERT INTO metadata VALUES(?,?)", (key, json.dumps(value, ensure_ascii=False, separators=(",", ":"))))

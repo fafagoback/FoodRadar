@@ -55,7 +55,12 @@ def iter_weekly_price_evidence(conn, latest_batch_id, days=7):
         WHERE observed_at>=? AND observed_at<=?
         ORDER BY store_uuid,product_uuid,observed_at,batch_id""",
         (lookback.isoformat(), now_iso))
+    # Stale groups cannot qualify: avoid Fraction and timestamp parsing for them.
+    from functools import lru_cache
+    parse_stamp=lru_cache(maxsize=2048)(datetime.fromisoformat)
     for (sid, pid), records in groupby(cursor, key=lambda r: (r[0], r[1])):
+        records=list(records)
+        if not any(row[2]==latest_batch_id and row[3]==now_iso for row in records):continue
         observations = []
         previous = []
         current = None
@@ -64,7 +69,7 @@ def iter_weekly_price_evidence(conn, latest_batch_id, days=7):
                     or cents <= 0 or count <= 0):
                 continue
             unit = Fraction(cents, 100 * count)
-            stamp = datetime.fromisoformat(observed_at)
+            stamp = parse_stamp(observed_at)
             observations.append((stamp, unit))
             if observed_at == now_iso and batch == latest_batch_id:
                 current = unit

@@ -11,6 +11,11 @@ import hashlib
 import json
 import re
 import sqlite3
+import shutil
+import os
+from time import perf_counter
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
@@ -32,6 +37,7 @@ def normalize(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or "")).casefold())
 
 
+@lru_cache(maxsize=8192)
 def terms(text):
     s = normalize(text)
     if not s:
@@ -70,7 +76,60 @@ def _price_event(at, price, unit, promo, quantity, unit_only=False):
         state, ensure_ascii=False, separators=(",", ":"))}
 
 
-def build(packed_db, serving_db, output, *, direct=None, projection=None):
+class StaticBlobCache:
+    """Reuse only blobs whose decoded bytes exactly equal the new input."""
+    def __init__(self, directory):
+        self.root=Path(directory)
+        self.root.mkdir(parents=True,exist_ok=True)
+        self.index=self.root/"index.json"
+        try:
+            value=json.loads(self.index.read_text())
+            self.previous=value if isinstance(value,dict) else {}
+        except (OSError,ValueError):
+            self.previous={}
+        self.current={}
+        self.hits=0
+        self.misses=0
+
+    def write(self, directory, data):
+        original=_json(data)
+        key=hashlib.sha256(original).hexdigest()
+        digest=self.previous.get(key)
+        if isinstance(digest,str) and re.fullmatch(r"[0-9a-f]{64}",digest):
+            cached=self.root/(digest+".zst")
+            try:
+                encoded=cached.read_bytes()
+                if (hashlib.sha256(encoded).hexdigest()==digest and
+                        zstd.ZstdDecompressor().decompress(encoded)==original):
+                    self.hits+=1
+                else:raise ValueError("Stale cached blob")
+            except (OSError,ValueError,zstd.ZstdError):
+                digest=None
+        else:digest=None
+        if digest is None:
+            encoded=zstd.ZstdCompressor(level=10,write_content_size=True).compress(original)
+            digest=hashlib.sha256(encoded).hexdigest()
+            self.misses+=1
+        target=directory/(digest+".zst")
+        if not target.exists():target.write_bytes(encoded)
+        cached=self.root/(digest+".zst")
+        if not cached.exists() or cached.read_bytes()!=encoded:
+            temp=cached.with_suffix(".tmp")
+            temp.write_bytes(encoded);temp.replace(cached)
+        self.current[key]=digest
+        return digest
+
+    def finish(self):
+        temp=self.index.with_suffix(".tmp")
+        temp.write_bytes(_json(self.current));temp.replace(self.index)
+        retained=set(self.current.values())
+        for path in self.root.glob("*.zst"):
+            if path.stem not in retained:path.unlink()
+        return {"reused_blobs":self.hits,"rebuilt_blobs":self.misses,
+                "cache_bytes":sum(p.stat().st_size for p in self.root.glob("*.zst"))}
+
+
+def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_dir=None):
     from contextlib import nullcontext
     output=Path(output)
     if direct is None:
@@ -83,6 +142,12 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None):
     blobs = output / "blobs"
     blobs.mkdir(exist_ok=True)
     compressor = zstd.ZstdCompressor(level=10, write_content_size=True)
+    started=perf_counter();marks={}
+    blob_cache=StaticBlobCache(cache_dir) if cache_dir is not None else None
+    def emit(value):
+        return blob_cache.write(blobs,value) if blob_cache is not None else write_blob(blobs,compressor,value)
+    def mark(name,begin):
+        marks[name]=round(perf_counter()-begin,3)
     with (sqlite3.connect(packed_db) if direct is None else nullcontext(None)) as packed, (sqlite3.connect(serving_db) if direct is None else nullcontext(None)) as source:
         if direct is None:
             packed.row_factory = sqlite3.Row
@@ -91,7 +156,7 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None):
             assert source.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             meta = {key: json.loads(value) for key, value in packed.execute("SELECT key,value FROM metadata")}
         else:
-            projection.validate()
+            if projection.validation_report is None:projection.validate()
             meta=projection.metadata
         if meta.get("application") != "FoodRadar" or meta.get("schema_version") != 2:
             raise ValueError("Refusing non-V2 or non-FoodRadar packed database")
@@ -147,16 +212,15 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None):
         for store in store_rows:
             store["menu_item_count"] = count_by_store[store["store_uuid"]]
 
-        product_hashes = [
-            write_blob(blobs, compressor, cards[i:i + CHUNK_ROWS])
-            for i in range(0, len(cards), CHUNK_ROWS)
-        ]
-        search_hashes = {
-            str(bid): write_blob(blobs, compressor, term_map)
-            for bid, term_map in sorted(postings.items())
-        }
-        store_hash = write_blob(blobs, compressor, store_rows)
-        catalog_hash = write_blob(blobs, compressor, minis)
+        mark("card_and_search_index_seconds",started)
+        t=perf_counter()
+        product_hashes = [emit(cards[i:i+CHUNK_ROWS]) for i in range(0,len(cards),CHUNK_ROWS)]
+        mark("product_chunks_seconds",t);t=perf_counter()
+        search_hashes = {str(bid):emit(term_map) for bid,term_map in sorted(postings.items())}
+        mark("search_compression_seconds",t);t=perf_counter()
+        store_hash=emit(store_rows)
+        catalog_hash=emit(minis)
+        mark("store_and_catalog_seconds",t);t=perf_counter()
 
         # Canonical native quotes preserve the exact payable-price series.
         # The old generic events are redundant for all browser price graphs.
@@ -212,10 +276,9 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None):
                               and raw>0 and bool(str(promo or "").strip()))
                     history[bid].setdefault(compound,[]).append(
                         _price_event(at,raw,unit,promo,qty,unit_only=not evidence))
-        history_hashes = {
-            str(bid): write_blob(blobs, compressor, entries)
-            for bid, entries in sorted(history.items())
-        }
+        mark("history_projection_seconds",t);t=perf_counter()
+        history_hashes={str(bid):emit(entries) for bid,entries in sorted(history.items())}
+        mark("history_compression_seconds",t)
         new_stores = sum(1 for s in store_rows if s["status"] == "active" and
                          str(s.get("first_seen") or "") >= cutoff and
                          str(s.get("first_seen") or "")[:10] > baseline)
@@ -245,7 +308,10 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None):
             raise ValueError("Static assets exceed safe GitHub Pages deployment budget")
         manifest["bytes"] = total_bytes
         (output / "current.json").write_bytes(_json(manifest))
-        verify(output)
+        t=perf_counter();verify(output);mark("static_verification_seconds",t)
+        if blob_cache is not None:marks.update(blob_cache.finish())
+        marks["total_seconds"]=round(perf_counter()-started,3)
+        print("FOODRADAR_STATIC_TIMING="+json.dumps(marks),flush=True)
         return manifest
 
 

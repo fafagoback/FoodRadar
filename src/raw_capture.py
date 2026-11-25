@@ -323,9 +323,18 @@ def documents_from_hf_raw(archive, manifest: dict, *,
     expected = manifest["responses"]
     if set(members) != set(expected):
         raise ValueError("HF Raw member set changed")
-    for name, digest in expected.items():
-        if hashlib.sha256(archive.extractfile(members[name]).read()).hexdigest() != digest:
-            raise ValueError("HF Raw member checksum mismatch")
+    from time import perf_counter
+    verified=set();hash_seconds=0.0
+    def read_verified(name):
+        nonlocal hash_seconds
+        t=perf_counter()
+        body=archive.extractfile(members[name]).read()
+        if name not in verified:
+            if hashlib.sha256(body).hexdigest()!=expected[name]:
+                raise ValueError("HF Raw member checksum mismatch")
+            verified.add(name)
+        hash_seconds+=perf_counter()-t
+        return body
     verified_partial = manifest.get("complete") is False and (
         manifest.get("partial_replayable") is True)
     if manifest.get("complete") is not True and not verified_partial:
@@ -396,7 +405,7 @@ def documents_from_hf_raw(archive, manifest: dict, *,
                 batch + "_",
             )
         else:
-            envelope = json.loads(archive.extractfile(members[raw]).read())
+            envelope = json.loads(read_verified(raw))
             native = envelope.get("data") if isinstance(envelope, dict) else None
             if not isinstance(native, dict):
                 raise ValueError(f"Missing native menu: {raw}")
@@ -404,7 +413,7 @@ def documents_from_hf_raw(archive, manifest: dict, *,
             if pages:
                 try:
                     native = merge_catalog_pages(native, [
-                        json.loads(archive.extractfile(members[p["path"]]).read())
+                        json.loads(read_verified(p["path"]))
                         for p in pages
                     ])
                 except EmptyCatalogPagesError:
@@ -430,6 +439,10 @@ def documents_from_hf_raw(archive, manifest: dict, *,
         else:
             canonical_ids[canonical_id] = len(documents)
             documents.append(doc)
+    # Unused evidence (feed, failed requests, historical rechecks) is still verified.
+    for name in expected:
+        if name not in verified:read_verified(name)
+    print("FOODRADAR_RAW_MEMBER_TIMING="+json.dumps({"members":len(verified),"read_and_hash_seconds":round(hash_seconds,3)}),flush=True)
     if len(documents) != len(canonical_ids):
         raise ValueError("Raw canonical storefront deduplication failed")
     # Multiple feed cards may point to the same canonical storefront: a valid
