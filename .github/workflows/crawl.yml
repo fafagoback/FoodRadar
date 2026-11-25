@@ -34,10 +34,34 @@ env:
 permissions:
   contents: read
 concurrency:
-  group: foodradar-crawl-pipeline-v2
+  group: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_PRECHECK_ONLY') && 'foodradar-preflight' || 'foodradar-crawl-pipeline-v2' }}
   # A checkpoint-only republish must preserve the currently running crawl.
   cancel-in-progress: ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION')) }}
 jobs:
+  preflight_only:
+    name: 修復驗收｜僅跑測試，不爬取或部署
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_PRECHECK_ONLY') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 準備測試執行環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安裝測試套件
+        run: pip install -r requirements.txt
+      - name: 執行全部 Python 與 JavaScript 回歸測試
+        run: |
+          env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
+          node --check web/app.js
+          node --check web/packed-turso.js
+          node --check web/static-catalog.js
+          node --check web/data-contract.js
+
   discover_once:
     name: 統一探索設定範圍，建立 15 台共用任務池
     if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
