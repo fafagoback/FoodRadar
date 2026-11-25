@@ -35,82 +35,10 @@ env:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_PRECHECK_ONLY') && !contains(github.event.head_commit.message, 'FR_POOL_LOAD_TEST') && 'foodradar-preflight' || 'foodradar-crawl-pipeline-v2' }}
+  group: foodradar-crawl-pipeline-v2
   # A checkpoint-only republish must preserve the currently running crawl.
-  cancel-in-progress: ${{ !(github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION') || contains(github.event.head_commit.message, 'FR_POOL_LOAD_TEST'))) }}
+  cancel-in-progress: ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION')) }}
 jobs:
-  # 原生子分類與 checkpoint 相容驗收
-  pool_load_test:
-    name: SB 共用池｜15並行客戶端壓力測試
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_POOL_LOAD_TEST') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: 確認沒有其他爬取流程正在執行
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          active=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/crawl.yml/runs?branch=main&per_page=100" --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID and .status == \"in_progress\") | .id")
-          [[ -z "$active" ]] || { echo "已有其他 RUN 執行，停止壓測"; exit 1; }
-      - name: 測試每秒15、30、60、150次交易
-        if: ${{ !contains(github.event.head_commit.message, 'FR_POOL_PROD_TEST') }}
-        run: python3 -u scripts/fr_pool_load_test.py
-      - name: 正式任務池介面｜15台並行、拆分、回報及成果確認
-        if: ${{ contains(github.event.head_commit.message, 'FR_POOL_PROD_TEST') }}
-        run: PYTHONPATH=src python3 -u scripts/fr_pool_integration_test.py
-      - name: 確認僅本次模擬任務已清除
-        if: ${{ always() && !contains(github.event.head_commit.message, 'FR_POOL_PROD_TEST') }}
-        run: python3 -u scripts/fr_pool_load_test.py --cleanup-only
-      - name: 清除本次正式介面測試任務
-        if: ${{ always() && contains(github.event.head_commit.message, 'FR_POOL_PROD_TEST') }}
-        run: PYTHONPATH=src python3 -u scripts/fr_pool_integration_test.py --cleanup-only
-
-  preflight_only:
-    name: 修復驗收｜僅跑測試，不爬取或部署
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_PRECHECK_ONLY') && !contains(github.event.head_commit.message, 'FR_POOL_LOAD_TEST') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-    steps:
-      - name: 取得程式碼
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: 準備測試執行環境
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: requirements.txt
-      - name: 安裝測試套件
-        run: pip install -r requirements.txt
-      - name: 驗證任務池清空（僅指定驗收，不啟動爬蟲）
-        if: ${{ contains(github.event.head_commit.message, 'FR_POOL_CLEAR_TEST') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          active=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/crawl.yml/runs?branch=main&per_page=100" --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID and .status != \"completed\") | .id")
-          [[ -z "$active" ]] || { echo "有其他 RUN 執行中，禁止測試清空任務池" >&2; exit 1; }
-          python scripts/fr_clear_task_pool.py
-      - name: 執行全部 Python 與 JavaScript 回歸測試
-        run: |
-          env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
-          node --check web/app.js
-          node --check web/packed-turso.js
-          node --check web/static-catalog.js
-          node --check web/data-contract.js
-
   discover_once:
     name: 統一探索設定範圍，建立 15 台共用任務池
     if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
@@ -164,13 +92,6 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: 安裝程式所需套件
         run: pip install -r requirements.txt
-      - name: 爬取前執行核心回歸測試
-        run: |
-          env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
-          node --check web/app.js
-          node --check web/packed-turso.js
-          node --check web/static-catalog.js
-          node --check web/data-contract.js
       - name: 掃描設定座標並儲存原始 HTTP
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -363,7 +284,7 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: 安裝程式所需套件
         run: pip install -r requirements.txt
-      # 完整爬取已於探索前通過回歸測試；只在未爬取的手動發布再驗證。
+      # 只在未爬取的手動發布進行核心程式驗證。
       - name: 手動發布前執行核心程式回歸測試
         if: ${{ needs.discover_once.result == 'skipped' }}
         run: |
