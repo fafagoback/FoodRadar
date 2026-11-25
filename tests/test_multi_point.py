@@ -23,7 +23,7 @@ class MultiPointTests(unittest.TestCase):
             return point["id"],[{"store_uuid":sid,"store_url":"https://example.invalid/store/"+sid,
                 "store_lat":25.0,"store_lon":121.5,"discovered_points":[{"point_id":point["id"],
                 "lat":point["latitude"],"lon":point["longitude"],"county":point["county"]}]}],1
-        with tempfile.TemporaryDirectory() as t,patch("distributed_crawl.scan_single_point",side_effect=scan):
+        with tempfile.TemporaryDirectory() as t,patch.dict("os.environ",{"FR_DISCOVERY_SCOPE":"custom"}),patch("distributed_crawl.scan_single_point",side_effect=scan):
             coverage={};stores,pages=discover(cfg,Path(t),0,coverage)
             self.assertEqual(len(stores),1);self.assertEqual(pages,2)
             self.assertEqual([p["point_id"] for p in stores[sid]["discovered_points"]],["b","a"])

@@ -721,9 +721,14 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         print("FOODRADAR_IP_DIAGNOSTIC=GitHub-hosted runners do not "
               "guarantee 15 distinct egress IPs", flush=True)
     if upload_raw:
+        started = time.monotonic()
         archive_and_upload(raw, config, batch, stores,
                            max(m["feed_pages"] for m in metadata),
                            complete, partial_replayable=partial_replayable)
+        report["hf_archive_upload_verify_seconds"] = round(time.monotonic() - started, 2)
+        print("FOODRADAR_HF_TOTAL_SECONDS=" + str(report["hf_archive_upload_verify_seconds"]), flush=True)
+        (output / "shard-reconciliation.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if failures and not partial_replayable:
         raise RuntimeError(
             f"{len(failures)} stores have unverified captures; "
