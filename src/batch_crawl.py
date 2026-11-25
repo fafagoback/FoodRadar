@@ -20,6 +20,11 @@ from menu_core import global_limiter
 from promo_api_recheck import verify_suspicious_store
 from raw_capture import fetch_store_raw
 
+def section_refresh_name(section_index, attempt, sequence, status):
+    return (f"refresh/native-{section_index}-attempt-{attempt}"
+            f"-sequence-{sequence}-status-{status}.body")
+
+
 def batch_name(state, index, wave):
     return f"fr-worker-{state['epoch']}-{index}-w{wave:02d}"
 
@@ -90,11 +95,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             "https://www.ubereats.com/api/getStoreV1",
                             json={"storeUuid": sid, "sfNuggetCount": 24},
                             headers=headers, timeout=12)
-                        capture_response(
-                            root, "refresh/native-" + str(section_index)
-                            + "-attempt-" + str(attempt)
-                            + "-sequence-" + str(refresh_count)
-                            + "-status-" + str(response.status_code) + ".body", response)
+                        capture_response(root, section_refresh_name(
+                            section_index, attempt, refresh_count, response.status_code), response)
                         if response.status_code == 429:
                             global_limiter.trigger_backoff(30, "Section refresh HTTP 429",
                                                            retry_after=response_retry_after(response))

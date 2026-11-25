@@ -25,6 +25,14 @@ class BatchCrawlTests(unittest.TestCase):
             self.assertEqual(q.reset_terminated_wave(), 1)
         self.assertEqual(state["pending"], ["a","b"])
         self.assertEqual(state["completed"], {"c":{}})
+    def test_multiple_native_metadata_refreshes_keep_distinct_raw_bodies(self):
+        from batch_crawl import section_refresh_name
+        first = section_refresh_name(6, 1, 1, 200)
+        second = section_refresh_name(6, 1, 2, 200)
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("refresh/"))
+        self.assertTrue(first.endswith(".body"))
+
     def test_heaviest_store_claimed_before_lexical_first(self):
         state = initial_state("r", "e", "sha", ["a", "z"], {"a": 100, "z": 40000})
         q = GitQueue(ROOT, "r")
