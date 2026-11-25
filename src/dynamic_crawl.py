@@ -321,6 +321,8 @@ def worker_reports(summary_dir,state,index):
     final["api"]=api
     final["wave_count"]=len(reports)
     final["artifact_uploads"]=sum(r.get("artifact_uploads",0) for r in reports)
+    final["timing"]={k:round(sum(r.get("timing",{}).get(k,0) for r in reports),2)
+                     for k in ("worker_seconds","claim_seconds","idle_queue_seconds")}
     final["worker_ips"]=list(dict.fromkeys(r["public_ip"] for r in reports if r.get("public_ip")))
     return final
 
@@ -346,7 +348,13 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
     for sid in ids:
         lease = state["completed"][sid]
         name = artifact_name(state, sid, lease)
-        folder = task_dir / name
+        if lease.get("batch_name"):
+            batch = lease["batch_name"]
+            if not __import__("re").fullmatch(r"fr-worker-[0-9a-f]{16}-\d+-w\d{2}", batch):
+                raise ValueError("Invalid accepted batch name")
+            folder = summary_dir / batch / "tasks" / name
+        else:
+            folder = task_dir / name
         doc = validate_task(folder, state, sid, lease)
         worker = lease["worker"]
         raw = output / f"foodradar-raw-shard-{worker}" / "raw"
@@ -371,7 +379,8 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
                 "assigned_store_uuids": [s["store_uuid"] for s in stores],
                 "stores": stores, "thread_learning": summary.get("thread_learning", {}),
                 "api": summary.get("api", {}), "responses": checks_by_worker[index],
-                "worker_waves":summary.get("wave_count",0),"worker_ips":summary.get("worker_ips",[])}
+                "worker_waves":summary.get("wave_count",0),"worker_ips":summary.get("worker_ips",[]),
+                 "artifact_uploads":summary.get("artifact_uploads",0),"timing":summary.get("timing",{})}
         (output / f"foodradar-raw-shard-{index}" / "shard.json").write_text(
             json.dumps(meta, ensure_ascii=False), encoding="utf8")
     print("FOODRADAR_DYNAMIC_POOL_COMPLETE=" + json.dumps({

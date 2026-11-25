@@ -33,9 +33,12 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         PREVIOUS_PROGRESS: ${{ inputs.previous-progress }}
+        FR_BATCH_RECOVERY: "1"
         EPOCH: ${{ inputs.epoch }}
       run: |
         set -euo pipefail
+        # The previous worker matrix has fully terminated.
+        python src/batch_crawl.py recover
         python src/dynamic_crawl.py status > "$RUNNER_TEMP/fr-queue-status.json"
         gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .name' > "$RUNNER_TEMP/fr-artifacts"
         python scripts/plan_crawl_wave.py

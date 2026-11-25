@@ -258,6 +258,7 @@ def archive_and_upload(root: Path, config: dict, batch: str,
         "captured_count": len(names),
     }
     archive_path = root.parent / "raw-capture.tar.gz"
+    archive_started = time.monotonic()
     # Only lossless compression; original body bytes stay identical inside TAR.
     with tarfile.open(archive_path, "w:gz") as archive:
         for path in raw_files:
@@ -280,10 +281,14 @@ def archive_and_upload(root: Path, config: dict, batch: str,
         operations.append(CommitOperationAdd(
             path_in_repo=f"{folder}/latest-partial.json", path_or_fileobj=payload))
     api = HfApi(token=os.environ["HF_TOKEN"])
+    archive_seconds = time.monotonic() - archive_started
+    upload_started = time.monotonic()
     api.create_commit(
         repo_id=config["hf_repo_id"], repo_type="dataset", operations=operations,
         commit_message=f"FoodRadar immutable Raw API capture {batch}",
     )
+    upload_seconds = time.monotonic() - upload_started
+    verify_started = time.monotonic()
     # Immediately download from the HF folder and verify both archive and members.
     from huggingface_hub import hf_hub_download
     downloaded = Path(hf_hub_download(
@@ -299,6 +304,9 @@ def archive_and_upload(root: Path, config: dict, batch: str,
         for name, expected in record["responses"].items():
             if hashlib.sha256(archive.extractfile(members[name]).read()).hexdigest() != expected:
                 raise ValueError(f"Uploaded HF response body changed: {name}")
+    print("FOODRADAR_HF_TIMING=" + json.dumps({"archive_seconds":round(archive_seconds,2),
+          "upload_seconds":round(upload_seconds,2),"verify_seconds":round(time.monotonic()-verify_started,2),
+          "commit_operations":len(operations),"archive_bytes":archive_path.stat().st_size}), flush=True)
     print("HF_IMMUTABLE_RAW_UPLOADED=" + json.dumps({
         "batch": batch, "complete": bool(complete),
         "partial_replayable": bool(partial_replayable),

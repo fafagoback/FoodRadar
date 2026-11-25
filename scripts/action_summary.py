@@ -135,6 +135,13 @@ def main(kind):
             add("店家抓取成功率", ratio(good, total))
             add("原始網路回應數", integer(m.get("raw_responses")))
             add("實際請求次數", integer(m.get("sum_api_requests")))
+            if "worker_artifact_uploads" in m:
+                add("爬蟲工作機成果上傳次數", integer(m["worker_artifact_uploads"]))
+            for row in m.get("worker_timing", []):
+                add("工作機 %02d" % row["worker"],
+                    "店家 %s；API %s；上傳 %s；爬取 %s 秒；領取任務 %s 秒；無工作等待 %s 秒" %
+                    (row["stores"], row["requests"], row["uploads"], row.get("worker_seconds","—"),
+                     row.get("claim_seconds","—"), row.get("idle_queue_seconds","—")))
             add("流量限制異常次數", integer(m.get("sum_429_events")))
             add("漏抓店家數", integer(m.get("owner_discovery_gap")))
             add("爬蟲工作機數", integer(m.get("runners")))

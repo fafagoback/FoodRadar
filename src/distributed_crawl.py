@@ -704,6 +704,10 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             {"uuid": s["store_uuid"], "error": s.get("error")} for s in failures],
         "sum_api_requests": sum(m.get("api", {}).get("requests", 0) for m in metadata),
         "sum_429_events": sum(m.get("api", {}).get("rate_limit_events", 0) for m in metadata),
+        "worker_artifact_uploads": sum(m.get("artifact_uploads",0) for m in metadata),
+        "worker_timing": [{"worker":m["shard_index"]+1,"stores":len(m["stores"]),
+                           "requests":m.get("api",{}).get("requests",0),
+                           "uploads":m.get("artifact_uploads",0),**m.get("timing",{})} for m in metadata],
         "promo_api_rechecks": {
             state: sum((s.get("promo_recheck") or {}).get("status") == state for s in stores)
             for state in ("MATCHED", "CONFLICT", "UNAVAILABLE")

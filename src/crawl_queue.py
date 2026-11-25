@@ -203,6 +203,41 @@ class GitQueue:
             return True, True
         return self.transact(edit)
 
+    def finish_batch(self, owner, records, artifact_id, batch_name):
+        """Only mark stores complete after the entire worker artifact exists."""
+        if type(artifact_id) is not int or artifact_id <= 0:
+            raise ValueError("Invalid durable batch artifact ID")
+        def edit(s):
+            changed = False
+            for sid, token in records.items():
+                prior = s["completed"].get(sid)
+                if prior:
+                    if (prior["owner"], prior["token"], prior["artifact_id"], prior.get("batch_name")) != (owner, token, artifact_id, batch_name):
+                        raise ValueError("Conflicting completed store")
+                    continue
+                row = s["leased"].get(sid)
+                if not row or row["owner"] != owner or row["token"] != token:
+                    raise ValueError("Stale or unowned batch task")
+                s["completed"][sid] = {"owner": owner, "worker": row["worker"],
+                    "token": token, "artifact_id": artifact_id, "batch_name": batch_name}
+                del s["leased"][sid]
+                changed = True
+            return changed, len(records)
+        return self.transact(edit)
+
+    def reset_terminated_wave(self):
+        """Only after the entire previous Actions matrix has terminated."""
+        def edit(s):
+            if s.get("catalog_groups"):
+                raise ValueError("Legacy category checkpoints cannot use batch recovery")
+            ids = sorted(s["leased"])
+            if not ids:
+                return False, 0
+            s["pending"] = sorted(s["pending"] + ids)
+            s["leased"].clear()
+            return True, len(ids)
+        return self.transact(edit)
+
     def release_expired(self, sid, token):
         def edit(s):
             row = s["leased"].get(sid)
@@ -266,7 +301,7 @@ class SharedGitQueue:
     def initialize(self, state):
         with self.lock:
             # Lanes are fixed by roster size, never by predicted store work.
-            state = dict(state, lane_count=min(32, max(1, (len(state["tasks"]) + 1) // 2)))
+            state = dict(state, lane_count=min(16, max(1, (len(state["tasks"]) + 7) // 8)))
             self._configure(state)
             commits = [(self.root.make_commit(state), self.root.ref)]
             for index, lane in enumerate(self.lanes):
@@ -368,6 +403,21 @@ class SharedGitQueue:
                         self.available.add(self.lane_of[sid])
                 else:
                     lane.finish(sid, row["token"], artifact_id, recovered=True)
+
+    def finish_batch(self, owner, records, artifact_id, batch_name):
+        with self.lock:
+            self._ensure()
+            groups = {}
+            for sid, token in records.items():
+                groups.setdefault(self.lane_of[sid], {})[sid] = token
+            return sum(self.lanes[i].finish_batch(owner, rows, artifact_id, batch_name)
+                       for i, rows in sorted(groups.items()))
+
+    def reset_terminated_wave(self):
+        with self.lock:
+            state = self.read()
+            affected = {self.lane_of[sid] for sid in state["leased"]}
+            return sum(self.lanes[i].reset_terminated_wave() for i in sorted(affected))
 
     def cleanup(self):
         with self.lock:

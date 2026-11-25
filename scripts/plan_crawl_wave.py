@@ -21,6 +21,9 @@ def main():
     status=json.loads((root/"fr-queue-status.json").read_text())
     r=plan(status,(root/"fr-artifacts").read_text().splitlines(),
            os.environ["EPOCH"],int(os.environ["PREVIOUS_PROGRESS"]))
+    if os.environ.get("FR_BATCH_RECOVERY") == "1":
+        r["matrix"]["include"] = r["matrix"]["include"][:min(15,r["remaining"])]
+        r["missing_count"] = len(r["matrix"]["include"])
     with open(os.environ["GITHUB_OUTPUT"],"a") as f:
         for k in ("matrix","missing_count","progress"):
             f.write(k+"="+json.dumps(r[k],separators=(",",":"))+"\n")
