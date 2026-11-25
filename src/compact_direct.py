@@ -7,6 +7,7 @@ Immutable HF Raw remains the source of price proof.
 """
 from __future__ import annotations
 import json, sqlite3, contextlib
+import zstandard as zstd
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta
 from fractions import Fraction
@@ -22,6 +23,12 @@ CREATE TABLE shop_state(store BLOB PRIMARY KEY,payload BLOB NOT NULL) WITHOUT RO
 CREATE TABLE price_history(store BLOB PRIMARY KEY,payload BLOB NOT NULL) WITHOUT ROWID;
 """
 MAX_BYTES=20_000_000
+
+def _same_wire(old, new):
+    if old == new:
+        return True
+    decoder=zstd.ZstdDecompressor()
+    return decoder.decompress(old)==decoder.decompress(new)
 
 class CompactStore:
     def __init__(self,path,*,empty=False):
@@ -194,7 +201,7 @@ class CompactStore:
     def _replace(self,table,sid,value):
         payload=_pack(value);key=binary_uuid(sid)
         old=self.conn.execute(f"SELECT payload FROM {table} WHERE store=?",(key,)).fetchone()
-        if old is None or old[0]!=payload:
+        if old is None or not _same_wire(old[0],payload):
             self.conn.execute(f"INSERT OR REPLACE INTO {table} VALUES(?,?)",(key,payload))
             self.writes+=1
     def put_shop(self,store,products,quotes=None):
@@ -225,7 +232,7 @@ class CompactStore:
         for k in sorted(self.dirty):
             payload=_pack(self.d[k])
             previous=self.conn.execute("SELECT payload FROM dictionary WHERE key=?",(k,)).fetchone()
-            if previous is None or previous[0]!=payload:
+            if previous is None or not _same_wire(previous[0],payload):
                 self.conn.execute("INSERT OR REPLACE INTO dictionary VALUES(?,?)",(k,payload))
         self.conn.commit();self.dirty.clear()
     def update_shop(self,sid,doc,batch,previous,baseline):

@@ -1,7 +1,7 @@
 name: FR 開發分支｜動態任務池回歸
 on:
   push:
-    branches: [feature/fr-dynamic-queue-20261125]
+    branches: [feature/fr-dynamic-queue-20261125, feature/fr-compact-production-20261125]
 permissions:
   contents: read
 concurrency:
@@ -134,3 +134,22 @@ jobs:
           path: data/worker-summaries
       - run: python tests/dynamic_runner_smoke.py assemble
       - run: python src/dynamic_crawl.py cleanup
+
+  real-repack:
+    name: 正式資料庫實測｜容量、讀取速度及完整性
+    if: ${{ github.ref_name == 'feature/fr-compact-production-20261125' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/state-checkpoint/
+          key: foodradar-state-v1-repack-readonly-${{ github.run_id }}
+          restore-keys: |
+            foodradar-state-v1-
+      - run: python scripts/benchmark_production_repack.py
