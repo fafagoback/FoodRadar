@@ -552,8 +552,8 @@ class SharedGitQueue:
                 else:
                     rows = self.lanes[lane].claim(owner, worker, 1)
                     if rows:
-                        _, lease = rows[0]
-                        claimed.append(("store", sid, None, lease))
+                        actual_sid, lease = rows[0]
+                        claimed.append(("store", actual_sid, None, lease))
                 if claimed:
                     self.owner_lanes.setdefault(owner, set()).add(lane)
             return claimed
