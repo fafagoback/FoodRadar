@@ -44,9 +44,10 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     ctrl = AdaptiveThreads(initial, window_seconds=10, minimum_successes=4)
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
     transport = TransportPool()
-    pending, active, finished = deque(), {}, {}
-    drained, claim_future = False, None
-    claim_seconds, idle_seconds = 0.0, 0.0
+    active, finished, uncommitted = {}, {}, {}
+    claim_future, sync_future, status_future = None, None, None
+    next_claim_at, next_status_at, last_flush_at = 0.0, 0.0, 0.0
+    claim_seconds, idle_seconds, local_commit_seconds = 0.0, 0.0, 0.0
     last_saturated = False
 
     def claim(count):
@@ -82,9 +83,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         return sid, lease["token"]
 
     try:
-        # Coordinate claims asynchronously, never block API threads on Git.
-        # No mid-run upload, heartbeat, expiry recovery, or polling other
-        # workers' leases. Recovery only begins after the matrix terminates.
+        # Claim no more than the available execution slots. Store bodies remain
+        # local until a single final worker artifact upload.
         with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
             while True:
                 now = time.monotonic()
@@ -96,27 +96,57 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     rows, elapsed = claim_future.result()
                     claim_seconds += elapsed
                     claim_future = None
-                    pending.extend(rows)
                     if not rows:
-                        drained = True
-                if snap["cooldown_remaining_seconds"] <= 0:
-                    while pending and len(active) < ctrl.target:
-                        sid, lease = pending.popleft()
+                        next_claim_at = now + 2.0
+                    for sid, lease in rows:
+                        if len(active) >= ctrl.target:
+                            raise ValueError("Claimed more than free execution slots")
                         active[pool.submit(one, sid, lease)] = sid
-                    if not drained and claim_future is None and len(pending) < max(1, min(2, ctrl.target)):
-                        slots = max(1, min(4, ctrl.target - len(active) + 2))
-                        claim_future = coordinator.submit(claim, slots)
-                if not active and not pending and drained:
-                    break
-                saturated = len(active) >= ctrl.target and (bool(pending) or not drained)
+                if sync_future is not None and sync_future.done():
+                    amount, elapsed = sync_future.result()
+                    local_commit_seconds += elapsed
+                    sync_future = None
+                if status_future is not None and status_future.done():
+                    state_now = status_future.result()
+                    status_future = None
+                    if state_now["pending"]:
+                        next_claim_at = now
+                    if (not active and not uncommitted and sync_future is None
+                            and claim_future is None and not state_now["pending"]
+                            and not state_now["leased"]
+                            and (len(state_now.get("local_done", {}))
+                                 + len(state_now["completed"]) == len(ids))):
+                        break
+                if sync_future is None and uncommitted and (
+                        len(uncommitted) >= 3 or not active or now - last_flush_at >= 3):
+                    staged = dict(uncommitted)
+                    uncommitted.clear()
+                    last_flush_at = now
+                    def sync(rows=staged):
+                        begin = time.monotonic()
+                        n = queue.mark_local_batch(owner, rows)
+                        return n, time.monotonic() - begin
+                    sync_future = coordinator.submit(sync)
+                if (snap["cooldown_remaining_seconds"] <= 0
+                        and claim_future is None and now >= next_claim_at):
+                    free_slots = max(0, ctrl.target - len(active))
+                    if free_slots and not uncommitted:
+                        claim_future = coordinator.submit(claim, free_slots)
+                if (not active and not uncommitted and claim_future is None
+                        and sync_future is None and status_future is None
+                        and now >= next_status_at):
+                    status_future = coordinator.submit(queue.read)
+                    next_status_at = now + 2.0
+                saturated = len(active) >= ctrl.target
                 if saturated and not last_saturated:
                     ctrl.reset(time.monotonic(), global_limiter.snapshot())
                 if saturated:
                     ctrl.observe(time.monotonic(), global_limiter.snapshot(), True)
                 last_saturated = saturated
                 waiting = set(active)
-                if claim_future is not None:
-                    waiting.add(claim_future)
+                for future in (claim_future, sync_future, status_future):
+                    if future is not None:
+                        waiting.add(future)
                 if not waiting:
                     time.sleep(.15)
                     continue
@@ -132,6 +162,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     if sid in finished:
                         raise ValueError("Duplicate local store")
                     finished[sid] = token
+                    uncommitted[sid] = token
     finally:
         transport.close()
     manifest = {"run_id": state["run_id"], "source_sha": state["source_sha"],
@@ -145,7 +176,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                "budget_exhausted": False,
                "timing": {"worker_seconds": round(time.monotonic()-started, 2),
                           "claim_seconds": round(claim_seconds, 2),
-                          "idle_queue_seconds": round(idle_seconds, 2)}}
+                          "idle_queue_seconds": round(idle_seconds, 2),
+                           "local_commit_seconds": round(local_commit_seconds, 2)}}
     (base / "summary.json").write_text(json.dumps(summary), encoding="utf8")
     print("FOODRADAR_DYNAMIC_WORKER=" + json.dumps(summary), flush=True)
     return summary
