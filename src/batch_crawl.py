@@ -227,10 +227,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     status_future = coordinator.submit(queue.read)
                     next_status_at = now + 2.0
                 saturated = len(active) >= ctrl.target
-                if saturated and not last_saturated:
-                    ctrl.reset(time.monotonic(), global_limiter.snapshot())
-                if saturated:
-                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), True)
+                ctrl.observe(time.monotonic(), global_limiter.snapshot(), saturated)
                 last_saturated = saturated
                 waiting = set(active)
                 for future in (claim_future, sync_future, status_future):
