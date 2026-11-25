@@ -158,6 +158,11 @@ def main(kind):
         m = read("action-reports/metrics/current.json")
         catalog(m, "產出資料")
         direct=read("action-reports/metrics/direct-db-report.json")
+        if isinstance(direct,dict):
+            for phase,seconds in (direct.get("phase_seconds") or {}).items():
+                add("第16台｜"+phase,f"{seconds} 秒")
+            for phase,value in (direct.get("static_timing") or {}).items():
+                add("靜態資料｜"+phase, value)
         if direct:
             add("精簡資料庫總容量",mb(direct.get("compact_bytes")))
             add("單店暫存記憶體資料庫峰值",mb(direct.get("max_shop_scratch_bytes")))

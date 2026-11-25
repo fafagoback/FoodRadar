@@ -11,8 +11,7 @@ import hashlib
 import json
 import re
 import sqlite3
-import shutil
-import os
+import threading
 from time import perf_counter
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
@@ -90,18 +89,20 @@ class StaticBlobCache:
         self.current={}
         self.hits=0
         self.misses=0
+        self.lock=threading.Lock()
 
     def write(self, directory, data):
         original=_json(data)
         key=hashlib.sha256(original).hexdigest()
         digest=self.previous.get(key)
+        reused=False
         if isinstance(digest,str) and re.fullmatch(r"[0-9a-f]{64}",digest):
             cached=self.root/(digest+".zst")
             try:
                 encoded=cached.read_bytes()
                 if (hashlib.sha256(encoded).hexdigest()==digest and
                         zstd.ZstdDecompressor().decompress(encoded)==original):
-                    self.hits+=1
+                    reused=True
                 else:raise ValueError("Stale cached blob")
             except (OSError,ValueError,zstd.ZstdError):
                 digest=None
@@ -109,14 +110,15 @@ class StaticBlobCache:
         if digest is None:
             encoded=zstd.ZstdCompressor(level=10,write_content_size=True).compress(original)
             digest=hashlib.sha256(encoded).hexdigest()
-            self.misses+=1
-        target=directory/(digest+".zst")
-        if not target.exists():target.write_bytes(encoded)
-        cached=self.root/(digest+".zst")
-        if not cached.exists() or cached.read_bytes()!=encoded:
-            temp=cached.with_suffix(".tmp")
-            temp.write_bytes(encoded);temp.replace(cached)
-        self.current[key]=digest
+        with self.lock:
+            self.hits+=int(reused);self.misses+=int(not reused)
+            target=directory/(digest+".zst")
+            if not target.exists():target.write_bytes(encoded)
+            cached=self.root/(digest+".zst")
+            if not reused and (not cached.exists() or cached.read_bytes()!=encoded):
+                temp=cached.with_suffix(".tmp")
+                temp.write_bytes(encoded);temp.replace(cached)
+            self.current[key]=digest
         return digest
 
     def finish(self):
@@ -146,6 +148,9 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
     blob_cache=StaticBlobCache(cache_dir) if cache_dir is not None else None
     def emit(value):
         return blob_cache.write(blobs,value) if blob_cache is not None else write_blob(blobs,compressor,value)
+    def emit_many(values):
+        if blob_cache is None:return [emit(v) for v in values]
+        with ThreadPoolExecutor(max_workers=4) as executor:return list(executor.map(emit,values))
     def mark(name,begin):
         marks[name]=round(perf_counter()-begin,3)
     with (sqlite3.connect(packed_db) if direct is None else nullcontext(None)) as packed, (sqlite3.connect(serving_db) if direct is None else nullcontext(None)) as source:
@@ -214,9 +219,10 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
 
         mark("card_and_search_index_seconds",started)
         t=perf_counter()
-        product_hashes = [emit(cards[i:i+CHUNK_ROWS]) for i in range(0,len(cards),CHUNK_ROWS)]
+        product_hashes = emit_many(cards[i:i+CHUNK_ROWS] for i in range(0,len(cards),CHUNK_ROWS))
         mark("product_chunks_seconds",t);t=perf_counter()
-        search_hashes = {str(bid):emit(term_map) for bid,term_map in sorted(postings.items())}
+        search_ids=sorted(postings)
+        search_hashes=dict(zip(map(str,search_ids),emit_many(postings[bid] for bid in search_ids)))
         mark("search_compression_seconds",t);t=perf_counter()
         store_hash=emit(store_rows)
         catalog_hash=emit(minis)
@@ -277,7 +283,8 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
                     history[bid].setdefault(compound,[]).append(
                         _price_event(at,raw,unit,promo,qty,unit_only=not evidence))
         mark("history_projection_seconds",t);t=perf_counter()
-        history_hashes={str(bid):emit(entries) for bid,entries in sorted(history.items())}
+        history_ids=sorted(history)
+        history_hashes=dict(zip(map(str,history_ids),emit_many(history[bid] for bid in history_ids)))
         mark("history_compression_seconds",t)
         new_stores = sum(1 for s in store_rows if s["status"] == "active" and
                          str(s.get("first_seen") or "") >= cutoff and
@@ -312,6 +319,7 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
         if blob_cache is not None:marks.update(blob_cache.finish())
         marks["total_seconds"]=round(perf_counter()-started,3)
         print("FOODRADAR_STATIC_TIMING="+json.dumps(marks),flush=True)
+        if direct is not None:projection.static_timing=marks
         return manifest
 
 

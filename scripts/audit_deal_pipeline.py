@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from verified_weekly import TW, _two_decimals, iter_weekly_price_evidence
 
 
-def report(path=None, *, direct=None):
+def report(path=None, *, direct=None, reuse_weekly_evidence=False):
     from contextlib import nullcontext
     with (sqlite3.connect(path) if direct is None else nullcontext(None)) as conn:
         if direct is not None:
@@ -31,9 +31,12 @@ def report(path=None, *, direct=None):
             batch, "%Y%m%d%H%M%S").replace(tzinfo=TW).isoformat()
 
         # Merge-join two ordered cursors: one SKU's evidence in memory at once.
-        evidence = iter((candidate for quotes in direct.quote_shops()
-                         for candidate in iter_weekly_price_evidence(QuoteWindow(quotes),batch))
-                        if direct is not None else iter_weekly_price_evidence(conn,batch))
+        if direct is not None and reuse_weekly_evidence:
+            evidence=iter(direct.weekly_evidence(batch))
+        else:
+            evidence = iter((candidate for quotes in direct.quote_shops()
+                             for candidate in iter_weekly_price_evidence(QuoteWindow(quotes),batch))
+                            if direct is not None else iter_weekly_price_evidence(conn,batch))
         candidate = next(evidence, None)
         inspected = compared = suppressed = matched_deals = 0
         errors = []

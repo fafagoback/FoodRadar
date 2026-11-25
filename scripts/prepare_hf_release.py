@@ -28,12 +28,14 @@ def main():
         batch=state.meta["latest_batch"]
         dest=ROOT/"data"/batch
         t=perf_counter();kinds=Counter()
-        for quotes in state.quote_shops():
-            kinds.update(q[5] for q in quotes)
+        if state.weekly_batch==batch and state.weekly_quote_kinds is not None:
+            kinds.update(state.weekly_quote_kinds)
+        else:
+            for quotes in state.quote_shops():kinds.update(q[5] for q in quotes)
         if set(kinds)!={"NONE","SAME_SKU_BXGY","DIRECT_DISCOUNT"} or any(n<=0 for n in kinds.values()):
             raise ValueError("Missing native price evidence kinds")
         mark("native_kind_audit_seconds",t);t=perf_counter()
-        audit=audit_deals(direct=state)
+        audit=audit_deals(direct=state,reuse_weekly_evidence=True)
         mark("deal_audit_seconds",t);t=perf_counter()
         print("V2_PREPUBLICATION="+json.dumps({"batch":batch,"verified_types":dict(kinds),
             "invalid_deals":len(audit["errors"])},ensure_ascii=False),flush=True)
@@ -63,7 +65,7 @@ def main():
                 out.write("\n### 第16台發布細部耗時\n| 階段 | 秒 |\n|---|---:|\n")
                 for key,value in marks.items():out.write(f"| {key} | {value} |\n")
         metrics={**state.metrics(),"static_bytes":manifest["bytes"],
-                 "projection_spool_bytes":packed["bytes"],"phase_seconds":marks,"seconds":round(perf_counter()-started,2),
+                 "projection_spool_bytes":packed["bytes"],"phase_seconds":marks,"static_timing":projection.static_timing,"seconds":round(perf_counter()-started,2),
                  "verified_product_cards":manifest["counts"]["products"]}
         (dest/"direct-db-report.json").write_text(json.dumps(metrics,ensure_ascii=False,indent=2))
         print("FOODRADAR_DIRECT_RELEASE="+json.dumps(metrics,ensure_ascii=False),flush=True)

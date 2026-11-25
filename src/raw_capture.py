@@ -310,14 +310,40 @@ def archive_and_upload(root: Path, config: dict, batch: str,
     return record
 
 
+def _decode_verified_store(store, canonical_id, batch, body, pages):
+    """CPU-only native decode. All input bytes were checked by the parent."""
+    from menu_core import convert_api_data_to_schema, create_inactive_store_schema
+    from snapshot_validation import validate_document
+    if store.get("inactive"):
+        doc=create_inactive_store_schema(
+            {"name":"","city":""},store["store_url"],store["store_uuid"],
+            hashlib.md5(store["store_url"].encode()).hexdigest(),batch+"_")
+    else:
+        envelope=json.loads(body)
+        native=envelope.get("data") if isinstance(envelope,dict) else None
+        if not isinstance(native,dict):
+            raise ValueError(f"Missing native menu: {store['response_path']}")
+        if pages:
+            try:native=merge_catalog_pages(native,[json.loads(page) for page in pages])
+            except EmptyCatalogPagesError:return None
+        doc=convert_api_data_to_schema(native,store["store_url"])
+    doc.update(store_uuid=canonical_id,store_id=hashlib.md5(store["store_url"].encode()).hexdigest(),
+               captured_at=store["captured_at"],batch_id=batch)
+    validate_document(doc)
+    return doc
+
+
 def documents_from_hf_raw(archive, manifest: dict, *,
                           quarantined_store_uuids: list[str] | None = None) -> list[dict]:
     """Convert verified HF Raw to DB documents without mutating the archive.
 
     Explicitly report empty-menu stores to the caller for safe exclusion.
     """
-    from menu_core import convert_api_data_to_schema, create_inactive_store_schema, normalize_store_uuid, canonical_store_uuid
-    from snapshot_validation import validate_document
+    from menu_core import normalize_store_uuid, canonical_store_uuid
+    from concurrent.futures import ProcessPoolExecutor
+    from collections import deque
+    from contextlib import nullcontext
+    import multiprocessing
 
     members = {m.name: m for m in archive.getmembers() if m.isfile()}
     expected = manifest["responses"]
@@ -361,74 +387,13 @@ def documents_from_hf_raw(archive, manifest: dict, *,
     duplicate_canonical_stores = 0
     empty_catalog_ids = set()
     unconfirmed_promotion_ids = set()
-    for store in successful:
-        if not store.get("success"):
-            raise ValueError("Cannot publish an incomplete store capture")
-        reported_id = normalize_store_uuid(store["store_uuid"], store["store_url"])
-        canonical_id = canonical_store_uuid(store["store_uuid"], store["store_url"])
-        if not canonical_id:
-            raise ValueError("Raw store has no stable UUID or URL identity")
-        if reported_id != canonical_id:
-            repaired_url_id_mismatches += 1
-        raw = store["response_path"]
-        if store.get("catalog_responses") and store.get("catalog_complete") is not True:
-            raise ValueError("Refusing to replay incomplete catalog capture")
-        recheck = store.get("promo_recheck") or {}
-        if recheck:
-            if recheck.get("status") not in ("MATCHED", *QUARANTINE_STATUSES):
-                raise ValueError("Invalid historical promotion API recheck status")
-            if recheck.get("status") in ("MATCHED", "CONFLICT"):
-                secondary = recheck.get("second_response_path")
-                if not isinstance(secondary, str) or secondary not in members:
-                    raise ValueError("Missing immutable second API capture")
-                second_pages = recheck.get("second_catalog_response_paths")
-                if second_pages is not None:
-                    if (not isinstance(second_pages, list)
-                            or len(second_pages) != recheck.get("second_catalog_pages")
-                            or len(second_pages) != len(set(second_pages))
-                            or any(not isinstance(name, str)
-                                   or name not in members
-                                   or not name.startswith(recheck.get("raw_prefix", "#missing#"))
-                                   for name in second_pages)):
-                        raise ValueError("Missing or inconsistent independent API catalog evidence")
-            if recheck.get("status") in QUARANTINE_STATUSES:
-                # Inconclusive is NOT a claim that the first API response was
-                # wrong. Keep both HTTP captures; retain prior DB prices until
-                # a verified subsequent observation arrives.
-                unconfirmed_promotion_ids.add(canonical_id)
-                continue
-        if store.get("inactive"):
-            doc = create_inactive_store_schema(
-                {"name": "", "city": ""}, store["store_url"],
-                store["store_uuid"],
-                hashlib.md5(store["store_url"].encode()).hexdigest(),
-                batch + "_",
-            )
-        else:
-            envelope = json.loads(read_verified(raw))
-            native = envelope.get("data") if isinstance(envelope, dict) else None
-            if not isinstance(native, dict):
-                raise ValueError(f"Missing native menu: {raw}")
-            pages = store.get("catalog_responses") or []
-            if pages:
-                try:
-                    native = merge_catalog_pages(native, [
-                        json.loads(read_verified(p["path"]))
-                        for p in pages
-                    ])
-                except EmptyCatalogPagesError:
-                    # All original HTTP bodies and their hashes were verified above.
-                    # Do not use an empty menu as a product-disappearance signal.
-                    empty_catalog_ids.add(canonical_id)
-                    continue
-            doc = convert_api_data_to_schema(native, store["store_url"])
-        doc.update(
-            store_uuid=canonical_id,
-            store_id=hashlib.md5(store["store_url"].encode()).hexdigest(),
-            captured_at=store["captured_at"],
-            batch_id=batch,
-        )
-        validate_document(doc)
+    worker_count=max(1,min(4,int(os.environ.get("FR_RAW_DECODE_WORKERS","1"))))
+    pending=deque()
+    def accept(canonical_id,doc):
+        nonlocal duplicate_canonical_stores
+        if doc is None:
+            empty_catalog_ids.add(canonical_id)
+            return
         if canonical_id in canonical_ids:
             # Same storefront may be surfaced by multiple feed cards. Keep
             # exactly one complete verified capture, preferring the latest.
@@ -439,6 +404,66 @@ def documents_from_hf_raw(archive, manifest: dict, *,
         else:
             canonical_ids[canonical_id] = len(documents)
             documents.append(doc)
+
+    def drain():
+        sid,future=pending.popleft()
+        accept(sid,future.result())
+    # Spawn independent CPU workers; only the parent reads/seeks the verified TAR.
+    # Limit in-flight stores so decoded Raw bodies do not scale with nationwide data.
+    context=(ProcessPoolExecutor(max_workers=worker_count,mp_context=multiprocessing.get_context("spawn"))
+             if worker_count>1 else nullcontext(None))
+    decode_started=perf_counter()
+    with context as pool:
+        for store in successful:
+            if not store.get("success"):
+                raise ValueError("Cannot publish an incomplete store capture")
+            reported_id = normalize_store_uuid(store["store_uuid"], store["store_url"])
+            canonical_id = canonical_store_uuid(store["store_uuid"], store["store_url"])
+            if not canonical_id:
+                raise ValueError("Raw store has no stable UUID or URL identity")
+            if reported_id != canonical_id:
+                repaired_url_id_mismatches += 1
+            raw = store["response_path"]
+            if store.get("catalog_responses") and store.get("catalog_complete") is not True:
+                raise ValueError("Refusing to replay incomplete catalog capture")
+            recheck = store.get("promo_recheck") or {}
+            if recheck:
+                if recheck.get("status") not in ("MATCHED", *QUARANTINE_STATUSES):
+                    raise ValueError("Invalid historical promotion API recheck status")
+                if recheck.get("status") in ("MATCHED", "CONFLICT"):
+                    secondary = recheck.get("second_response_path")
+                    if not isinstance(secondary, str) or secondary not in members:
+                        raise ValueError("Missing immutable second API capture")
+                    second_pages = recheck.get("second_catalog_response_paths")
+                    if second_pages is not None:
+                        if (not isinstance(second_pages, list)
+                                or len(second_pages) != recheck.get("second_catalog_pages")
+                                or len(second_pages) != len(set(second_pages))
+                                or any(not isinstance(name, str)
+                                       or name not in members
+                                       or not name.startswith(recheck.get("raw_prefix", "#missing#"))
+                                       for name in second_pages)):
+                            raise ValueError("Missing or inconsistent independent API catalog evidence")
+                if recheck.get("status") in QUARANTINE_STATUSES:
+                    # Inconclusive is NOT a claim that the first API response was
+                    # wrong. Keep both HTTP captures; retain prior DB prices until
+                    # a verified subsequent observation arrives.
+                    unconfirmed_promotion_ids.add(canonical_id)
+                    continue
+            if store.get("inactive"):
+                body,pages=None,[]
+            else:
+                body=read_verified(raw)
+                pages=[read_verified(row["path"]) for row in store.get("catalog_responses") or []]
+            args=(store,canonical_id,batch,body,pages)
+            if pool is None:
+                accept(canonical_id,_decode_verified_store(*args))
+            else:
+                pending.append((canonical_id,pool.submit(_decode_verified_store,*args)))
+                if len(pending)>=worker_count:drain()
+        while pending:drain()
+    print("FOODRADAR_RAW_DECODE_DETAIL="+json.dumps({"workers":worker_count,
+          "decode_wall_seconds":round(perf_counter()-decode_started,3)}),flush=True)
     # Unused evidence (feed, failed requests, historical rechecks) is still verified.
     for name in expected:
         if name not in verified:read_verified(name)

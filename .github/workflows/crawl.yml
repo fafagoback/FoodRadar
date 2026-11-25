@@ -437,6 +437,7 @@ jobs:
       - name: 直接更新精簡資料庫、完整稽核並建置網站資料
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FR_RAW_DECODE_WORKERS: '3'
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
         run: python scripts/prepare_hf_release.py
       - name: 保存經完整資料與網站雜湊驗收的精簡資料庫

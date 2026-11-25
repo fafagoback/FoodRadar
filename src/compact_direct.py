@@ -291,11 +291,11 @@ class QuoteWindow:
         start,end=args
         return ((q[1],q[2],q[0],q[3],q[10],q[8]) for q in self.quotes if start<=q[3]<=end)
 
-def weekly_shop(store,products,quotes,batch):
+def weekly_shop(store,products,quotes,batch,*,candidates=None):
     """Calculate the same exact native seven-day/14-day ABA projection."""
     now=datetime.strptime(batch,"%Y%m%d%H%M%S").replace(tzinfo=TW).isoformat()
-    evidence={pid:(cur,prior,blocked) for _,pid,cur,prior,blocked in
-              iter_weekly_price_evidence(QuoteWindow(quotes),batch)}
+    if candidates is None:candidates=iter_weekly_price_evidence(QuoteWindow(quotes),batch)
+    evidence={pid:(cur,prior,blocked) for _,pid,cur,prior,blocked in candidates}
     suppressed=sum(v[2] for v in evidence.values());deals=0;changed=False
     defaults={"seven_day_reference_price":None,"seven_day_discount_pct":0.0,
         "seven_day_discount_amount":0.0,"seven_day_is_price_deal":0,
@@ -322,6 +322,7 @@ class CompactCollection:
     def __init__(self,parts):
         if not parts:raise ValueError("No compact partitions")
         self.parts=parts;self.lookup={}
+        self.weekly_spool=None;self.weekly_batch=None;self.weekly_quote_kinds=None
         self.meta=parts[0].metadata();self.batches=parts[0].batch_rows()
         for part in parts:
             if part.metadata()!=self.meta or part.batch_rows()!=self.batches:raise ValueError("Partition batch metadata differs")
@@ -329,6 +330,7 @@ class CompactCollection:
                 if sid in self.lookup:raise ValueError("Duplicate partition store")
                 self.lookup[sid]=part
     def close(self):
+        if self.weekly_spool is not None:self.weekly_spool.close();self.weekly_spool=None
         for part in self.parts:part.close()
     def ids(self):return sorted(self.lookup)
     def stores(self):
@@ -342,6 +344,8 @@ class CompactCollection:
     def metadata(self):return self.meta
     def batch_rows(self):return self.batches
     def apply_batch(self,docs,batch,excluded=()):
+        if self.weekly_spool is not None:self.weekly_spool.close();self.weekly_spool=None
+        self.weekly_batch=None;self.weekly_quote_kinds=None
         previous=self.meta.get("latest_batch","")
         if previous and batch<=previous:raise ValueError("Nonmonotonic compact update")
         by_store={}
@@ -379,13 +383,32 @@ class CompactCollection:
         print("FOODRADAR_SQLITE_APPLY_DETAIL="+json.dumps({k:round(v,3) for k,v in timing.items()}),flush=True)
         return dict(counts)
     def refresh_weekly(self,batch):
-        results=Counter()
+        import tempfile,pickle
+        if self.weekly_spool is not None:self.weekly_spool.close()
+        self.weekly_spool=tempfile.TemporaryFile(mode="w+b")
+        self.weekly_batch=None;self.weekly_quote_kinds=None
+        results=Counter();kinds=Counter()
         for store,products,quotes in self.shops():
-            changed,summary=weekly_shop(store,products,quotes,batch)
+            kinds.update(q[5] for q in quotes)
+            candidates=list(iter_weekly_price_evidence(QuoteWindow(quotes),batch))
+            if candidates:pickle.dump(candidates,self.weekly_spool,protocol=5)
+            changed,summary=weekly_shop(store,products,quotes,batch,candidates=candidates)
             results.update(summary)
             if changed:self.lookup[store["store_uuid"]].put_shop(store,products)
         self.flush()
+        self.weekly_batch=batch;self.weekly_quote_kinds=kinds
         return dict(results)
+    def weekly_evidence(self,batch):
+        import pickle
+        if self.weekly_spool is None or self.weekly_batch!=batch:
+            for quotes in self.quote_shops():
+                yield from iter_weekly_price_evidence(QuoteWindow(quotes),batch)
+            return
+        self.weekly_spool.seek(0)
+        while True:
+            try:rows=pickle.load(self.weekly_spool)
+            except EOFError:break
+            yield from rows
     def flush(self):
         for part in self.parts:
             part.set_globals(self.meta,self.batches)
