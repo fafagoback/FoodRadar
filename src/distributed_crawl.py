@@ -22,6 +22,7 @@ from pathlib import Path
 import requests
 
 from feed_core import scan_single_point, extract_stores_from_feed
+from discovery_coverage import get_points,validate_points,merge_store_points,COUNTIES,clean
 from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
 from catalog_complete import is_recoverable_catalog_failure
@@ -192,27 +193,28 @@ def public_ip() -> str | None:
         return None
 
 
-def discover(config: dict, raw: Path, index: int):
-    point = {
-        "id": "foodradar",
-        "latitude": config["latitude"],
-        "longitude": config["longitude"],
-        "county": "台北市",
-    }
-    _, found, pages = scan_single_point(
-        point, max_pages=config["max_pages"],
-        raw_dir=raw / "feed" / f"shard-{index:02d}")
-    if not found or not pages:
-        raise RuntimeError("Feed discovery returned no complete store list")
-    unique = {}
-    for item in found:
-        store_uuid = canonical_store_uuid(item["store_uuid"], item["store_url"])
-        try:
-            store_uuid = str(uuid.UUID(store_uuid))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Invalid canonical store UUID in feed") from exc
-        unique.setdefault(store_uuid, {**item, "store_uuid": store_uuid})
-    return unique, pages
+def discover(config: dict, raw: Path, index: int, coverage=None):
+    plan=get_points(config)
+    unique={};total_pages=0;reports=[]
+    for point in plan:
+        point_id,found,pages=scan_single_point(point,max_pages=config["max_pages"],
+            raw_dir=raw/"feed"/f"shard-{index:02d}"/point["id"])
+        if point_id!=point["id"] or not pages:
+            raise RuntimeError("Incomplete feed discovery: "+point["id"])
+        total_pages+=pages
+        reports.append({"point_id":point_id,"pages":pages,"stores":len(found)})
+        for item in found:
+            store_uuid=canonical_store_uuid(item["store_uuid"],item["store_url"])
+            try:store_uuid=str(uuid.UUID(store_uuid))
+            except (TypeError,ValueError) as exc:raise ValueError("Invalid canonical store UUID in feed") from exc
+            if store_uuid not in unique:
+                unique[store_uuid]={**item,"store_uuid":store_uuid}
+            else:merge_store_points(unique[store_uuid],item)
+        print("FOODRADAR_POINT_COMPLETE="+json.dumps(reports[-1]),flush=True)
+    if not unique or not total_pages:raise RuntimeError("Feed discovery returned no complete store list")
+    if coverage is not None:coverage.update({"scope":config.get("discovery_scope","single"),
+           "plan":plan,"reports":reports})
+    return unique,total_pages
 
 
 
@@ -223,7 +225,8 @@ def save_shared_discovery(config: dict, root: Path = ROOT, dynamic=False):
         raise FileExistsError(f"Refusing to overwrite existing discovery: {folder}")
     raw = folder / "raw"
     raw.mkdir(parents=True)
-    stores, pages = discover(config, raw, index=0)
+    coverage={}
+    stores, pages = discover(config, raw, index=0, coverage=coverage)
     bodies = {
         p.relative_to(raw).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(raw.rglob("*.body"))
@@ -252,7 +255,7 @@ def save_shared_discovery(config: dict, root: Path = ROOT, dynamic=False):
         "latitude": config["latitude"], "longitude": config["longitude"],
         "feed_pages": pages, "stores": [stores[sid] for sid in sorted(stores)],
         "previous_promotion_stats": previous_promotions,
-        "raw_checksums": bodies,
+        "raw_checksums": bodies, "discovery_coverage":coverage,
     }
     path = folder / "discovery.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf8")
@@ -277,6 +280,20 @@ def load_shared_discovery(path: Path, config: dict, raw: Path, shard: int):
             or not isinstance(manifest.get("feed_pages"), int)
             or manifest["feed_pages"] < 1):
         raise ValueError("Shared feed manifest missing, incomplete or from another run")
+    coverage=manifest.get("discovery_coverage")
+    scope=config.get("discovery_scope","single")
+    if coverage is None and scope!="single":raise ValueError("Missing multi-point coverage")
+    if coverage is not None:
+        points=validate_points(coverage["plan"])
+        reports=coverage["reports"]
+        if (coverage["scope"]!=scope or [r["point_id"] for r in reports]!=[p["id"] for p in points]
+                or any(type(r["pages"]) is not int or r["pages"]<1 for r in reports)
+                or sum(r["pages"] for r in reports)!=manifest["feed_pages"]):
+            raise ValueError("Discovery plan did not finish all points")
+        if scope=="taiwan" and ({clean(p["county"]) for p in points}!=COUNTIES
+                  or len({(p["county"],p["town"]) for p in points})!=368):
+            raise ValueError("National discovery plan is incomplete")
+        if scope!="taiwan" and points!=get_points(config):raise ValueError("Discovery plan changed")
     feed_root = path.parent / "raw"
     checksums = manifest.get("raw_checksums")
     existing = {
@@ -305,6 +322,10 @@ def load_shared_discovery(path: Path, config: dict, raw: Path, shard: int):
             or any(type(index) is not int or not 0 <= index < manifest["owner_count"]
                    for index in ownership.values())):
         raise ValueError("Shared feed ownership map is missing or invalid")
+    if coverage is not None:
+        expected={p['id'] for p in points}
+        if any(not s.get('discovered_points') or any(p['point_id'] not in expected for p in s['discovered_points']) for s in stores.values()):
+            raise ValueError('Discovered store lacks original coordinate')
     if shard == 0:
         destination = raw / "feed"
         if destination.exists():

@@ -252,6 +252,7 @@ def scan_single_point(point: dict, max_pages: int = 10, raw_dir=None) -> tuple:
     if has_more:
         raise RuntimeError(f"point {p_id}: truncated at max_pages={max_pages}; use 0 for complete discovery")
 
+    session.close()
     return p_id, list(stores_found.values()), page - 1
 
 

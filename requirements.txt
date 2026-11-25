@@ -6,3 +6,5 @@ msgpack>=1,<2
 zstandard>=0.23,<1
 curl_cffi>=0.11,<1
 beautifulsoup4>=4.12,<5
+
+shapely>=2.0,<3
