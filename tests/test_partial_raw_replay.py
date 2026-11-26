@@ -79,7 +79,8 @@ class PartialRawAndStateTests(unittest.TestCase):
                     docs=documents_from_hf_raw(archive,meta)
                 self.assertEqual(archive.extractfile(filename).read(),original)
             self.assertEqual(len(docs),19)
-            self.assertEqual(docs[0]["store_uuid"],SID_OK)
+            self.assertEqual({doc["store_uuid"] for doc in docs},
+                             {row["store_uuid"] for row in meta["stores"] if row["success"]})
 
     def test_failed_store_previous_prices_and_presence_not_aged(self):
         with sqlite3.connect(":memory:") as db:
