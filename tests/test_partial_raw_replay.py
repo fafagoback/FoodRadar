@@ -31,12 +31,15 @@ def partial_manifest():
           "captured_at":"2026-11-11T02:45:03+08:00"}
     bad={"store_uuid":SID_BAD,"store_url":URL+SID_BAD,"success":False,
          "error":"Catalog native code 500 at offset 1020"}
+    # 1/20 = exactly 5%. Extra stores share the same synthetic HTTP fixture.
+    extra = [{**good, "store_uuid":f"00000000-0000-4000-8000-{i:012x}",
+              "store_url":URL+f"00000000-0000-4000-8000-{i:012x}"} for i in range(1,19)]
     return {"format":"foodradar-immutable-http-body-v1",
             "batch_id":BATCH,"complete":False,"partial_replayable":True,
             "archive_path":f"Raw/{BATCH}/capture.tar.gz",
             "feed_pages":6,
-            "stores":[good,bad],
-            "successful_store_count":1,"failed_store_count":1,
+            "stores":[good,bad]+extra,
+            "successful_store_count":19,"failed_store_count":1,
             "failed_store_uuids":[SID_BAD],
             "responses":{}}
 
@@ -50,11 +53,13 @@ class PartialRawAndStateTests(unittest.TestCase):
             raw_manifest_should_replay(
                 {**meta,"failed_store_count":2},
                 f"Raw/{BATCH}/manifest.json","Raw")
-        with self.assertRaisesRegex(ValueError,"Unclassified"):
-            changed=partial_manifest()
-            changed["stores"][1]["error"]="HTTP 429"
-            raw_manifest_should_replay(
-                changed,f"Raw/{BATCH}/manifest.json","Raw")
+        changed=partial_manifest()
+        changed["stores"][1]["error"]="HTTP 429"
+        self.assertTrue(raw_manifest_should_replay(changed,f"Raw/{BATCH}/manifest.json","Raw"))
+        changed["stores"].pop()
+        changed["successful_store_count"]-=1
+        with self.assertRaisesRegex(ValueError,"exceeds 5%"):
+            raw_manifest_should_replay(changed,f"Raw/{BATCH}/manifest.json","Raw")
 
     def test_partial_raw_decodes_only_verified_store_and_keeps_bytes(self):
         meta=partial_manifest()
@@ -73,7 +78,7 @@ class PartialRawAndStateTests(unittest.TestCase):
                      patch("snapshot_validation.validate_document"):
                     docs=documents_from_hf_raw(archive,meta)
                 self.assertEqual(archive.extractfile(filename).read(),original)
-            self.assertEqual(len(docs),1)
+            self.assertEqual(len(docs),19)
             self.assertEqual(docs[0]["store_uuid"],SID_OK)
 
     def test_failed_store_previous_prices_and_presence_not_aged(self):

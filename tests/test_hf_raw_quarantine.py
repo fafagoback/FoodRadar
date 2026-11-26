@@ -145,21 +145,25 @@ class ReplayCoverageGuard(unittest.TestCase):
         self.assertEqual(len(validate_raw_replay_coverage(
             self.records, 100,
             [{"store_uuid": uid} for uid in ids[5:]], ids[:5])), 5)
-        with self.assertRaisesRegex(ValueError, "Excess empty-menu quarantine"):
+        with self.assertRaisesRegex(ValueError, "Total store failure rate exceeds 5%"):
             validate_raw_replay_coverage(
                 self.records, 100,
                 [{"store_uuid": uid} for uid in ids[6:]], ids[:6])
 
-    def test_many_failed_second_api_checks_do_not_masquerade_as_empty_catalogs(self):
+    def test_all_failure_reasons_share_one_budget(self):
         ids = self.ids
-        # The independent API is sometimes temporarily unavailable.  These
-        # stores keep their older prices, while unrelated shops update normally.
-        # This must NOT trigger the separate 5% "empty grocery menu" guard.
-        result = validate_raw_replay_coverage(
-            self.records, 100,
-            [{"store_uuid": uid} for uid in ids[8:]], ids[:8],
-            promo_quarantined=ids[:8])
-        self.assertEqual(result, set(ids[:8]))
+        with self.assertRaisesRegex(ValueError, "Total store failure rate exceeds 5%"):
+            validate_raw_replay_coverage(self.records, 100,
+                [{"store_uuid": uid} for uid in ids[8:]], ids[:8],
+                promo_quarantined=ids[:8])
+        result = validate_raw_replay_coverage(self.records[3:], 97,
+            [{"store_uuid": uid} for uid in ids[5:]], ids[3:5],
+            promo_quarantined=ids[3:5], failed_capture_count=3, total_capture_count=100)
+        self.assertEqual(result, set(ids[3:5]))
+        with self.assertRaisesRegex(ValueError, "Total store failure rate exceeds 5%"):
+            validate_raw_replay_coverage(self.records[3:], 97,
+                [{"store_uuid": uid} for uid in ids[6:]], ids[3:6],
+                failed_capture_count=3, total_capture_count=100)
 
     def test_api_recheck_exclusion_must_be_accounted_in_raw_quarantine(self):
         ids = self.ids
@@ -171,7 +175,7 @@ class ReplayCoverageGuard(unittest.TestCase):
 
     def test_empty_catalog_guard_still_applies_with_api_recheck_exclusions(self):
         ids = self.ids
-        with self.assertRaisesRegex(ValueError, "Excess empty-menu quarantine"):
+        with self.assertRaisesRegex(ValueError, "Total store failure rate exceeds 5%"):
             validate_raw_replay_coverage(
                 self.records, 100,
                 [{"store_uuid": uid} for uid in ids[10:]], ids[:10],

@@ -25,7 +25,7 @@ import requests
 from menu_core import attach_delivery_location, normalize_store_uuid, global_limiter, response_retry_after
 from promo_api_recheck import QUARANTINE_STATUSES
 from catalog_complete import (
-    capture_catalog, merge_catalog_pages, is_recoverable_catalog_failure,
+    capture_catalog, merge_catalog_pages,
     EmptyCatalogPagesError,
 )
 
@@ -223,12 +223,8 @@ def archive_and_upload(root: Path, config: dict, batch: str,
             raise ValueError("Invalid partially verified Raw snapshot")
         if len({s.get("store_uuid") for s in stores}) != len(stores):
             raise ValueError("Duplicate Raw store UUID in partial capture")
-        # Never bless general network/API/parser errors as independently
-        # verified partial observations. Only deterministic deep catalog 500s
-        # and native subgroup coverage gaps are eligible.
-        if not all(is_recoverable_catalog_failure(s.get("error"))
-                   for s in failed):
-            raise ValueError("Unclassified Raw failure cannot publish partial snapshot")
+        from release_policy import require_failure_budget
+        require_failure_budget(len(failed), len(stores))
     folder = config["hf_folder"].strip("/")
     if config["hf_repo_id"] != "hub-google/FoodRadar" or folder != "Raw":
         raise ValueError("Raw must go to independent hub-google/FoodRadar dataset /Raw")
@@ -401,17 +397,8 @@ def documents_from_hf_raw(archive, manifest: dict, *,
         raise ValueError("Unverified incomplete Raw cannot be released to DB")
     all_stores = manifest["stores"]
     if verified_partial:
-        successful = [s for s in all_stores if s.get("success") is True]
-        failed = [s for s in all_stores if s.get("success") is not True]
-        if (not successful or not failed
-                or manifest.get("successful_store_count") != len(successful)
-                or manifest.get("failed_store_count") != len(failed)
-                or manifest.get("failed_store_uuids") !=
-                    [s.get("store_uuid") for s in failed]):
-            raise ValueError("Partially verified Raw store counts/identity mismatch")
-        if not all(is_recoverable_catalog_failure(s.get("error"))
-                   for s in failed):
-            raise ValueError("Unclassified failed store in partially verified Raw")
+        from release_policy import validate_partial_manifest
+        successful, failed = validate_partial_manifest(manifest)
     else:
         successful = all_stores
     batch = manifest["batch_id"]

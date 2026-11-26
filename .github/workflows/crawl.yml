@@ -19,6 +19,7 @@ on:
           - republish
           - full-rebuild
           - reuse-artifacts
+          - reuse-hf-raw
         default: crawl
       discovery_scope:
         description: 'single=原測試座標；taiwan=22縣市368行政區完整座標計畫'
@@ -28,6 +29,10 @@ on:
         default: single
       replay_run_id:
         description: 'reuse-artifacts：已完成爬取但彙整失敗的 Run ID'
+        required: false
+        type: string
+      replay_hf_batch:
+        description: 'reuse-hf-raw：已封存但未發布的14碼原始批次'
         required: false
         type: string
       confirm_reset:
@@ -265,7 +270,7 @@ jobs:
   ingest:
     name: 第十六台｜彙整驗證與發布靜態資料
     needs: [discover_once, crawl_shard, plan_recovery, recover_shard]
-    if: "${{ !cancelled() && ((needs.discover_once.result == 'success' && (needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success'))) || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')) || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_REPLAY_ARTIFACTS='))) }}"
+    if: "${{ !cancelled() && ((needs.discover_once.result == 'success' && (needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success'))) || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')) || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_REPLAY_ARTIFACTS=') || contains(github.event.head_commit.message, 'FR_REPLAY_HF_BATCH=') || contains(github.event.head_commit.message, 'FR_REPUBLISH')))) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
@@ -347,6 +352,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
         run: python scripts/save_crawl_settings.py
+
+      - name: 重用已封存 HF 原始批次（不重新爬取或彙整）
+        if: "${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'reuse-hf-raw') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_REPLAY_HF_BATCH=')) }}"
+        env:
+          HF_TOKEN: "${{ secrets.HF_TOKEN }}"
+          REPLAY_HF_BATCH: ${{ inputs.replay_hf_batch }}
+          SOURCE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          batch="$REPLAY_HF_BATCH"
+          if [[ -z "$batch" && "$SOURCE_COMMIT_MESSAGE" =~ FR_REPLAY_HF_BATCH=([0-9]{14}) ]]; then
+            batch="${BASH_REMATCH[1]}"
+          fi
+          python scripts/recover_archived_raw.py "$batch"
 
       - name: 恢復經驗證的 SQLite 加速快取（不影響 HF Raw）
         if: ${{ inputs.mode != 'full-rebuild' }}

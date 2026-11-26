@@ -57,25 +57,13 @@ def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> b
             or not str(meta.get("archive_path") or "").startswith(f"{folder}/{batch}/")):
         raise ValueError(f"Invalid immutable Raw source path: {manifest_path}")
     if is_partial:
-        from catalog_complete import is_recoverable_catalog_failure
-        stores = meta.get("stores")
-        if not isinstance(stores, list):
-            raise ValueError("Missing per-store Raw records for partial replay")
-        passed = [s for s in stores if s.get("success") is True]
-        failed = [s for s in stores if s.get("success") is not True]
-        if (not passed or not failed or meta.get("feed_pages", 0) < 1
-                or meta.get("successful_store_count") != len(passed)
-                or meta.get("failed_store_count") != len(failed)
-                or meta.get("failed_store_uuids") !=
-                    [s.get("store_uuid") for s in failed]):
-            raise ValueError("Partially verified Raw manifest store count mismatch")
-        if not all(is_recoverable_catalog_failure(s.get("error"))
-                   for s in failed):
-            raise ValueError("Unclassified failure in partially verified Raw manifest")
+        from release_policy import validate_partial_manifest
+        validate_partial_manifest(meta)
     return True
 
 
-def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarantined, promo_quarantined=None):
+def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarantined, promo_quarantined=None,
+                                 failed_capture_count=0, total_capture_count=None):
     """Require exact per-store accounting before preserving any invalid menu."""
     from menu_core import canonical_store_uuid
 
@@ -93,14 +81,12 @@ def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarant
             or verified_ids & quarantined_ids
             or verified_ids | quarantined_ids != expected_ids):
         raise ValueError('HF verified store coverage or quarantine UUID mismatch')
-    # If many apparently successful stores suddenly have no menu, treat the
-    # entire batch as suspicious (Uber outage/contract drift), not as a new
-    # observation. Historical Raw and live Turso must remain untouched.
-    empty_catalog_ids = quarantined_ids - promo_ids
-    if len(empty_catalog_ids) > max(1, len(expected_ids) // 20):
-        raise ValueError(
-            f'Excess empty-menu quarantine: {len(empty_catalog_ids)}/'
-            f'{len(expected_ids)} stores; refusing widespread catalog failure')
+    # One combined budget: crawl failures plus all replay exclusions.
+    from release_policy import require_failure_budget
+    total = expected_raw + failed_capture_count if total_capture_count is None else total_capture_count
+    if total != expected_raw + failed_capture_count:
+        raise ValueError("Total capture count mismatch")
+    require_failure_budget(failed_capture_count + len(quarantined_ids), total)
     return quarantined_ids
 
 
@@ -213,7 +199,9 @@ def restore_history(config, rebuild_all=False):
             }
             quarantined_ids = validate_raw_replay_coverage(
                 successful_records, expected_raw, docs, quarantined,
-                promo_quarantined=promo_recheck_quarantined)
+                promo_quarantined=promo_recheck_quarantined,
+                failed_capture_count=len(meta['stores']) - expected_raw,
+                total_capture_count=len(meta['stores']))
             empty_catalog_quarantined = quarantined_ids - promo_recheck_quarantined
             failed_store_uuids = sorted(set(failed_store_uuids) | quarantined_ids)
             is_partial = raw_partial or bool(quarantined_ids)
@@ -284,7 +272,7 @@ def restore_history(config, rebuild_all=False):
                 row['promo_api_recheck_store_count'] for row in quarantined_batches),
             'quarantined_batches': quarantined_batches,
             'latest_retained_store_uuids': latest_excluded_store_uuids,
-            'policy': 'up to 5 percent per batch, minimum one; preserve prior store data',
+            'policy': 'total store failure rate <=5 percent; preserve prior store data regardless of failure reason',
         }
         (destination/'quarantine-report.json').write_text(
             json.dumps(quarantine_report, ensure_ascii=False, indent=2),

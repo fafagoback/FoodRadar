@@ -25,7 +25,7 @@ from feed_core import scan_single_point, extract_stores_from_feed
 from discovery_coverage import get_points,validate_points,merge_store_points,COUNTIES,clean,discovery_scope
 from menu_core import canonical_store_uuid, global_limiter
 from raw_capture import archive_and_upload, fetch_store_raw
-from catalog_complete import is_recoverable_catalog_failure
+from release_policy import failure_budget_allows
 from adaptive_threads import run_adaptive, valid_threads, DEFAULT_THREADS, maximum_best
 from crawl_batches import plan_batches, MAX_BATCHES, MAX_PARALLEL
 from crawl_transport import TransportPool
@@ -688,11 +688,8 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
               else [all_captured[sid] for sid in sorted(all_captured)])
     failures = [s for s in stores if s.get("success") is not True]
     successes = [s for s in stores if s.get("success") is True]
-    partial_replayable = bool(
-        not strict and failures and len(stores) >= 50 and len(successes) >= 50
-        and len(failures) <= max(1, int(len(stores) * 0.05))
-        and all(is_recoverable_catalog_failure(s.get("error"))
-                for s in failures))
+    # No per-error allowlist, minimum successful-store count, rounding or strict-mode override.
+    partial_replayable = bool(failures and failure_budget_allows(len(failures), len(stores)))
     complete = not failures
     report = {
         "batch": batch, "runners": count, "max_parallel_runners": min(count, MAX_PARALLEL),
@@ -708,6 +705,8 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         "owner_gap_recaptured": len(recovered),
         "owner_gap_successful": sum(s.get("success") is True for s in recovered.values()),
         "failed_stores": len(failures), "raw_responses": total_responses,
+        "failed_store_rate_pct": 100 * len(failures) / len(stores),
+        "max_failed_store_rate_pct": 5,
         "runner_public_ips": ip_list, "unique_public_ips": ip_unique,
         "complete": complete, "partial_replayable": partial_replayable,
         "failed_store_details": [
@@ -743,7 +742,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if failures and not partial_replayable:
         raise RuntimeError(
-            f"{len(failures)} stores have unverified captures; "
+            f"Total store failure rate exceeds 5%: {len(failures)}/{len(stores)}; "
             "Raw archived but HF release pointer and Turso remain unchanged")
     return report
 
