@@ -153,6 +153,7 @@ def restore_history(config, rebuild_all=False):
     totals = {'download_seconds': 0.0, 'decode_seconds': 0.0,
               'sqlite_apply_seconds': 0.0}
     spool = None
+    replay_download = None
     try:
         print('FOODRADAR_RAW_ONLY_REPLAY_START='+json.dumps({
             'raw_manifests': len(records), 'checkpoint': bool(checkpoint),
@@ -175,9 +176,11 @@ def restore_history(config, rebuild_all=False):
             t = perf_counter()
             downloaded = local_verified_archive(config, meta, ROOT)
             if downloaded is None:
+                import tempfile
+                replay_download = tempfile.TemporaryDirectory(prefix="fr-hf-replay-")
                 downloaded = Path(hf_hub_download(
                     config['hf_repo_id'], meta['archive_path'], repo_type='dataset',
-                    token=os.environ.get('HF_TOKEN')))
+                    token=os.environ.get('HF_TOKEN'), local_dir=replay_download.name))
             from state_checkpoint import digest_file
             digest = digest_file(downloaded)
             if digest != meta.get('archive_sha256'):
@@ -219,6 +222,9 @@ def restore_history(config, rebuild_all=False):
             doc_count = len(docs)
             spool.close()
             spool = None
+            if replay_download is not None:
+                replay_download.cleanup()
+                replay_download = None
             state.meta["latest_raw_completeness"]="partial_verified" if is_partial else "complete"
             state.meta["latest_unverified_store_uuids"]=json.dumps(failed_store_uuids,ensure_ascii=False)
             state.flush()
@@ -332,6 +338,8 @@ def restore_history(config, rebuild_all=False):
     except BaseException:
         if spool is not None:
             spool.close()
+        if replay_download is not None:
+            replay_download.cleanup()
         state.close()
         raise
 

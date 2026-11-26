@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'crawl=新抓取；republish=從既有 Raw 重發 Pages；full-rebuild=從 Raw 重建靜態資料'
+        description: 'crawl=新抓取；republish=重發 Pages；full-rebuild=重建；reuse-artifacts=只重做第16台及部署'
         required: true
         type: choice
         options:
@@ -315,12 +315,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
           SOURCE_RUN_INPUT: ${{ inputs.replay_run_id }}
           SOURCE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           RUN_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           df -h
+          if (( $(df -PB1 "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}') < 20000000000 )); then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+            df -h
+          fi
           source_run="$SOURCE_RUN_INPUT"
           if [[ -z "$source_run" && "$SOURCE_COMMIT_MESSAGE" =~ FR_REPLAY_ARTIFACTS=([0-9]+) ]]; then
             source_run="${BASH_REMATCH[1]}"
@@ -363,6 +368,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FR_RAW_DECODE_WORKERS: '3'
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
         run: python scripts/prepare_hf_release.py
       - name: 保存經完整資料與網站雜湊驗收的精簡資料庫

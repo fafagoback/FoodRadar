@@ -278,6 +278,7 @@ def run(source_run_id=None):
         raw_bytes = writer.raw_bytes
     disk_report("archive_complete", stage, raw_bytes=raw_bytes,
                 archive_bytes=archive_path.stat().st_size, stores=len(owners))
+    archive_bytes = archive_path.stat().st_size
     for index in range(15):
         summary = worker_reports(reports_dir, state, index)
         folder = parts / f"foodradar-raw-shard-{index}"
@@ -300,7 +301,7 @@ def run(source_run_id=None):
     print("FOODRADAR_STREAM_INGEST_COMPLETE=" + json.dumps({
         "source_run": source_run, "reused": reuse, "stores": len(owners),
         "responses": len(response_checks), "raw_bytes": raw_bytes,
-        "archive_bytes": archive_path.stat().st_size if archive_path.exists() else None}), flush=True)
+        "archive_bytes": archive_bytes}), flush=True)
 
 
 if __name__ == "__main__":

@@ -352,7 +352,10 @@ class CompactCollection:
         spooled=hasattr(docs,"store_ids")
         if spooled:
             for index,sid in enumerate(docs.store_ids):
-                by_store.setdefault(sid,index)
+                key,fallback=store_identity({"store_uuid":sid})
+                if fallback:
+                    key,_=store_identity(docs[index])
+                by_store.setdefault(key,index)
         else:
             for doc in docs:
                 sid,_=store_identity(doc)
