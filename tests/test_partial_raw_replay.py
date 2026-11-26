@@ -74,7 +74,7 @@ class PartialRawAndStateTests(unittest.TestCase):
                 out.addfile(info,io.BytesIO(original))
             with tarfile.open(tar,"r:gz") as archive:
                 with patch("menu_core.convert_api_data_to_schema",
-                           return_value={"name":"verified"}),\
+                           side_effect=lambda *_args, **_kwargs: {"name":"verified"}),\
                      patch("snapshot_validation.validate_document"):
                     docs=documents_from_hf_raw(archive,meta)
                 self.assertEqual(archive.extractfile(filename).read(),original)
