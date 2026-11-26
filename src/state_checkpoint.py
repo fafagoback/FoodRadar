@@ -318,9 +318,10 @@ DIRECT_LAYOUT_MIGRATIONS = (
 # original schema and remain readable; no arbitrary digest bypass.
 # Nested scheduling changes live capture only; immutable Raw decoding and
 # the direct compact physical layout are unchanged. Pin exact reviewed blobs.
-CODEC_UPGRADE="b53097963629574fa1b86fb33b97cc429bce5db4"
+CODEC_UPGRADE="963b20888bf665cb39cd98b11017b6f57d640747"
 # Exact performance-only migration: same observation fields, quote math and compact layout.
-CODEC_PREVIOUS_CURRENT_LAYOUTS=("d5ead077b373557d61c1eeb040b2ebcf81566c10",
+CODEC_PREVIOUS_CURRENT_LAYOUTS=("b53097963629574fa1b86fb33b97cc429bce5db4", "037cdb804e7c4908078dc5a75b0be19e1110fcc0",
+    "d5ead077b373557d61c1eeb040b2ebcf81566c10",
     "f763cf4c5c8993ce82d5323644866ac24266a57d","b700e4928d072bc8e1138e5da441d12baa882752",
     "d29f8d12beaabe407136559802077764b14492f6","37fc80992b90312a8a777435d0351aa4dabdf0ab")
 CODEC_OLD_LAYOUTS=("97fe6baca43bb8bcbd087b7fa03c6d372f2b646f","7fb36f3df7f43399278eba3582a4f0899b6a7f9d")
