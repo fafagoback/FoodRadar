@@ -76,18 +76,21 @@ def body_checksums(raw):
 def validate_task(folder, state, sid, lease):
     folder = Path(folder)
     doc = json.loads((folder / "task.json").read_text(encoding="utf8"))
+    return validate_task_document(doc, state, sid, lease, body_checksums(folder / "raw"))
+
+
+def validate_task_document(doc, state, sid, lease, actual_checks):
     for key, expected in (("run_id", state["run_id"]), ("source_sha", state["source_sha"]),
                           ("epoch", state["epoch"]), ("store_uuid", sid),
                           ("token", lease["token"]), ("worker", lease["worker"])):
         if doc.get(key) != expected:
             raise ValueError("Task artifact identity mismatch: " + key)
-    raw = folder / "raw"
     checks = doc["responses"]
     for name in checks:
         p = Path(name)
         if p.is_absolute() or ".." in p.parts or p.suffix != ".body":
             raise ValueError("Unsafe task response path")
-    if checks != body_checksums(raw):
+    if checks != actual_checks:
         raise ValueError("Task HTTP body checksum mismatch")
     result = doc["store"]
     if result.get("store_uuid") != sid:
@@ -367,7 +370,7 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
                 raise ValueError("Duplicate raw response path in task pool")
             dest = raw / relative
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(folder / "raw" / relative, dest)
+            os.link(folder / "raw" / relative, dest)
             checks_by_worker[worker][relative] = checksum
         store_result = doc["store"]
         group = state.get("catalog_groups", {}).get(sid)
@@ -427,7 +430,7 @@ def assemble(config, discovery_file, task_dir, summary_dir, output, queue=None):
                         raise ValueError("Duplicate category response path")
                     dest = raw / dest_rel
                     dest.parent.mkdir(parents=True,exist_ok=True)
-                    shutil.copyfile(source_dir/"raw"/relative, dest)
+                    os.link(source_dir/"raw"/relative, dest)
                     checks_by_worker[worker][dest_rel] = checksum
                 helpers.add(row["worker"])
                 total_requests += len(checks)

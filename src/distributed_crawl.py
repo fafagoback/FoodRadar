@@ -530,7 +530,11 @@ def _recover_missing_store_captures(missing, shard_paths, config, root, run_id):
 def merge_shards(config: dict, input_dir: Path, count: int = 15,
                  root: Path = ROOT, upload_raw: bool = True,
                  repair_missing: bool = False, strict: bool = False,
-                 discovery_file: Path | None = None):
+                 discovery_file: Path | None = None,
+                 prepared_archive: Path | None = None, verified_checks=None,
+                 batch_override: str | None = None):
+    if (prepared_archive is None) != (verified_checks is None):
+        raise ValueError("Prepared archive requires verified worker checks")
     if not 1 <= count <= MAX_BATCHES:
         raise ValueError("Invalid matrix batch count")
     metadata = []
@@ -583,8 +587,13 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
                 {s.get("store_uuid") for s in stores} != set(assigned)):
             raise ValueError(f"Shard {index} has missing or duplicate store results")
         shard_raw = folder / "raw"
-        actual_paths = {p.relative_to(shard_raw).as_posix()
-                        for p in shard_raw.rglob("*.body")}
+        if prepared_archive is not None:
+            if checksums != verified_checks[index]:
+                raise ValueError("Prepared archive worker checks changed")
+            actual_paths = set(verified_checks[index])
+        else:
+            actual_paths = {p.relative_to(shard_raw).as_posix()
+                            for p in shard_raw.rglob("*.body")}
         if actual_paths != set(checksums):
             raise ValueError(f"Shard {index} original response list mismatch")
         for relative, digest in checksums.items():
@@ -592,7 +601,7 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             if (relative_path.is_absolute() or ".." in relative_path.parts or
                     len(digest) != 64):
                 raise ValueError(f"Unsafe response path in shard {index}")
-            if hashlib.sha256((shard_raw / relative).read_bytes()).hexdigest() != digest:
+            if prepared_archive is None and hashlib.sha256((shard_raw / relative).read_bytes()).hexdigest() != digest:
                 raise ValueError(f"Shard {index} original HTTP body checksum mismatch")
         for store in stores:
             _validate_references(store, actual_paths)
@@ -628,6 +637,8 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
     owner_missing = sorted(all_discovered - set(all_captured))
     unexpected = sorted(set(all_captured) - all_discovered)
     recovered = {}
+    if repair_missing and prepared_archive is not None:
+        raise ValueError("Prepared archive cannot recapture missing stores")
     if repair_missing and owner_missing and not unexpected:
         print("FOODRADAR_OWNER_GAP_PLAN=" + json.dumps({
             "missing": len(owner_missing),
@@ -643,21 +654,27 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
         raise RuntimeError(
             f"Cross-runner feed coverage mismatch; missing={missing[:20]}, "
             f"unexpected={unexpected[:20]}; HF/DB unchanged")
-    batch = datetime.now(TW).strftime("%Y%m%d%H%M%S")
+    batch = batch_override or datetime.now(TW).strftime("%Y%m%d%H%M%S")
+    if not (len(batch) == 14 and batch.isdigit()):
+        raise ValueError("Invalid original batch timestamp")
     output = root / "data" / batch
     if output.exists():
         raise FileExistsError("Refusing to overwrite an existing Raw capture batch")
     raw = output / "raw"
-    raw.mkdir(parents=True)
+    if prepared_archive is None:
+        raw.mkdir(parents=True)
+    else:
+        output.mkdir(parents=True)
     copied = set()
     for shard_raw, paths in shard_paths:
         for relative in paths:
             if relative in copied:
                 raise RuntimeError(f"Duplicate original HTTP response: {relative}")
             copied.add(relative)
-            target = raw / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(shard_raw / relative, target)
+            if prepared_archive is None:
+                target = raw / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.link(shard_raw / relative, target)
     if len(copied) != total_responses:
         raise RuntimeError("Lost HTTP response body during shard merge")
     # Deferred catalog partitions have already been assembled and verified.
@@ -667,7 +684,8 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
             raise ValueError("Unassembled deferred catalog")
     ip_list = [m.get("public_ip") for m in metadata]
     ip_unique = len(set(ip for ip in ip_list if ip))
-    stores = [all_captured[sid] for sid in sorted(all_captured)]
+    stores = (list(all_captured.values()) if prepared_archive is not None
+              else [all_captured[sid] for sid in sorted(all_captured)])
     failures = [s for s in stores if s.get("success") is not True]
     successes = [s for s in stores if s.get("success") is True]
     partial_replayable = bool(
@@ -711,9 +729,14 @@ def merge_shards(config: dict, input_dir: Path, count: int = 15,
               "guarantee 15 distinct egress IPs", flush=True)
     if upload_raw:
         started = time.monotonic()
+        options = {}
+        if prepared_archive is not None:
+            options = {"prepared_archive": prepared_archive,
+                       "verified_responses": {name: digest for m in metadata
+                                              for name, digest in m["responses"].items()}}
         archive_and_upload(raw, config, batch, stores,
                            max(m["feed_pages"] for m in metadata),
-                           complete, partial_replayable=partial_replayable)
+                           complete, partial_replayable=partial_replayable, **options)
         report["hf_archive_upload_verify_seconds"] = round(time.monotonic() - started, 2)
         print("FOODRADAR_HF_TOTAL_SECONDS=" + str(report["hf_archive_upload_verify_seconds"]), flush=True)
         (output / "shard-reconciliation.json").write_text(

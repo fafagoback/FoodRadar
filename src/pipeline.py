@@ -81,7 +81,8 @@ def validate_raw_replay_coverage(successful_records, expected_raw, docs, quarant
 
     expected_ids = {canonical_store_uuid(r['store_uuid'], r['store_url'])
                     for r in successful_records}
-    verified_ids = {doc['store_uuid'] for doc in docs}
+    verified_ids = (set(docs.store_ids) if hasattr(docs, "store_ids")
+                    else {doc['store_uuid'] for doc in docs})
     quarantined_ids = set(quarantined)
     promo_ids = set(promo_quarantined or [])
     if not promo_ids <= quarantined_ids:
@@ -109,6 +110,7 @@ def restore_history(config, rebuild_all=False):
     from time import perf_counter
     from huggingface_hub import HfApi, hf_hub_download
     from raw_capture import documents_from_hf_raw, open_seekable_raw_archive
+    from raw_io import DocumentSpool, local_verified_archive, disk_report
     from menu_core import canonical_store_uuid
     from state_checkpoint import restore_direct,new_direct,direct_contract_digest,CACHE,manifest_digest
     from compact_direct import MAX_BYTES
@@ -150,6 +152,7 @@ def restore_history(config, rebuild_all=False):
     processed = 0
     totals = {'download_seconds': 0.0, 'decode_seconds': 0.0,
               'sqlite_apply_seconds': 0.0}
+    spool = None
     try:
         print('FOODRADAR_RAW_ONLY_REPLAY_START='+json.dumps({
             'raw_manifests': len(records), 'checkpoint': bool(checkpoint),
@@ -170,9 +173,11 @@ def restore_history(config, rebuild_all=False):
             if current_batch <= batch:
                 raise ValueError('New Raw precedes checkpoint; refusing incremental replay')
             t = perf_counter()
-            downloaded = Path(hf_hub_download(
-                config['hf_repo_id'], meta['archive_path'], repo_type='dataset',
-                token=os.environ.get('HF_TOKEN')))
+            downloaded = local_verified_archive(config, meta, ROOT)
+            if downloaded is None:
+                downloaded = Path(hf_hub_download(
+                    config['hf_repo_id'], meta['archive_path'], repo_type='dataset',
+                    token=os.environ.get('HF_TOKEN')))
             from state_checkpoint import digest_file
             digest = digest_file(downloaded)
             if digest != meta.get('archive_sha256'):
@@ -181,9 +186,11 @@ def restore_history(config, rebuild_all=False):
             totals['download_seconds'] += dl
             t = perf_counter()
             quarantined = []
+            spool = DocumentSpool()
             with open_seekable_raw_archive(downloaded) as archive:
                 docs = documents_from_hf_raw(
-                    archive, meta, quarantined_store_uuids=quarantined)
+                    archive, meta, quarantined_store_uuids=quarantined, document_spool=spool)
+            disk_report("raw_decoded", ROOT, batch=current_batch, stores=len(docs))
             decode = perf_counter()-t
             totals['decode_seconds'] += decode
             raw_partial = meta.get('complete') is False
@@ -209,6 +216,9 @@ def restore_history(config, rebuild_all=False):
             is_partial = raw_partial or bool(quarantined_ids)
             t = perf_counter()
             state.apply_batch(docs,current_batch,failed_store_uuids)
+            doc_count = len(docs)
+            spool.close()
+            spool = None
             state.meta["latest_raw_completeness"]="partial_verified" if is_partial else "complete"
             state.meta["latest_unverified_store_uuids"]=json.dumps(failed_store_uuids,ensure_ascii=False)
             state.flush()
@@ -228,7 +238,7 @@ def restore_history(config, rebuild_all=False):
                     'store_uuids': sorted(quarantined_ids),
                 })
             print('HF_RAW_TO_DB=' + json.dumps({
-                'batch':batch, 'verified_stores':len(docs),
+                'batch':batch, 'verified_stores':doc_count,
                 'failed_stores_retaining_previous_data':len(failed_store_uuids),
                 'quarantined_empty_catalog_stores':len(empty_catalog_quarantined),
                 'quarantined_promo_api_rechecks':len(promo_recheck_quarantined),
@@ -320,6 +330,8 @@ def restore_history(config, rebuild_all=False):
                     f"{len(quarantine_report['latest_retained_store_uuids'])} |\n")
         return state
     except BaseException:
+        if spool is not None:
+            spool.close()
         state.close()
         raise
 

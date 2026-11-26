@@ -37,20 +37,14 @@ class CheckpointStorageError(RuntimeError):
 
 
 
+from raw_io import seekable_archive, digest_file, disk_report
+
+
 @contextmanager
 def open_seekable_raw_archive(path):
-    """Inflate gzip once into a disk-backed seekable TAR.
-
-    Replay validates every response and later reads the bodies again in store
-    order. Seeking backwards on a gzip stream repeatedly re-inflates its
-    prefix. Use a temporary file instead; original archive bytes are untouched.
-    """
-    with tempfile.TemporaryFile(mode="w+b") as expanded:
-        with gzip.open(path, "rb") as compressed:
-            shutil.copyfileobj(compressed, expanded, length=1024 * 1024)
-        expanded.seek(0)
-        with tarfile.open(fileobj=expanded, mode="r:") as archive:
-            yield archive
+    """Seek within the compressed archive without expanding it to disk."""
+    with seekable_archive(path) as archive:
+        yield archive
 
 
 def capture_response(directory: Path, filename: str, response) -> str:
@@ -217,7 +211,8 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_facto
 
 def archive_and_upload(root: Path, config: dict, batch: str,
                        stores: list[dict], pages: int, complete: bool,
-                       partial_replayable: bool = False) -> dict:
+                       partial_replayable: bool = False, *,
+                       prepared_archive=None, verified_responses=None) -> dict:
     """Commit unmodified response bodies. Manifest is separate capture metadata."""
     from huggingface_hub import CommitOperationAdd, HfApi
 
@@ -238,10 +233,17 @@ def archive_and_upload(root: Path, config: dict, batch: str,
     if config["hf_repo_id"] != "hub-google/FoodRadar" or folder != "Raw":
         raise ValueError("Raw must go to independent hub-google/FoodRadar dataset /Raw")
     prefix = f"{folder}/{batch}"
-    raw_files = sorted(p for p in root.rglob("*.body") if p.is_file())
-    if not raw_files:
+    if (prepared_archive is None) != (verified_responses is None):
+        raise ValueError("Prepared Raw must have verified responses")
+    if prepared_archive is None:
+        raw_files = sorted(p for p in root.rglob("*.body") if p.is_file())
+        names = [p.relative_to(root).as_posix() for p in raw_files]
+        responses = {name: digest_file(root / name) for name in names}
+    else:
+        responses = verified_responses
+        names = list(responses)
+    if not names:
         raise RuntimeError("No actual response bodies to archive")
-    names = [p.relative_to(root).as_posix() for p in raw_files]
     record = {
         "format": "foodradar-immutable-http-body-v1",
         "batch_id": batch,
@@ -252,18 +254,18 @@ def archive_and_upload(root: Path, config: dict, batch: str,
         "failed_store_uuids": [s["store_uuid"] for s in failed],
         "feed_pages": pages,
         "stores": stores,
-        "responses": {
-            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-            for name in names
-        },
+        "responses": responses,
         "captured_count": len(names),
     }
-    archive_path = root.parent / "raw-capture.tar.gz"
-    # Only lossless compression; original body bytes stay identical inside TAR.
-    with tarfile.open(archive_path, "w:gz") as archive:
-        for path in raw_files:
-            archive.add(path, arcname=path.relative_to(root).as_posix())
-    record["archive_sha256"] = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    if prepared_archive is None:
+        archive_path = root.parent / "raw-capture.tar.gz"
+        # Only lossless compression; original body bytes stay identical inside TAR.
+        with tarfile.open(archive_path, "w:gz") as archive:
+            for path in raw_files:
+                archive.add(path, arcname=path.relative_to(root).as_posix())
+    else:
+        archive_path = Path(prepared_archive)
+    record["archive_sha256"] = digest_file(archive_path)
     record["archive_path"] = f"{prefix}/capture.tar.gz"
     payload = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode()
     operations = [
@@ -281,25 +283,56 @@ def archive_and_upload(root: Path, config: dict, batch: str,
         operations.append(CommitOperationAdd(
             path_in_repo=f"{folder}/latest-partial.json", path_or_fileobj=payload))
     api = HfApi(token=os.environ["HF_TOKEN"])
+    if prepared_archive is not None and api.file_exists(
+            repo_id=config["hf_repo_id"], filename=f"{prefix}/manifest.json", repo_type="dataset"):
+        raise FileExistsError("Refusing to overwrite immutable Raw batch " + batch)
     api.create_commit(
         repo_id=config["hf_repo_id"], repo_type="dataset", operations=operations,
         commit_message=f"FoodRadar immutable Raw API capture {batch}",
     )
-    # Immediately download from the HF folder and verify both archive and members.
-    from huggingface_hub import hf_hub_download
-    downloaded = Path(hf_hub_download(
-        config["hf_repo_id"], record["archive_path"], repo_type="dataset",
-        token=os.environ["HF_TOKEN"],
-    ))
-    if hashlib.sha256(downloaded.read_bytes()).hexdigest() != record["archive_sha256"]:
-        raise ValueError("Uploaded HF Raw archive differs from local capture")
-    with open_seekable_raw_archive(downloaded) as archive:
-        members = {m.name: m for m in archive.getmembers() if m.isfile()}
-        if set(members) != set(record["responses"]):
-            raise ValueError("Uploaded HF Raw body member set mismatch")
-        for name, expected in record["responses"].items():
-            if hashlib.sha256(archive.extractfile(members[name]).read()).hexdigest() != expected:
-                raise ValueError(f"Uploaded HF response body changed: {name}")
+    # The streaming writer already checked every original member. The remote
+    # content SHA256 proves byte-identical publication without a second download.
+    remote_sha = None
+    if prepared_archive is not None:
+        entries = api.get_paths_info(config["hf_repo_id"], [record["archive_path"]],
+                                     repo_type="dataset", expand=True)
+        if len(entries) == 1:
+            lfs = getattr(entries[0], "lfs", None)
+            remote_sha = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+            if remote_sha and getattr(entries[0], "size", None) != archive_path.stat().st_size:
+                raise ValueError("Uploaded HF Raw archive size mismatch")
+    if remote_sha:
+        if remote_sha != record["archive_sha256"]:
+            raise ValueError("Uploaded HF Raw archive SHA256 mismatch")
+        downloaded = archive_path
+    else:
+        from huggingface_hub import hf_hub_download
+        if prepared_archive is not None:
+            # Fallback when HF has no LFS SHA256 metadata: do not retain two
+            # complete compressed copies while downloading the remote object.
+            archive_path.unlink()
+        downloaded = Path(hf_hub_download(
+            config["hf_repo_id"], record["archive_path"], repo_type="dataset",
+            token=os.environ["HF_TOKEN"],
+        ))
+        if digest_file(downloaded) != record["archive_sha256"]:
+            raise ValueError("Uploaded HF Raw archive differs from local capture")
+    if prepared_archive is None:
+        with open_seekable_raw_archive(downloaded) as archive:
+            members = {m.name: m for m in archive.getmembers() if m.isfile()}
+            if set(members) != set(record["responses"]):
+                raise ValueError("Uploaded HF Raw body member set mismatch")
+            for name, expected in record["responses"].items():
+                if hashlib.sha256(archive.extractfile(members[name]).read()).hexdigest() != expected:
+                    raise ValueError(f"Uploaded HF response body changed: {name}")
+    else:
+        stage = Path(prepared_archive).parent
+        (stage / "verified-local.json").write_text(json.dumps({
+            "repo_id": config["hf_repo_id"], "archive_path": record["archive_path"],
+            "sha256": record["archive_sha256"], "local_path": str(downloaded.resolve())}),
+            encoding="utf-8")
+        disk_report("hf_verified", stage, archive_bytes=downloaded.stat().st_size,
+                    remote_sha256_metadata=bool(remote_sha))
     print("HF_IMMUTABLE_RAW_UPLOADED=" + json.dumps({
         "batch": batch, "complete": bool(complete),
         "partial_replayable": bool(partial_replayable),
@@ -334,7 +367,8 @@ def _decode_verified_store(store, canonical_id, batch, body, pages):
 
 
 def documents_from_hf_raw(archive, manifest: dict, *,
-                          quarantined_store_uuids: list[str] | None = None) -> list[dict]:
+                          quarantined_store_uuids: list[str] | None = None,
+                          document_spool=None):
     """Convert verified HF Raw to DB documents without mutating the archive.
 
     Explicitly report empty-menu stores to the caller for safe exclusion.
@@ -381,7 +415,7 @@ def documents_from_hf_raw(archive, manifest: dict, *,
     else:
         successful = all_stores
     batch = manifest["batch_id"]
-    documents = []
+    documents = [] if document_spool is None else document_spool
     canonical_ids = {}
     repaired_url_id_mismatches = 0
     duplicate_canonical_stores = 0
@@ -465,7 +499,7 @@ def documents_from_hf_raw(archive, manifest: dict, *,
     print("FOODRADAR_RAW_DECODE_DETAIL="+json.dumps({"workers":worker_count,
           "decode_wall_seconds":round(perf_counter()-decode_started,3)}),flush=True)
     # Unused evidence (feed, failed requests, historical rechecks) is still verified.
-    for name in expected:
+    for name in members:
         if name not in verified:read_verified(name)
     print("FOODRADAR_RAW_MEMBER_TIMING="+json.dumps({"members":len(verified),"read_and_hash_seconds":round(hash_seconds,3)}),flush=True)
     if len(documents) != len(canonical_ids):

@@ -349,14 +349,20 @@ class CompactCollection:
         previous=self.meta.get("latest_batch","")
         if previous and batch<=previous:raise ValueError("Nonmonotonic compact update")
         by_store={}
-        for doc in docs:
-            sid,_=store_identity(doc)
-            by_store.setdefault(sid,doc)
+        spooled=hasattr(docs,"store_ids")
+        if spooled:
+            for index,sid in enumerate(docs.store_ids):
+                by_store.setdefault(sid,index)
+        else:
+            for doc in docs:
+                sid,_=store_identity(doc)
+                by_store.setdefault(sid,doc)
         excluded=set(excluded)
         if excluded&set(by_store):raise ValueError("Verified and excluded shop overlap")
         from serving_state import DEFAULT_MISSING_THRESHOLD
         counts=Counter()
-        for sid,doc in by_store.items():
+        for sid,value in by_store.items():
+            doc=docs[value] if spooled else value
             part=self.lookup.get(sid)
             if part is None:
                 # Until the current partition reaches its byte budget, add

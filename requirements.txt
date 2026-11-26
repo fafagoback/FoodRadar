@@ -8,3 +8,4 @@ curl_cffi>=0.11,<1
 beautifulsoup4>=4.12,<5
 
 shapely>=2.0,<3
+indexed_gzip>=1.8,<2

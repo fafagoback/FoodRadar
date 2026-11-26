@@ -18,6 +18,7 @@ on:
           - crawl
           - republish
           - full-rebuild
+          - reuse-artifacts
         default: crawl
       discovery_scope:
         description: 'single=原測試座標；taiwan=22縣市368行政區完整座標計畫'
@@ -25,6 +26,10 @@ on:
         type: choice
         options: [single, taiwan]
         default: single
+      replay_run_id:
+        description: 'reuse-artifacts：已完成爬取但彙整失敗的 Run ID'
+        required: false
+        type: string
       confirm_reset:
         description: 'full-rebuild 必須輸入 REBUILD_V2，其餘模式留白'
         required: false
@@ -260,12 +265,13 @@ jobs:
   ingest:
     name: 第十六台｜彙整驗證與發布靜態資料
     needs: [discover_once, crawl_shard, plan_recovery, recover_shard]
-    if: "${{ !cancelled() && ((needs.discover_once.result == 'success' && (needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success'))) || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl'))) }}"
+    if: "${{ !cancelled() && ((needs.discover_once.result == 'success' && (needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success'))) || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')) || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_REPLAY_ARTIFACTS='))) }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 350
     permissions:
       id-token: write
       contents: write
+      actions: read
     environment:
       name: github-pages
     concurrency:
@@ -304,22 +310,31 @@ jobs:
             exit 1
           fi
 
-      - name: 下載各台一次上傳的完整成果與統計
-        if: ${{ needs.discover_once.result == 'success' }}
-        uses: actions/download-artifact@v4
-        with:
-          pattern: fr-worker-${{ needs.discover_once.outputs.epoch }}-*
-          path: data/worker-summaries
-          merge-multiple: false
-      - name: 下載本次驗證過的原始店家清單
-        if: ${{ needs.discover_once.result == 'success' }}
-        uses: actions/download-artifact@v4
-        with:
-          name: foodradar-shared-feed-${{ needs.discover_once.outputs.epoch }}
-          path: data/discovery
-      - name: 驗證共用任務池全部完成且無重複店家，再組裝既有格式
-        if: ${{ needs.discover_once.result == 'success' }}
-        run: python src/dynamic_crawl.py assemble
+      - name: 串流驗證工作機 ZIP 並直接合併上傳 HF Raw
+        if: "${{ needs.discover_once.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'reuse-artifacts') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_REPLAY_ARTIFACTS=')) }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: "${{ secrets.HF_TOKEN }}"
+          SOURCE_RUN_INPUT: ${{ inputs.replay_run_id }}
+          SOURCE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          RUN_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          df -h
+          source_run="$SOURCE_RUN_INPUT"
+          if [[ -z "$source_run" && "$SOURCE_COMMIT_MESSAGE" =~ FR_REPLAY_ARTIFACTS=([0-9]+) ]]; then
+            source_run="${BASH_REMATCH[1]}"
+          fi
+          if [[ "$RUN_MODE" == "reuse-artifacts" && -z "$source_run" ]]; then
+            echo 'reuse-artifacts requires replay_run_id' >&2
+            exit 1
+          fi
+          if [[ -n "$source_run" ]]; then
+            python src/stream_ingest.py --source-run-id "$source_run"
+          else
+            python src/stream_ingest.py
+          fi
+          df -h
 
       - name: 保存所有工作機最大最佳執行緒至 Repo
         if: ${{ success() && needs.discover_once.result == 'success' }}
@@ -327,17 +342,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
         run: python scripts/save_crawl_settings.py
-
-      - name: 交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw
-        if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
-        env:
-          HF_TOKEN: "${{ secrets.HF_TOKEN }}"
-        # Preserve strict per-store verification, discovery coverage and HTTP hashes.
-        # Restore the previously tested fail-closed quarantine policy for known
-        # deterministic catalog gaps only (<=5%, >=50 verified stores).
-        # The failed stores' previous verified state is retained, not overwritten.
-        # Unknown errors and missing or invalid artifacts still abort publication.
-        run: python src/distributed_crawl.py merge --count ${{ needs.discover_once.outputs.batch_count }} --input-dir data/parts --upload --discovery-file data/discovery/discovery.json
 
       - name: 恢復經驗證的 SQLite 加速快取（不影響 HF Raw）
         if: ${{ inputs.mode != 'full-rebuild' }}
