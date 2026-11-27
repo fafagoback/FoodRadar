@@ -10,12 +10,12 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 CRAWL = ".github/workflows/crawl.yml"
-PAGES = ".github/workflows/pages.yml"
+PAGES = ".github/workflows/sqlite-release.yml"
 RAW = re.compile(r"(?:foodradar-shared-feed(?:-[0-9a-f]{16})?|foodradar-raw-shard-(?:[0-9a-f]{16}-)?\d+|fr-task-[0-9a-f]{16}-[0-9a-f-]{36}-[0-9a-f]{32}|fr-worker-[0-9a-f]{16}-\d+(?:-w\d{2})?|fr-(?:plan|section|page|small)-[0-9a-f]{16}-[0-9a-f-]+)")
 CRAWL_REPORTS = {"foodradar-data-validation", "foodradar-run-metrics"}
-PAGE_REPORTS = {"foodradar-deploy-metrics", "foodradar-pages-browser-diagnostics"}
+PAGE_REPORTS = {"fr-single-db-audit"}
 RAW_SAVED = "交叉核對店家覆蓋率與原始 HTTP SHA-256，統一上傳 HF Raw"
-PUBLISHED = "確認線上版本與本次資料批次一致"
+PUBLISHED = "線上再驗收原完整網站與歷史紀錄"
 lock = Lock()
 blocked_until = 0.0
 
@@ -93,10 +93,11 @@ def step_ok(jobs, name):
 
 def active_deploy():
     # A queued/waiting run also blocks deletion of source/Pages artifacts.
-    for status in ("queued", "in_progress", "waiting", "pending", "requested"):
-        data = api(f"/actions/workflows/pages.yml/runs?branch=main&status={status}&per_page=1")
-        if data is None or data.get("workflow_runs"):
-            return True
+    for workflow in ("sqlite-release.yml","db-distributed.yml"):
+        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+            data = api(f"/actions/workflows/{workflow}/runs?branch=main&status={status}&per_page=1")
+            if data is None or data.get("workflow_runs"):
+                return True
     return False
 
 def active_crawl():
@@ -116,7 +117,7 @@ def plan(artifacts, runs, get_jobs, busy):
                and any(a["name"] == "foodradar-static-source" and a.get("size_in_bytes", 0) > 0
                        for a in by_run.get(rid, []))]
     pages = sorted((r for rid, r in runs.items() if completed_main(r) and workflow(r) == PAGES
-                    and any(re.fullmatch(r"github-pages(?:-\d+)?", a["name"])
+                    and any(re.fullmatch(r"fr-hf-sqlite-\d+", a["name"])
                             and a.get("size_in_bytes", 0) > 0 for a in by_run.get(rid, []))),
                    key=lambda r: r["run_number"], reverse=True)
     published = None
@@ -141,16 +142,18 @@ def plan(artifacts, runs, get_jobs, busy):
             continue
         kind = None
         if workflow(r) == CRAWL:
-            if RAW.fullmatch(name) and (r.get("conclusion") == "cancelled" or
-                                       step_ok(get_jobs(rid), RAW_SAVED)):
-                kind = "爬蟲暫存包"
+            if RAW.fullmatch(name) and r.get("conclusion") == "cancelled":
+                # Successful FR Raw artifacts feed the asynchronous DB workflow;
+                # keep their 3-day GitHub retention instead of deleting them
+                # before the 15 DB workers have downloaded them.
+                kind = "已取消爬蟲暫存包"
             elif cutoff is not None and r["run_number"] < cutoff:
                 if name == "foodradar-static-source":
                     kind = "舊網站來源包"
                 elif name in CRAWL_REPORTS:
                     kind = "舊報告包"
         elif workflow(r) == PAGES and published and r["run_number"] < published["run_number"]:
-            if re.fullmatch(r"github-pages(?:-\d+)?", name):
+            if re.fullmatch(r"fr-hf-sqlite-\d+", name):
                 kind = "舊網站部署包"
             elif name in PAGE_REPORTS:
                 kind = "舊報告包"

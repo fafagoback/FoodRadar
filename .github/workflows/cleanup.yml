@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths: ['.github/workflows/cleanup.yml']
   workflow_run:
-    workflows: ["FoodRadar 02｜網站部署"]
+    workflows: ["FR｜單一 SQLite 正式整合與瀏覽器驗收（無爬蟲）"]
     types: [completed]
   schedule:
     - cron: '0 19 * * *'
@@ -19,7 +19,8 @@ permissions:
   contents: read
   actions: write
 concurrency:
-  group: foodradar-artifact-cleanup
+  # Do not rewrite HF history while Pages/SQLite serves a pending release.
+  group: foodradar-pages-deployment
   cancel-in-progress: false
 jobs:
   cleanup:
@@ -34,17 +35,30 @@ jobs:
       - name: 取得程式碼
         uses: actions/checkout@v4
       - name: 安裝 HF 清理所需套件
-        run: python3 -m pip install 'huggingface_hub>=0.30,<2'
+        run: python3 -m pip install -r requirements.txt 'huggingface_hub>=0.30,<2'
       - name: 驗證 60 天 Raw 與歷史提交清理
-        run: python3 -m unittest discover -s tests -p 'test_hf_retention.py' -v
+        run: |
+          python3 -m unittest discover -s tests -p 'test_hf_retention.py' -v
+          python3 -m unittest discover -s tests -p 'test_cleanup_sqlite_previews.py' -v
       - name: 清理歷史 Artifact 並產生中文報告
         env:
           GH_TOKEN: ${{ github.token }}
           FR_CLEANUP_DRY_RUN: ${{ inputs.dry_run || false }}
         run: python3 -u scripts/cleanup_artifacts.py
 
+      - name: 刪除 HF 未被 current/preview 指標引用的舊 SQLite 版本
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FR_CLEANUP_DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          if [[ "$FR_CLEANUP_DRY_RUN" == true ]]; then
+            python3 scripts/cleanup_sqlite_previews.py
+          else
+            python3 scripts/cleanup_sqlite_previews.py --apply
+          fi
+
       - name: HF Raw 僅保留 60 天，清除歷史提交及舊檔案版本
-        if: ${{ !cancelled() }}
+        if: ${{ success() }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           GH_TOKEN: ${{ github.token }}

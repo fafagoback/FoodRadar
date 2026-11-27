@@ -1,0 +1,34 @@
+name: FR｜單次 HF SQLite 舊版本清理與60天歷史壓縮
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fr-hf-prune-once.yml']
+permissions:
+  contents: read
+concurrency:
+  group: foodradar-pages-deployment
+  cancel-in-progress: false
+jobs:
+  clean:
+    name: 已驗證 live DB 保留，刪除未引用 SQL 預覽及提交歷史
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    concurrency:
+      group: foodradar-database-publisher
+      cancel-in-progress: false
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt 'huggingface_hub>=0.30,<2'
+      - name: 禁止刪除正式 SQL/current 與增量 State 的測試
+        run: |
+          python -m unittest discover -s tests -p test_cleanup_sqlite_previews.py -v
+          python -m unittest discover -s tests -p test_hf_retention.py -v
+      - name: 刪除無指標引用的 HF 舊 SQLite 檔案
+        run: python scripts/cleanup_sqlite_previews.py --apply
+      - name: Raw 60天與 HF 版本紀錄清理壓縮
+        run: python src/hf_retention.py cleanup
