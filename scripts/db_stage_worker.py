@@ -53,16 +53,22 @@ def decode_task(folder, claim, batch):
         return None,"promo_unverified"
     raw=folder/"raw"
     hashes=task["responses"]
-    # Verify ALL immutable captured bytes, not only the menu pages used by DB.
+    # Every response is checked once; only required menu bytes are kept in RAM.
+    menu_paths=set()
+    if not store.get("inactive"):
+        menu_paths.add(store["response_path"])
+        menu_paths.update(row["path"] for row in store.get("catalog_responses") or [])
+    bodies={}
     for name,expected in hashes.items():
-        verified_response(raw,name,expected)
-    if store.get("inactive"):
+        body_bytes=verified_response(raw,name,expected)
+        if name in menu_paths:
+            bodies[name]=body_bytes
+    if not menu_paths:
         body=None
         pages=[]
     else:
-        body=verified_response(raw,store["response_path"],hashes[store["response_path"]])
-        pages=[verified_response(raw,row["path"],hashes[row["path"]])
-               for row in store.get("catalog_responses") or []]
+        body=bodies[store["response_path"]]
+        pages=[bodies[row["path"]] for row in store.get("catalog_responses") or []]
     canonical=canonical_store_uuid(store["store_uuid"],store["store_url"])
     if canonical!=sid:
         raise RuntimeError("Canonical store identity changed")
@@ -116,7 +122,6 @@ def work(index,source_run,batch,plan,pool=None):
                 break
     pulse=threading.Thread(target=heartbeat,daemon=True)
     pulse.start()
-    idle_rounds=0
     out_path=output/"documents.jsonl.zst"
     with out_path.open("wb") as compressed:
         with zstd.ZstdCompressor(level=3).stream_writer(compressed,closefd=False) as stream:
@@ -125,14 +130,12 @@ def work(index,source_run,batch,plan,pool=None):
                 response=pool.claim(index,preferred)
                 claim=response.get("claimed")
                 if claim is None:
-                    if response.get("drained"):break
-                    idle_rounds+=1
-                    # Every runner must leave time to upload its completed batch;
-                    # unleased crashed tasks are reclaimed by a recovery wave.
-                    if idle_rounds>=3:break
+                    if response.get("drained"):
+                        break
+                    # Another worker still owns a task. Do not exit early:
+                    # its expired lease must remain available for takeover.
                     time.sleep(3)
                     continue
-                idle_rounds=0
                 source=claim["source"]
                 preferred=source["artifact"]
                 folder=get_artifact(source,root,source_run)
@@ -172,14 +175,32 @@ def finalize(index):
     print(f"FOODRADAR_DB_WORKER_FINALIZED={index}:{count}",flush=True)
 
 
+def heartbeat_until_done(index, done_file):
+    """Keep completed-but-not-uploaded tasks leased across Actions steps."""
+    pool=DBTaskPool()
+    marker=Path(done_file)
+    while not marker.exists():
+        pool.heartbeat(index)
+        for _ in range(25):
+            if marker.exists():
+                return
+            time.sleep(1)
+
+
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument("mode",choices=("worker","finalize"))
+    parser.add_argument("mode",choices=("worker","finalize","heartbeat"))
+    parser.add_argument("--done-file")
     parser.add_argument("--index",type=int,required=True)
     parser.add_argument("--source-run-id")
     parser.add_argument("--batch-id")
     args=parser.parse_args()
     if args.index<1:raise ValueError("DB runner indexes begin at 01")
+    if args.mode=="heartbeat":
+        if not args.done_file:
+            raise ValueError("Heartbeat requires a completion marker")
+        heartbeat_until_done(args.index,args.done_file)
+        return
     if args.mode=="finalize":
         finalize(args.index)
         return
