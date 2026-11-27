@@ -103,7 +103,9 @@ def work(index,source_run,batch,plan,pool=None):
     root.mkdir(parents=True,exist_ok=True)
     output=ROOT/"data"/f"db-worker-{index:02d}"
     output.mkdir(parents=True,exist_ok=False)
-    artifact_name=f"db-worker-{os.environ['GITHUB_RUN_ID']}-{index:02d}"
+    wave=int(os.environ.get("FR_DB_WAVE","0"))
+    artifact_name=(f"db-worker-{os.environ['GITHUB_RUN_ID']}-{index:02d}" +
+                   (f"-w{wave:02d}" if wave else ""))
     sources=plan["artifacts"]
     preferred=sources[(index-1)%len(sources)]
     finished=[]
