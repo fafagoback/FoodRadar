@@ -81,11 +81,26 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     wave = int(os.getenv("FR_CRAWL_WAVE", "0"))
     owner = f"{index}-{uuid.uuid4().hex}"
     # Every store slot is independent. Finished slots immediately take new stores.
-    initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
+    # Production must use the run's value fetched from Supabase.
+    if os.getenv("FR_QUEUE_BACKEND") == "sb":
+        initial = int(os.environ["FOODRADAR_INITIAL_THREADS"])
+    else:
+        initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
     if not valid_threads(initial):
         raise ValueError("Invalid initial thread count")
     ctrl = AdaptiveThreads(initial)
-    ctrl.reset(time.monotonic(), {**global_limiter.snapshot(), "completed_stores": 0})
+    current_snapshot = {**global_limiter.snapshot(), "completed_stores": 0}
+    prior_path = root / "data" / "previous-worker-learning" / "summary.json"
+    if wave > 0 and prior_path.is_file():
+        from dynamic_crawl import validate_learning_summary
+        prior_doc = json.loads(prior_path.read_text(encoding="utf-8"))
+        ctrl.resume(validate_learning_summary(prior_doc, state, index, wave - 1),
+                    time.monotonic(), current_snapshot)
+        print("FOODRADAR_THREAD_LEARNING_RESUMED=" + json.dumps({
+            "worker": index + 1, "wave": wave, "target": ctrl.target,
+            "best": ctrl.best}), flush=True)
+    else:
+        ctrl.reset(time.monotonic(), current_snapshot)
     transport = TransportPool()
     active, finished, uncommitted = {}, {}, {}
     reserved = deque()

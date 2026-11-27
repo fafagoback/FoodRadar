@@ -362,13 +362,6 @@ jobs:
           fi
           df -h
 
-      - name: 保存所有工作機最大最佳執行緒至 Supabase
-        if: ${{ success() && needs.discover_once.result == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FOODRADAR_BATCH_COUNT: ${{ needs.discover_once.outputs.batch_count }}
-        run: python scripts/save_crawl_settings.py
-
       - name: 重用已封存 HF 原始批次（不重新爬取或彙整）
         if: "${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'reuse-hf-raw') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_REPLAY_HF_BATCH=')) }}"
         env:

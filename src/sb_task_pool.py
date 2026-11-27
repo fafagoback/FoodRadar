@@ -179,12 +179,7 @@ class SupabaseQueue:
             raise ValueError("Claim exceeds available slots")
         return jobs,bool(result["drained"])
 
-    def register_catalog(self,sid,token,sections,weights=None):
-        return self._rpc("split",sid=sid,token=token,sections=sections,weights=weights or {})["sections"]
-
-    def register_children(self,sid,key,token,children):
-        children=sorted(set(children))
-        return self._rpc("split",sid=sid,key=key,token=token,sections=children)["sections"]
+    # Whole stores are the only Supabase task unit. Native categories stay local.
 
     def finalize_batch(self,owner,stores,sections,artifact_id,batch_name):
         records=self._records(stores,sections)

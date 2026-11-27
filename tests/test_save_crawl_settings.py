@@ -46,6 +46,14 @@ class SaveCrawlSettingsTests(unittest.TestCase):
         self.assertEqual(value,32)
         q._rpc.assert_not_called()
 
+    def test_learning_committed_before_upload(self):
+        root=Path(__file__).resolve().parents[1]
+        source=(root/"src"/"stream_ingest.py").read_text()
+        self.assertLess(source.index('"save_crawl_settings.py"'),
+                        source.index('    merge_shards(config, parts, count=15'))
+        workflow=(root/".github"/"workflows"/"crawl.yml").read_text()
+        self.assertNotIn("run: python scripts/save_crawl_settings.py",workflow)
+
     def test_invalid_setting_fails_not_falls_back(self):
         q=Mock()
         q._rpc.return_value={"optimal_threads":0}

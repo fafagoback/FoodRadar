@@ -295,6 +295,13 @@ def run(source_run_id=None):
             "worker_waves": summary.get("wave_count", 0), "worker_ips": summary.get("worker_ips", []),
             "artifact_uploads": summary.get("artifact_uploads", 0), "timing": summary.get("timing", {})}
         (folder / "shard.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    # Persist the verified 15-worker learning BEFORE the HF upload.
+    # Replaying old artifacts must not rewrite the current setting.
+    if not reuse and source_run == os.environ.get("GITHUB_RUN_ID"):
+        import subprocess
+        import sys
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "save_crawl_settings.py")],
+                       check=True)
     merge_shards(config, parts, count=15, discovery_file=discovery_file, upload_raw=True,
                  prepared_archive=archive_path, verified_checks=checks_by_worker,
                  batch_override=batch)
