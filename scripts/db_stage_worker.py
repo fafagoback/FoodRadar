@@ -232,8 +232,8 @@ def main():
     if not args.batch_id or len(args.batch_id)!=14 or not args.batch_id.isdecimal():
         raise ValueError("14-digit source batch ID required")
     plan=json.loads((ROOT/"data"/"db-stage-plan.json").read_text(encoding="utf-8"))
-    if plan["source_run_id"]!=args.source_run_id:
-        raise RuntimeError("Plan and source run differ")
+    if plan["source_run_id"]!=args.source_run_id or plan.get("batch_id")!=args.batch_id:
+        raise RuntimeError("DB worker run/batch differs from verified stage-00 plan")
     work(args.index,args.source_run_id,args.batch_id,plan)
 
 
