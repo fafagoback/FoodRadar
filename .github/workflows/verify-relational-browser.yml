@@ -1,0 +1,45 @@
+name: FR SQLite v6｜真實 Chrome 網頁查詢與截圖
+on:
+  push:
+    branches: [feature/shared-relational-sqlite]
+    paths: ['.github/workflows/verify-relational-browser.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  browser:
+    name: 真實瀏覽器直讀 HF SQLite（不碰正式 Pages）
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安裝 SQLite HTTP VFS／測試工具
+        run: npm install --no-save --ignore-scripts sql.js-httpvfs@0.8.12 esbuild@0.27.0 playwright@1.56.1
+      - name: 打包 SQLite WASM 資產（僅程式，不含商品資料）
+        run: |
+          mkdir -p web/vendor
+          npx esbuild web/relational-v6-vfs-entry.js --bundle --format=esm --platform=browser --outfile=web/vendor/relational-vfs.mjs --minify
+          cp node_modules/sql.js-httpvfs/dist/sqlite.worker.js web/vendor/sqlite.worker.js
+          cp node_modules/sql.js-httpvfs/dist/sql-wasm.wasm web/vendor/sql-wasm.wasm
+      - name: 安裝 Chrome
+        run: npx playwright install --with-deps chromium
+      - name: 啟動 GitHub Pages 同型靜態網站
+        run: |
+          (cd web && nohup python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/fr-browser-http.log 2>&1 &)
+          sleep 2
+          curl -fsS http://127.0.0.1:8765/relational-v6-preview.html > /dev/null
+      - name: Chrome 直接查詢 HF 真實 SQLite
+        run: node tests/test_relational_browser.cjs
+      - name: 上傳成功畫面或失敗診斷
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fr-hf-sqlite-chrome-preview
+          path: |
+            fr-hf-sqlite-browser.png
+            fr-hf-sqlite-failure.png
+          if-no-files-found: ignore
+          retention-days: 7
