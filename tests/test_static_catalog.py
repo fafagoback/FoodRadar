@@ -196,6 +196,45 @@ class StaticMigrationTests(unittest.TestCase):
             self.assertEqual(results[0], results[1],
                 "Identical FoodRadar V2 search and spatial shards must be byte-for-byte reproducible")
 
+    def test_adaptive_hash_indexes_preserve_all_keys(self):
+        from collections import defaultdict
+        from unittest.mock import patch
+        from prepare_pages import adaptive_index, hash_bucket
+        first = "key-0"
+        second = next("key-"+str(i) for i in range(1,200000)
+                      if hash_bucket("key-"+str(i),4096)==hash_bucket(first,4096)
+                      and hash_bucket("key-"+str(i),8192)!=hash_bucket(first,8192))
+        groups=defaultdict(dict)
+        values={first:"a"*60, second:"b"*60}
+        groups[hash_bucket(first,4096)].update(values)
+        written=[]
+        def writer(value):
+            written.append(dict(value))
+            return str(len(written)-1)
+        with patch("prepare_pages.MAX_DECOMPRESSED_BYTES",100):
+            count, index=adaptive_index(groups,writer)
+        self.assertEqual(count,8192)
+        for key,value in values.items():
+            self.assertEqual(written[int(index[str(hash_bucket(key,count))])][key],value)
+
+    def test_spooled_products_keep_chunk_and_search_order(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            packed,source=root/"packed.db",root/"serving.db"
+            fixture(packed,source)
+            with patch("build_static_catalog.CHUNK_ROWS", 1):
+                manifest=build(packed,source,root/"data")
+            self.assertEqual(manifest["counts"]["products"],2)
+            self.assertEqual(len(manifest["files"]["products"]),2)
+            def decode(digest):
+                return json.loads(zstd.ZstdDecompressor().decompress(
+                    (root/"data"/"blobs"/(digest+".zst")).read_bytes()))
+            self.assertEqual([decode(h)[0]["product_uuid"] for h in manifest["files"]["products"]],["p0","p1"])
+            self.assertEqual(decode(manifest["files"]["search"][str(bucket("b:雞排"))])["b:雞排"],[0,1])
+            self.assertEqual(len(decode(manifest["files"]["catalog"])),2)
+            self.assertEqual(list((root/"data").glob("fr-static-*")),[])
+
     def test_corrupt_blob_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)

@@ -21,6 +21,38 @@ from build_geo_index import augment_geo_index
 INDEX_CHUNK_ROWS = 1024
 BROWSE_CHUNK_ROWS = 8192
 STORE_CHUNK_ROWS = 256
+# Mirror web/static-catalog.js.
+MAX_BLOB_BYTES = 2 * 1024 * 1024
+MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024
+
+
+def hash_bucket(value, count):
+    digest = hashlib.sha256(str(value).encode("utf-8")).digest()
+    return int.from_bytes(digest[:2], "big") % count if count > 256 else digest[0] % count
+
+
+def adaptive_index(groups, write_hash, *, start=4096):
+    """Uniform hash width understood by the existing browser manifest."""
+    compressor = zstd.ZstdCompressor(level=10, write_content_size=True)
+    count = start
+    while True:
+        oversized = False
+        for values in groups.values():
+            raw = json.dumps(values, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            if len(raw) > MAX_DECOMPRESSED_BYTES or len(compressor.compress(raw)) > MAX_BLOB_BYTES:
+                oversized = True
+                break
+        if not oversized:
+            return count, {str(k):write_hash(v) for k,v in sorted(groups.items())}
+        if count >= 65536:
+            raise ValueError("A browser index exceeds its supported size even after full hash subdivision")
+        count *= 2
+        next_groups = defaultdict(dict)
+        for values in groups.values():
+            for key,value in values.items():
+                next_groups[hash_bucket(key,count)][key] = value
+        groups.clear()
+        groups.update(next_groups)
 
 
 def _paged_manifest(manifest, data):
@@ -51,12 +83,11 @@ def _paged_manifest(manifest, data):
     if len(minis) != manifest["counts"]["products"] or len(stores) != manifest["counts"]["stores"]:
         raise ValueError("Static source counts differ from catalog")
     lookup = defaultdict(dict)
-    def bucket(value, count):
-        digest=hashlib.sha256(str(value).encode("utf-8")).digest()
-        return int.from_bytes(digest[:2],"big") % count if count>256 else digest[0] % count
     for idx, r in enumerate(minis):
         identity=str(r[0])+"\x1f"+str(r[1])
-        lookup[bucket(identity, 4096)][identity] = idx
+        lookup[hash_bucket(identity, 4096)][identity] = idx
+    lookup_count, lookup_hashes = adaptive_index(lookup, write_hash)
+    lookup.clear()
 
     def sort_key(r, sort, idx):
         if sort == "discount_desc": return (-float(r[4] or 0), -float(r[5] or 0), idx)
@@ -147,8 +178,7 @@ def _paged_manifest(manifest, data):
     old_search = list(files["search"].values())
     new_search = defaultdict(dict)
     def wide_bucket(value):
-        digest = hashlib.sha256(str(value).encode("utf-8")).digest()
-        return int.from_bytes(digest[:2], "big") % 4096
+        return hash_bucket(value, 4096)
     for sha in old_search:
         for term, matches in read_hash(sha).items():
             if len(matches) > 1024:
@@ -161,8 +191,8 @@ def _paged_manifest(manifest, data):
             else:
                 record = matches
             new_search[wide_bucket(term)][term] = record
-    files["search"] = {str(k):write_hash(v) for k,v in sorted(new_search.items())}
-    manifest["search_buckets"] = 4096
+    manifest["search_buckets"], files["search"] = adaptive_index(new_search, write_hash)
+    new_search.clear()
 
     # History used to share 128 very large buckets; redistribute by store ID.
     old_history = list(files["history"].values())
@@ -170,8 +200,8 @@ def _paged_manifest(manifest, data):
     for sha in old_history:
         for compound, events in read_hash(sha).items():
             new_history[wide_bucket(compound)][compound] = events
-    files["history"] = {str(k):write_hash(v) for k,v in sorted(new_history.items())}
-    manifest["history_buckets"] = 4096
+    manifest["history_buckets"], files["history"] = adaptive_index(new_history, write_hash)
+    new_history.clear()
 
     # A store-name search must not scan every national store-view page.
     store_index = defaultdict(lambda: defaultdict(list))
@@ -181,20 +211,20 @@ def _paged_manifest(manifest, data):
         text = " ".join([str(store.get(k) or "") for k in ("name","locality","address")])
         for term in sorted(terms(text)):
             store_index[wide_bucket(term)][term].append(index)
-    files["store_search"] = {
-        str(k):write_hash(v) for k,v in sorted(store_index.items())}
+    store_search_count, files["store_search"] = adaptive_index(store_index, write_hash)
+    store_index.clear()
     files["store_catalog"] = chunks(stores,STORE_CHUNK_ROWS)
 
     old_catalog, old_stores = files["catalog"], files["stores"]
     files["catalog"] = chunks(minis, INDEX_CHUNK_ROWS)
     files["browse"] = browse
     files["store_browse"] = store_browse
-    files["lookup"] = {str(k):write_hash(v) for k,v in sorted(lookup.items())}
+    files["lookup"] = lookup_hashes
     files.pop("stores",None)
     manifest = {**manifest, "schema":"foodradar-static-v2", "files":files,
                 "index_chunk_rows":INDEX_CHUNK_ROWS,
-                "browse_chunk_rows":BROWSE_CHUNK_ROWS, "lookup_buckets":4096,
-                "store_chunk_rows":STORE_CHUNK_ROWS,"store_search_buckets":4096}
+                "browse_chunk_rows":BROWSE_CHUNK_ROWS, "lookup_buckets":lookup_count,
+                "store_chunk_rows":STORE_CHUNK_ROWS,"store_search_buckets":store_search_count}
     references = set(files["catalog"] + files["products"] + files["store_catalog"] +
                      list(files["store_search"].values()) + list(files["search"].values()) +
                      list(files["history"].values()) + list(files["lookup"].values()))
@@ -208,8 +238,13 @@ def _paged_manifest(manifest, data):
     if manifest["bytes"] > 750 * 1024 * 1024:
         raise ValueError("Paged site exceeds static hosting size limit")
     for digest in references:
-        if (blobs/(digest+".zst")).stat().st_size > 2 * 1024 * 1024:
-            raise ValueError("Oversized search index shard: require narrower source sharding")
+        path = blobs/(digest+".zst")
+        if path.stat().st_size > MAX_BLOB_BYTES:
+            raise ValueError("Oversized browser blob: " + digest)
+        with path.open("rb") as stream:
+            header = stream.read(18)
+        if zstd.frame_content_size(header) > MAX_DECOMPRESSED_BYTES:
+            raise ValueError("Oversized decoded browser blob: " + digest)
     return manifest
 
 
@@ -273,6 +308,11 @@ def prepare(web_dir, source_dir, commit=None):
         manifest = _paged_manifest(manifest, data)
     manifest = augment_geo_index(manifest, data)
     print("FOODRADAR_FINAL_PAGES_DATA_BYTES=" + str(manifest["bytes"]), flush=True)
+    # Include all geo shards, not just the pre-geo source size.
+    refs = referenced_blobs(manifest)
+    actual = sum((target / (h + ".zst")).stat().st_size for h in refs)
+    if actual != manifest["bytes"]:
+        raise ValueError("Final Pages data bytes differ from manifest")
     (data/"manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),encoding="utf-8")
     commit = (commit or os.getenv("GITHUB_SHA") or "").strip()
     if not commit:

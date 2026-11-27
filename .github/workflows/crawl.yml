@@ -64,6 +64,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      # Includes bounded-memory nationwide static catalog and geo-index regressions.
       - name: 驗證學習與設定持久化
         run: |
           python -m unittest discover -s tests -p test_adaptive_threads.py -v
