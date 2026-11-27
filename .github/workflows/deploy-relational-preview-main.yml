@@ -1,0 +1,125 @@
+name: FR｜SQLite 公開測試入口（原網站保留）
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/deploy-relational-preview-main.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+concurrency:
+  group: foodradar-pages-deployment
+  cancel-in-progress: false
+jobs:
+  deploy:
+    name: 真實 Chrome 通過後發布既有 FR 網站＋SQLite 測試入口
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      SOURCE_RUN: '45939507529'
+      SOURCE_SHA: 'c26ce1431fd4f21a0322df61755a54f19449ba2b'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/shared-relational-sqlite
+      - name: 驗證原版 FR 來源 Artifact 已通過
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=$(gh run view "$SOURCE_RUN" --json status,conclusion,headSha --jq '[.status,.conclusion,.headSha]|join("|")')
+          test "$state" = "completed|success|$SOURCE_SHA"
+          mkdir -p pages-static-source
+          gh run download "$SOURCE_RUN" --name foodradar-static-source --dir pages-static-source
+          test -s pages-static-source/current.json
+          test -d pages-static-source/blobs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 維持現有正式網站資料與版型
+        env:
+          GITHUB_SHA: c26ce1431fd4f21a0322df61755a54f19449ba2b
+        run: |
+          pip install 'zstandard>=0.23,<1' 'msgpack>=1,<2'
+          python scripts/configure_web.py
+          python scripts/prepare_pages.py --staging pages-static-source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 打包網頁 SQLite 唯讀程式（不儲存第三份商品資料）
+        run: |
+          npm install --no-save --ignore-scripts sql.js-httpvfs@0.8.12 esbuild@0.27.0 playwright@1.65.1
+          mkdir -p web/vendor
+          npx esbuild web/relational-v6-vfs-entry.js --bundle --format=esm --platform=browser --outfile=web/vendor/relational-vfs.mjs --minify
+          cp node_modules/sql.js-httpvfs/dist/sqlite.worker.js web/vendor/sqlite.worker.js
+          cp node_modules/sql.js-httpvfs/dist/sql-wasm.wasm web/vendor/sql-wasm.wasm
+      - name: 先以真實 Chrome 驗證 HF SQLite 查詢
+        run: |
+          npx playwright install --with-deps chromium
+          (cd web && nohup python3 -m http.server 8765 --bind 127.0.0.1 >/tmp/fr-site-preview.log 2>&1 &)
+          sleep 3
+          curl -fsS http://127.0.0.1:8765/index.html >/dev/null
+          curl -fsS http://127.0.0.1:8765/data/manifest.json >/dev/null
+          node tests/test_relational_browser_v9.cjs
+      - name: 保護現有網站資料版本不被舊版覆蓋
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.request import Request,urlopen
+          expected=json.loads(Path('web/version.json').read_text())
+          current=json.loads(urlopen(Request(
+             'https://fafagoback.github.io/FoodRadar/version.json?fr_sqlite_preview=1',
+             headers={'Cache-Control':'no-cache'}),timeout=20).read())
+          print('PUBLIC_VERSION=',current)
+          print('CANDIDATE_VERSION=',expected)
+          if str(current.get('batch') or '') > str(expected.get('batch') or ''):
+              raise RuntimeError('Refusing stale Pages snapshot')
+          PY
+      - uses: actions/configure-pages@v5
+      - name: 打包已驗證網站與 SQLite 測試入口
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+          name: github-pages-relational-${{ github.run_attempt }}
+      - name: 發布 GitHub Pages（保留原首頁）
+        uses: actions/deploy-pages@v4
+        id: deployment
+        with:
+          artifact_name: github-pages-relational-${{ github.run_attempt }}
+      - name: 以真實 Chrome 驗收線上公開網頁
+        env:
+          FR_TEST_BASE: https://fafagoback.github.io/FoodRadar/
+        run: node tests/test_relational_browser_v9.cjs
+      - name: 查核公開 SQL 測試入口
+        run: |
+          python - <<'PY'
+          import time
+          from urllib.request import Request,urlopen
+          target='https://fafagoback.github.io/FoodRadar/relational-v9-preview.html'
+          for attempt in range(18):
+              try:
+                  with urlopen(Request(target,headers={'Cache-Control':'no-cache'}),timeout=20) as res:
+                      html=res.read().decode('utf-8')
+                  if res.status==200 and 'HF SQLite 遠端讀取驗證' in html and 'relational-v9-preview.js' in html:
+                      print('FR_SQLITE_PUBLIC_PREVIEW=',target)
+                      break
+              except Exception as error:print(type(error).__name__,str(error)[:90])
+              time.sleep(5)
+          else:raise RuntimeError('FR SQLite public preview was not visible after deployment')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fr-relational-public-preview-chrome
+          path: |
+            fr-hf-sqlite-browser.png
+            fr-hf-sqlite-failure.png
+          if-no-files-found: ignore
+          retention-days: 7
