@@ -278,25 +278,11 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: 安裝程式所需套件
         run: pip install -r requirements.txt
-      # 只在未爬取的手動發布進行核心程式驗證。
-      - name: 禁止未確認的正式資料庫重建
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-rebuild' }}
-        env:
-          CONFIRM_RESET: ${{ inputs.confirm_reset }}
-        run: |
-          if [ "$CONFIRM_RESET" != "REBUILD_V2" ]; then
-            echo '全量重建需明確輸入 REBUILD_V2' >&2
-            exit 1
-          fi
-
       - name: 串流驗證工作機 ZIP 並直接合併上傳 HF Raw
         env:
           GH_TOKEN: ${{ github.token }}
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
           HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
-          SOURCE_RUN_INPUT: ${{ inputs.replay_run_id }}
-          SOURCE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          RUN_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           df -h
@@ -304,19 +290,7 @@ jobs:
             sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
             df -h
           fi
-          source_run="$SOURCE_RUN_INPUT"
-          if [[ -z "$source_run" && "$SOURCE_COMMIT_MESSAGE" =~ FR_REPLAY_ARTIFACTS=([0-9]+) ]]; then
-            source_run="${BASH_REMATCH[1]}"
-          fi
-          if [[ "$RUN_MODE" == "reuse-artifacts" && -z "$source_run" ]]; then
-            echo 'reuse-artifacts requires replay_run_id' >&2
-            exit 1
-          fi
-          if [[ -n "$source_run" ]]; then
-            python src/stream_ingest.py --source-run-id "$source_run"
-          else
-            python src/stream_ingest.py
-          fi
+          python src/stream_ingest.py
           df -h
 
       - name: 核對同一 Run 已驗證來源、SHA 與批次

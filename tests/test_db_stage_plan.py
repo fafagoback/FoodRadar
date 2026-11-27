@@ -1,7 +1,7 @@
 """Prevent mixing old HF Raw batches with newer crawler artifacts."""
 from __future__ import annotations
-import sys, unittest
-from unittest.mock import patch
+import sys, unittest, os
+from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -43,6 +43,26 @@ class SourceBatchTests(unittest.TestCase):
             {"artifacts":[{"name":"fr-worker-r-00","size_in_bytes":0,"expired":False}]}]
         with self.assertRaisesRegex(RuntimeError,"Empty source artifact"):
             source_artifacts("46023983182","token","fafagoback/FoodRadar")
+
+    @patch.dict(os.environ, {"FR_DB_SAME_RUN":"1","GITHUB_RUN_ID":"555","GITHUB_SHA":"a"*40})
+    @patch("db_stage_plan.github_get")
+    def test_same_run_stage16_may_seed_before_crawler_action_finishes(self,get):
+        # The completed stage-16 receipt is verified before the entire Action completes.
+        get.side_effect=[
+            {"id":555,"status":"in_progress","head_branch":"main",
+             "head_sha":"a"*40,"conclusion":None},
+            {"artifacts":[{"name":"fr-worker-test-01","size_in_bytes":924,"expired":False}]}]
+        run,names=source_artifacts("555","token","fafagoback/FoodRadar")
+        self.assertEqual(run["status"],"in_progress")
+        self.assertEqual(names,["fr-worker-test-01"])
+
+    @patch.dict(os.environ, {"FR_DB_SAME_RUN":"1","GITHUB_RUN_ID":"555","GITHUB_SHA":"a"*40})
+    @patch("db_stage_plan.github_get")
+    def test_foreign_active_run_cannot_seed_same_run_pool(self,get):
+        get.return_value={"id":556,"status":"in_progress","head_branch":"main",
+                          "head_sha":"a"*40,"conclusion":None}
+        with self.assertRaisesRegex(RuntimeError,"Source crawl"):
+            source_artifacts("556","token","fafagoback/FoodRadar")
 
     def test_unrelated_workflow_rejected(self):
         self.run["path"]=".github/workflows/db-stage.yml"

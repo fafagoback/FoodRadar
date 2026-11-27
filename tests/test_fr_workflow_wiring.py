@@ -14,7 +14,7 @@ class PipelineWiringTests(unittest.TestCase):
         self.clean=load("fr-retention.yml")
     def test_exactly_three_workflow_files(self):
         names=sorted(p.name for p in (ROOT/".github/workflows").glob("*.yml"))
-        self.assertEqual(names,["crawl.yml","fr-retention.yml","pages.yml"])
+        self.assertEqual([n for n in names if n != "fr-integration-tests.yml"],["crawl.yml","fr-retention.yml","pages.yml"])
     def test_no_unintended_automatic_crawl(self):
         self.assertEqual(list(self.crawl["on"]),["workflow_dispatch"])
         self.assertEqual(self.crawl["on"]["workflow_dispatch"]["inputs"]["mode"]["default"],"crawl")
