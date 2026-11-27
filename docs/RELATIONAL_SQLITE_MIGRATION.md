@@ -70,5 +70,8 @@ A separate proxy or another read protocol would need a new review.
 5. Retire old HF compact checkpoint and Pages data only after remote DB is
    proven complete and the rollback window is finished.
 
-This candidate does not yet implement the browser adapter or HF production
-publisher. It is not a replacement for the production FR/FRT data pipeline.
+A guarded two-phase HF publisher is available as scripts/publish_relational_db.py:
+It uploads only with --upload, verifies the remote byte length, and switches
+DB/current.json only after staging an immutable version. Do not pass --upload
+until browser and production volume tests are accepted. The browser adapter is
+NOT implemented, and this is NOT a replacement for FR/FRT production yet.
