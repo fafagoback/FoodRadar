@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import urllib.request
+import tempfile
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -49,6 +50,25 @@ def smoke(run_id,batch,repo,token):
         if doc is not None:
             if doc["batch_id"]!=batch:
                 raise RuntimeError("Wrong decoded batch")
+            # Real one-shop lifecycle, including native price evidence,
+            # compact encoding and weekly ABA, without HF writes.
+            from state_checkpoint import new_direct
+            with tempfile.TemporaryDirectory(prefix="frt-db-one-shop-") as temp:
+                state=new_direct(Path(temp)/"checkpoint")
+                try:
+                    counts=state.apply_batch([doc],batch)
+                    weekly=state.refresh_weekly(batch)
+                    evidence=state.stats()
+                    if evidence["stores"]!=1:
+                        raise RuntimeError("Real one-shop DB did not retain store")
+                    if state.parts[0].conn.execute("PRAGMA quick_check").fetchone()[0]!="ok":
+                        raise RuntimeError("One-shop compact SQLite failed quick_check")
+                    print("FOODRADAR_DB_REAL_SHOP_LIFECYCLE="+json.dumps({
+                        "store":sid,"products":evidence["products"],
+                        "observations":evidence["observations"],
+                        "weekly":weekly,"counts":counts}),flush=True)
+                finally:
+                    state.close()
             decoded+=1
             break
         failures.append(reason)
