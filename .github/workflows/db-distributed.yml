@@ -1,0 +1,134 @@
+name: FoodRadar DB｜既有資料15台分散運算
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: '已完成的原始爬蟲 Run ID'
+        required: true
+        type: string
+      batch_id:
+        description: '同一次爬蟲的 HF Raw 14 碼批次'
+        required: true
+        type: string
+      apply:
+        description: '驗證通過後更新正式 HF compact checkpoint（不部署網站）'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+concurrency:
+  group: foodradar-database-publisher
+  cancel-in-progress: false
+env:
+  GH_TOKEN: ${{ github.token }}
+  SOURCE_RUN: ${{ inputs.source_run_id }}
+  BATCH: ${{ inputs.batch_id }}
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    name: 第16台｜確認 HF Raw 並建立 DB 共用任務池
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 確認既有 HF Raw，不重新爬取
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/db_stage_hf.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
+      - name: 建立獨立 DB 任務池
+        run: python scripts/db_stage_plan.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fr-db-plan
+          path: data/db-stage-plan.json
+          retention-days: 3
+          if-no-files-found: error
+  workers:
+    name: DB 工作機 ${{ matrix.index }}
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    env:
+      INDEX: ${{ matrix.index }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: fr-db-plan
+          path: data
+      - name: 從共用工作池逐一領取店家並解析
+        id: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=$(printf 'db-worker-%s-%02d' "$GITHUB_RUN_ID" "$INDEX")
+          folder=$(printf 'data/db-worker-%02d' "$INDEX")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+          python scripts/db_stage_worker.py worker --index "$INDEX" --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
+          nohup python scripts/db_stage_worker.py heartbeat --index "$INDEX" --done-file "$RUNNER_TEMP/fr-db-finalized" > "$RUNNER_TEMP/fr-db-heartbeat.log" 2>&1 < /dev/null &
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.worker.outputs.name }}
+          path: ${{ steps.worker.outputs.folder }}
+          retention-days: 3
+          if-no-files-found: error
+      - name: 確認已持久化資料
+        run: python scripts/db_stage_worker.py finalize --index "$INDEX"
+      - name: 停止租約心跳
+        if: always()
+        run: touch "$RUNNER_TEMP/fr-db-finalized"
+  merge:
+    name: 第17台｜驗證結果及選擇性更新 checkpoint
+    needs: [plan, workers]
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: fr-db-plan
+          path: data
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: db-worker-${{ github.run_id }}-*
+          path: data/db-artifacts
+          merge-multiple: false
+      - name: 驗證完整店家名冊及 5% 容錯規則
+        run: python scripts/db_stage_merge.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH" --verify-only
+      - name: 選擇正式更新時才寫入 HF
+        if: inputs.apply
+        run: |
+          python src/hf_retention.py restore
+          python scripts/db_stage_merge.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
+      - name: 建立及檢查 SQLite v9 候選資料庫
+        if: inputs.apply
+        run: |
+          python scripts/build_relational_overlay_v9.py --output data/relational-overlay-v9.db --report data/relational-v9-audit.json
+          python scripts/publish_relational_overlay_v9.py --file data/relational-overlay-v9.db
+      - uses: actions/upload-artifact@v4
+        if: inputs.apply
+        with:
+          name: fr-db-relational-audit
+          path: data/relational-v9-audit.json
+          retention-days: 7
+          if-no-files-found: error

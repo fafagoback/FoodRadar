@@ -10,6 +10,10 @@ on:
       - 'scripts/db_stage_*.py'
       - 'tests/test_db_task_pool.py'
       - 'tests/test_db_stage_integration.py'
+      - 'src/relational_*.py'
+      - 'scripts/build_relational_*.py'
+      - 'tests/test_relational_overlay_v9.py'
+      - '.github/workflows/db-distributed.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -38,3 +42,7 @@ jobs:
           python -m unittest discover -s tests -p test_db_checkpoint_reshard_migration.py -v
           python -m unittest discover -s tests -p test_incremental_checkpoint.py -v
           PYTHONPATH=src python -c 'from state_checkpoint import direct_contract_digest; print("FOODRADAR_CURRENT_DIRECT_DIGEST="+direct_contract_digest())'
+
+          python -m unittest discover -s tests -p test_relational_overlay_v9.py -v
+          python -m py_compile src/relational_overlay_v9.py scripts/build_relational_overlay_v9.py scripts/publish_relational_overlay_v9.py
+          node --input-type=module --check < web/relational-v9-preview.js

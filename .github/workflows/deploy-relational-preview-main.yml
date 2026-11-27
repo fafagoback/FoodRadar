@@ -1,8 +1,5 @@
 name: FR｜SQLite 公開測試入口（原網站保留）
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/deploy-relational-preview-main.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,6 +12,7 @@ concurrency:
 jobs:
   deploy:
     name: 真實 Chrome 通過後發布既有 FR 網站＋SQLite 測試入口
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment:
@@ -25,8 +23,6 @@ jobs:
       SOURCE_SHA: 'c26ce1431fd4f21a0322df61755a54f19449ba2b'
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: feature/shared-relational-sqlite
       - name: 驗證原版 FR 來源 Artifact 已通過
         env:
           GH_TOKEN: ${{ github.token }}
