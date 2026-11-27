@@ -1,0 +1,58 @@
+name: FR SQLite v8｜發布 HF 測試版 DB（不爬取）
+on:
+  push:
+    branches: [feature/shared-relational-sqlite]
+    paths: ['.github/workflows/publish-relational-preview-v8.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fr-relational-sqlite-preview-only
+  cancel-in-progress: true
+jobs:
+  preview:
+    name: 用已驗證 FR 資料建置並發布 HF SQLite 測試版本
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝資料庫套件
+        run: pip install 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1' 'msgpack>=1,<2'
+      - name: 單元測試
+        run: python -m unittest discover -s tests -p test_relational_overlay_v8.py -v
+      - name: 從 HF 還原已驗證的原版資料
+        run: python src/hf_retention.py restore
+      - name: FR 正規化 DB 建置（原始 DB 不變）
+        run: python scripts/build_relational_overlay_v8.py --checkpoint data/state-checkpoint --output data/relational-overlay-v8.db --report data/fr-v6-size.json
+      - name: 檢查 DB 版本、筆數、SQL 完整性
+        run: python scripts/publish_relational_overlay_v8.py --file data/relational-overlay-v8.db
+      - name: 上傳新版 HF DB 到測試路徑
+        run: python scripts/publish_relational_overlay_v8.py --file data/relational-overlay-v8.db --publish
+      - name: 驗證網頁 HTTP Range 可讀性
+        run: |
+          python - <<'PY'
+          import json,urllib.request
+          base='https://huggingface.co/datasets/hub-google/FoodRadar/resolve/main/'
+          origin='https://fafagoback.github.io'
+          request=urllib.request.Request(base+'DB/preview.json',
+             headers={'Origin':origin,'Cache-Control':'no-cache'})
+          with urllib.request.urlopen(request,timeout=30) as f:
+              assert f.status==200
+              meta=json.load(f)
+          assert meta['format']=='foodradar-relational-overlay-v8'
+          req=urllib.request.Request(base+meta['path'],headers={'Range':'bytes=0-1023',
+              'Origin':origin})
+          with urllib.request.urlopen(req,timeout=40) as f:
+              payload=f.read(1025)
+              print('FR_HF_PREVIEW_HTTP_RANGE=',json.dumps(
+                {'status':f.status,'range':f.headers.get('Content-Range'),
+                 'cors':f.headers.get('Access-Control-Allow-Origin'),
+                 'length':len(payload)},ensure_ascii=False))
+              assert f.status==206 and len(payload)==1024
+              assert f.headers.get('Access-Control-Allow-Origin') in ('*',origin)
+          PY
