@@ -1,0 +1,113 @@
+name: FR｜單一 SQLite 正式整合與瀏覽器驗收（無爬蟲）
+run-name: FR SQL｜共用商品、60天歷史、原首頁查詢及正式部署
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/sqlite-release.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: foodradar-pages-deployment
+  cancel-in-progress: true
+jobs:
+  release:
+    name: 單一資料庫及完整網站驗收成功後才上線
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: 取得程式（絕不開啟任何 UE 爬蟲）
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝現有資料庫程式
+        run: pip install -r requirements.txt 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1' 'msgpack>=1,<2'
+      - name: 先驗證關聯共用與60天原始歷史不變
+        run: |
+          python -m unittest discover -s tests -p 'test_relational_overlay_v9.py' -v
+          python -m unittest discover -s tests -p 'test_hf_retention.py' -v
+      - name: 從 HF 恢復已驗證資料庫（完全不發 UE 請求）
+        run: python src/hf_retention.py restore
+      - name: 正規化商品與價格，保留所有店家原生紀錄
+        run: |
+          python scripts/build_relational_overlay_v9.py --checkpoint data/state-checkpoint --output data/relational-release.db --report data/relational-build.json
+      - name: 去掉重複 SQL 索引並將編碼轉為瀏覽器可讀
+        run: |
+          python scripts/slim_relational_sqlite.py --database data/relational-release.db
+          python scripts/publish_relational_overlay_v9.py --file data/relational-release.db
+      - name: 先發布不可變 SQL 候選檔到 HF（不變更現有網站）
+        run: python scripts/publish_relational_overlay_v9.py --file data/relational-release.db --publish
+      - name: Node 與唯讀 SQLite WASM
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 編譯唯讀 SQL VFS 並驗證原網站 JavaScript
+        run: |
+          npm install --no-save --ignore-scripts sql.js-httpvfs@0.8.12 esbuild@0.27.0 playwright@1.65.1
+          mkdir -p web/vendor
+          npx esbuild web/relational-v6-vfs-entry.js --bundle --format=esm --platform=browser --outfile=web/vendor/relational-vfs.mjs --minify
+          cp node_modules/sql.js-httpvfs/dist/sqlite.worker.js web/vendor/sqlite.worker.js
+          cp node_modules/sql.js-httpvfs/dist/sql-wasm.wasm web/vendor/sql-wasm.wasm
+          node --check web/app.js
+          node --check web/sqlite-catalog.js
+          node --check web/sqlite-storage.js
+          npx playwright install --with-deps chromium
+      - name: 設定單一 SQLite 預覽入口（不產生第三份網站商品資料）
+        run: python scripts/configure_sqlite_site.py --pointer DB/preview.json
+      - name: 以原生批次設定首頁版本並防止資料回退
+        run: |
+          batch=$(python - <<'PY'
+          import sqlite3,json
+          with sqlite3.connect("data/relational-release.db") as db:
+              print(json.loads(db.execute("SELECT value FROM relational_meta WHERE key='batch'").fetchone()[0]))
+          PY
+          )
+          python scripts/build_sqlite_site_version.py --batch "$batch"
+      - name: Chrome 先驗證全部首頁 API、查詢、歷史與 SQLite CORS
+        run: |
+          (cd web && nohup python3 -m http.server 8765 --bind 127.0.0.1 >/tmp/fr-sqlite-http.log 2>&1 &)
+          sleep 3
+          curl -fsS http://127.0.0.1:8765/index.html >/dev/null
+          node tests/test_relational_browser_v9.cjs
+          node tests/test_relational_main_browser.cjs
+      - name: 網站驗收過關後才啟用新的 HF DB/current.json
+        run: python scripts/activate_relational_sqlite.py
+      - name: 新站切換正式 DB（仍然零 Pages 商品資料）
+        run: python scripts/configure_sqlite_site.py --pointer DB/current.json
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+      - name: 上傳僅有網頁、程式、SQLite WASM 的 Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+          name: fr-hf-sqlite-${{ github.run_attempt }}
+      - name: 正式部署
+        uses: actions/deploy-pages@v4
+        id: deployment
+        with:
+          artifact_name: fr-hf-sqlite-${{ github.run_attempt }}
+      - name: 線上再驗收原完整網站與歷史紀錄
+        env:
+          FR_TEST_BASE: https://fafagoback.github.io/FoodRadar/
+        run: node tests/test_relational_main_browser.cjs
+      - name: 只保存短期測試結果，不保存重複商品資料
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-single-db-audit
+          path: |
+            data/relational-build.json
+            fr-sqlite-full-site.png
+            fr-sqlite-full-site-failure.png
+            fr-hf-sqlite-browser.png
+          if-no-files-found: ignore
+          retention-days: 5

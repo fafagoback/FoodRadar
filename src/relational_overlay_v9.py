@@ -8,6 +8,7 @@ the existing global dictionary. No crawl or HF write occurs here.
 """
 from __future__ import annotations
 from collections import Counter, defaultdict
+from datetime import datetime,timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 import json
@@ -116,6 +117,13 @@ def build(collection, target, *, source_bytes=None):
                 # full price rows. Names come from the existing dictionary;
                 # prices from the SQL price_terms table.
                 fast_shops=[]
+                rows=(collection.batch_rows() if hasattr(collection,"batch_rows") else
+                    [(collection.meta["latest_batch"],datetime.strptime(
+                        collection.meta["latest_batch"],"%Y%m%d%H%M%S").isoformat())])
+                times=[str(row[1]) for row in rows if row[1]]
+                if not times:raise ValueError("Verified source has no batch times")
+                earliest,latest=min(times),max(times)
+                week_cutoff=(datetime.fromisoformat(latest)-timedelta(days=7)).isoformat()
                 compressor=zstd.ZstdCompressor(level=12,write_content_size=True)
                 # Stable, local integer IDs yield compact foreign keys.
                 for store,products,quotes in collection.shops():
@@ -139,7 +147,8 @@ def build(collection, target, *, source_bytes=None):
                         store.get("longitude"),store.get("rating"),
                         store.get("review_count"),
                         int(store.get("status")=="active"),
-                        store.get("first_seen"),store.get("last_seen"),[]]
+                        store.get("first_seen"),store.get("last_seen"),[],
+                        store.get("address"),store.get("order_url")]
                     fast_shops.append(quick_store)
                     seen=set()
                     for ordinal,item in enumerate(products):
@@ -180,14 +189,43 @@ def build(collection, target, *, source_bytes=None):
                               int(bool(item.get("promo_type") not in (None,"","NONE","無"))),
                               item.get("seven_day_discount_pct") or 0,
                         ))
-                        flags=(int(item.get("status")=="active") |
-                            (int(bool(item.get("seven_day_is_price_deal")))<<1) |
-                            (int(bool(item.get("is_price_drop")))<<2) |
-                            (int(bool(item.get("delivery_available")))<<3))
+                        native=item.get("price_evidence_status")=="VERIFIED_MENU"
+                        stock=json.loads(item.get("catalog_web") or "{}")
+                        if not isinstance(stock,dict):stock={}
+                        open_menu=(store.get("last_seen")==latest and item.get("last_seen")==latest
+                            and int(store.get("is_open") or 0)==1
+                            and int(item.get("is_open") or 0)==1 and native)
+                        verified=(open_menu and int(item.get("delivery_available") or 0)==1
+                            and stock.get("is_sold_out") is not True
+                            and stock.get("is_available") is not False)
+                        raw_price=float(item.get("menu_quote_price") or item.get("price") or 0)
+                        verified_price=float(item.get("menu_quote_effective_price") or 0) if native else 0
+                        effective=verified_price if verified_price>0 else raw_price
+                        price_normal=float(item.get("price") or 0)
+                        ref=float(item.get("seven_day_reference_price") or 0)
+                        percent=float(item.get("seven_day_discount_pct") or 0) if open_menu else 0
+                        drop=bool(open_menu and percent>0 and ref>effective)
+                        price_current=bool(verified and price_normal>0)
+                        ptype=item.get("menu_quote_promo_type") or item.get("promo_type")
+                        platform=bool(native and float(item.get("verified_discount_pct") or 0)>0
+                            and (re.fullmatch(r"買[0-9]+送[0-9]+",str(ptype or ""))
+                                 or ptype=="直接折價"))
+                        listed=str(item.get("listing_started_at") or item.get("first_seen") or "")
+                        new_item=bool(listed[:10]>earliest[:10]
+                            and listed[:10]>str(store.get("first_seen") or "")[:10]
+                            and listed>=week_cutoff)
+                        searchable=(store.get("status")=="active"
+                            and item.get("status")=="active" and effective>0
+                            and int(store.get("is_open") or 0)==1
+                            and int(item.get("is_open") or 0)==1)
+                        flags=(int(searchable) | (int(drop and price_current and bool(item.get("seven_day_is_price_deal")))<<1)
+                            | (int(drop and price_current)<<2) | (int(price_current)<<3))
                         quick_store[11].append([ordinal,key[0],key[1],price_id,
-                            flags,item.get("seven_day_discount_pct") or 0,
-                            item.get("seven_day_discount_amount") or 0,
-                            str(item.get("first_seen") or "")[:10]])
+                            flags,percent if drop else 0,
+                            float(item.get("seven_day_discount_amount") or 0) if drop else 0,
+                            str(item.get("first_seen") or "")[:10],
+                            int(new_item),int(platform and price_current),
+                            int((platform or drop) and price_current),str(ptype or "")])
                         counts["links"]+=1
                     # Check only. Price evidence stays in the original compressed
                     # price_history table unchanged, not expanded per observation.

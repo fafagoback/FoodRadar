@@ -307,7 +307,7 @@ let discountsSearchSequence = 0;
 let newProductsSearchSequence = 0;
 let promotionsRequestSequence = 0;
 async function getPackedTursoClient() {
-  if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import((window.UBER_RADAR_CONFIG?.ENABLE_STATIC ? './static-catalog.js' : './packed-turso.js') + '?_t=' + (window.__APP_LOAD_TIME__ || 'v2'));
+  if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import((window.UBER_RADAR_CONFIG?.ENABLE_SQLITE ? './sqlite-catalog.js' : (window.UBER_RADAR_CONFIG?.ENABLE_STATIC ? './static-catalog.js' : './packed-turso.js')) + '?_t=' + (window.__APP_LOAD_TIME__ || 'v2'));
   return PACKED_TURSO_CLIENT;
 }
 
