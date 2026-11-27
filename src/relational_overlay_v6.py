@@ -133,7 +133,7 @@ def build(collection, target, *, source_bytes=None):
                             raise ValueError("Bad store coordinates")
                         db.execute("INSERT INTO relational_geo VALUES(?,?,?,?,?)",
                                    (store_id,lat,lat,lon,lon))
-                    for term in search_terms(store.get("name")):
+                    for term in sorted(search_terms(store.get("name"))):
                         postings[("store",bucket(term))][term].append(store_id)
                     seen=set()
                     for item in products:
@@ -157,7 +157,7 @@ def build(collection, target, *, source_bytes=None):
                             name_id=key[0]
                             if name_id not in indexed_names:
                                 indexed_names.add(name_id)
-                                for term in search_terms(item.get("product_name")):
+                                for term in sorted(search_terms(item.get("product_name"))):
                                     postings[("product",bucket(term))][term].append(name_id)
                         term=_current(item)
                         # Current price terms have kind CURRENT and zero observation fields.
@@ -190,7 +190,7 @@ def build(collection, target, *, source_bytes=None):
                     # Monotonic item IDs are compact as first+delta postings.
                     packed={term:([ordered[0]]+
                         [ordered[i]-ordered[i-1] for i in range(1,len(ordered))])
-                        for term,ids in values.items()
+                        for term,ids in sorted(values.items())
                         for ordered in [sorted(set(ids))] if ordered}
                     blob=compressor.compress(msgpack.packb(packed,use_bin_type=True))
                     db.execute("INSERT INTO relational_terms VALUES(?,?,?)",
