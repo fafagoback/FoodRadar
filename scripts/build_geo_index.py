@@ -17,6 +17,7 @@ import zstandard as zstd
 
 CELL_DEGREES = 0.025  # ~2.78 km north/south, ~2.5 km E/W in Taiwan.
 MAX_COMPRESSED = 1024 * 1024
+MAX_DECODED = 8 * 1024 * 1024
 MAX_ROWS_PER_SHARD = 12000
 
 
@@ -46,7 +47,7 @@ def augment_geo_index(manifest: dict, data_dir: Path) -> dict:
     def write(rows):
         payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         compressed = cctx.compress(payload)
-        if len(compressed) > MAX_COMPRESSED:
+        if len(payload) > MAX_DECODED or len(compressed) > MAX_COMPRESSED:
             raise ValueError("Oversized spatial index; repartition into smaller shards")
         digest = sha256(compressed).hexdigest()
         (blobs / (digest + ".zst")).write_bytes(compressed)
@@ -85,7 +86,7 @@ def augment_geo_index(manifest: dict, data_dir: Path) -> dict:
                     group = queue.pop()
                     raw = json.dumps(group, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                     compressed = cctx.compress(raw)
-                    if len(compressed) > MAX_COMPRESSED:
+                    if len(raw) > MAX_DECODED or len(compressed) > MAX_COMPRESSED:
                         if len(group) <= 1:
                             raise ValueError("Single oversized spatial index row")
                         half = len(group) // 2

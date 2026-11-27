@@ -196,6 +196,27 @@ class StaticMigrationTests(unittest.TestCase):
             self.assertEqual(results[0], results[1],
                 "Identical FoodRadar V2 search and spatial shards must be byte-for-byte reproducible")
 
+    def test_adaptive_hash_indexes_preserve_all_keys(self):
+        from collections import defaultdict
+        from unittest.mock import patch
+        from prepare_pages import adaptive_index, hash_bucket
+        first = "key-0"
+        second = next("key-"+str(i) for i in range(1,200000)
+                      if hash_bucket("key-"+str(i),4096)==hash_bucket(first,4096)
+                      and hash_bucket("key-"+str(i),8192)!=hash_bucket(first,8192))
+        groups=defaultdict(dict)
+        values={first:"a"*60, second:"b"*60}
+        groups[hash_bucket(first,4096)].update(values)
+        written=[]
+        def writer(value):
+            written.append(dict(value))
+            return str(len(written)-1)
+        with patch("prepare_pages.MAX_DECOMPRESSED_BYTES",100):
+            count, index=adaptive_index(groups,writer)
+        self.assertEqual(count,8192)
+        for key,value in values.items():
+            self.assertEqual(written[int(index[str(hash_bucket(key,count))])][key],value)
+
     def test_spooled_products_keep_chunk_and_search_order(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temp:
