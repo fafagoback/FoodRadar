@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import subprocess
+import shutil
 import sys
 import threading
 import time
@@ -87,6 +88,12 @@ def get_artifact(source, root, source_run):
         raise RuntimeError("Invalid crawler artifact name")
     folder=root/name
     if not (folder/"batch.json").is_file():
+        # A single source artifact can expand to several GB. Drop prior
+        # completed source folders before switching to another one.
+        # This never deletes outputs or the shared store task queue.
+        for previous in root.iterdir():
+            if previous.is_dir() and previous != folder:
+                shutil.rmtree(previous)
         folder.mkdir(parents=True,exist_ok=True)
         subprocess.run(["gh","run","download",str(source_run),
                         "--repo",os.environ["GITHUB_REPOSITORY"],
@@ -110,6 +117,8 @@ def work(index,source_run,batch,plan,pool=None):
     preferred=sources[(index-1)%len(sources)]
     finished=[]
     failures=0
+    started_at=time.monotonic()
+    last_progress_at=started_at
     stale=[]
     running=True
     def heartbeat():
@@ -159,6 +168,15 @@ def work(index,source_run,batch,plan,pool=None):
                 stream.write(payload)
                 finished.append({"store_uuid":sid,"token":token,
                                  "sha256":hashlib.sha256(payload).hexdigest()})
+                if len(finished) % 100 == 0:
+                    now=time.monotonic()
+                    print("FOODRADAR_DB_WORKER_PROGRESS="+json.dumps({
+                        "worker":index,"completed_local":len(finished),
+                        "failed_local":failures,
+                        "elapsed_seconds":round(now-started_at,2),
+                        "last_100_seconds":round(now-last_progress_at,2),
+                        "source_artifact":preferred}),flush=True)
+                    last_progress_at=now
     running=False
     (output/"finalize.json").write_text(json.dumps({
         "worker":index,"artifact":artifact_name,"stores":finished,
