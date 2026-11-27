@@ -72,6 +72,23 @@ class V2Integration(unittest.TestCase):
             "SELECT promotion_type FROM product_price_observations ORDER BY batch_id")]
         self.assertEqual(kinds, ["NONE", "SAME_SKU_BXGY"])
 
+    def test_native_price_above_legacy_history_threshold_is_not_null(self):
+        import json
+        row = self.apply(native(100_000_000), BATCH1)
+        self.assertEqual(row["price"], 1_000_000)
+        self.assertEqual(row["menu_quote_price"], 1_000_000)
+        self.assertEqual(json.loads(row["menu_quote_history"])[-1][2], 1_000_000)
+        self.apply(native(100_000_001), BATCH2)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM product_price_observations").fetchone()[0], 2)
+
+    def test_invalid_converted_quote_never_crashes_snapshot(self):
+        doc = document(native(6000))
+        del doc["hasMenu"]["hasMenuSection"][0]["hasMenuItem"][0]["verified_price"]["menu_price_cents"]
+        apply_snapshot(self.conn, [doc], BATCH1)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM product_price_observations").fetchone()[0], 0)
+
     def test_direct_discount_uses_marked_price_not_badge_percent(self):
         self.apply(native(7900), BATCH1)
         row = self.apply(native(7100, "DISCOUNTED_ITEM", old=79), BATCH2)

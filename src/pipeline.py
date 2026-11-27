@@ -148,6 +148,35 @@ def restore_history(config, rebuild_all=False):
               'sqlite_apply_seconds': 0.0}
     spool = None
     replay_download = None
+    durable_progress = (os.environ.get("FOODRADAR_PERSIST_REPLAY_PROGRESS") == "1"
+                        and config.get("hf_raw_retention_days") == 60 and not rebuild_all)
+    def persist_prefix(prefix_count):
+        # Only completed, integrity-checked Raw prefixes are saved. No partial
+        # transaction or unverified website is ever published.
+        from price_retention import prune_price_history
+        from state_checkpoint import save_direct
+        from hf_retention import persist
+        nonlocal state
+        prune_price_history(state)
+        state.meta.update(raw_source=f"{folder}/", raw_snapshot_count=str(len(replayed)))
+        state.flush()
+        if any(p.path.stat().st_size >= MAX_BYTES for p in state.parts):
+            state = state.rebuild_partitions(CACHE)
+        destination = ROOT / "data" / batch
+        destination.mkdir(parents=True, exist_ok=True)
+        raw_index = {
+            "repo_id": config["hf_repo_id"], "folder": folder, "batch_id": batch,
+            "manifest_count": prefix_count, "verified_batches": len(replayed),
+            "manifest_digest": manifest_digest(records[:prefix_count]),
+            "contract_digest": direct_contract_digest(), "retention_days": 60,
+            "retention_cutoff": state.meta["price_history_cutoff"],
+        }
+        index_path = destination / "raw-manifest-index.json"
+        index_path.write_text(json.dumps(raw_index, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_direct(state, index_path)
+        persist(api)
+        print("FOODRADAR_REPLAY_PREFIX_DURABLE=" + batch, flush=True)
+
     try:
         print('FOODRADAR_RAW_ONLY_REPLAY_START='+json.dumps({
             'raw_manifests': len(records), 'checkpoint': bool(checkpoint),
@@ -250,6 +279,8 @@ def restore_history(config, rebuild_all=False):
                 'download_seconds':round(dl,2),'decode_seconds':round(decode,2),
                 'sqlite_apply_seconds':round(applied,2)
             }, ensure_ascii=False),flush=True)
+            if durable_progress:
+                persist_prefix(index + 1)
         if not replayed:
             raise RuntimeError('No complete immutable HF Raw batches to build serving DB')
         batch_count=len(state.batch_rows())
