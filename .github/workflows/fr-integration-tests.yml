@@ -23,6 +23,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: write
 jobs:
   offline-contract:
     name: 驗證 FR 15 台與 SQLite 全部接線（不碰 UE/HF 正式資料）
@@ -70,3 +71,56 @@ jobs:
         run: |
           echo '## FR 回歸驗收成功' >> "$GITHUB_STEP_SUMMARY"
           echo '既有 Crawling 停用；Raw、DB 工作池、HF 60 天、SQLite 正式發布及原網站契約的離線測試均通過。' >> "$GITHUB_STEP_SUMMARY"
+
+  verify-github-graph:
+    name: GitHub 真實啟動 FR 01 離線驗證（不發 UE 請求）
+    needs: offline-contract
+    if: ${{ contains(github.event.head_commit.message, '[fr-validate-graph]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 清除已不存在的實驗 Workflow 歷史執行紀錄
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/prune_legacy_fr_workflows.py
+      - name: 啟用無排程的 FR 01，觸發 verify 模式（不執行爬蟲）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/crawl.yml/enable"
+          gh workflow run crawl.yml --repo "$GITHUB_REPOSITORY" --ref main -f mode=verify
+      - name: 確認 FR 01 真實 Run 已完成離線驗證且沒有誤爬
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,subprocess,time
+          repo=os.environ['GITHUB_REPOSITORY'];sha=os.environ['GITHUB_SHA']
+          found=None
+          for attempt in range(120):
+              data=json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/actions/workflows/crawl.yml/runs?per_page=20']))
+              runs=[r for r in data['workflow_runs'] if r['head_sha']==sha and r['event']=='workflow_dispatch']
+              if len(runs)>1:raise RuntimeError('Ambiguous verify run for HEAD')
+              if runs:
+                  found=runs[0]
+                  if found['status']=='completed':break
+              time.sleep(4)
+          if not found or found['status']!='completed' or found['conclusion']!='success':
+              raise RuntimeError('FR 01 offline dispatch did not complete successfully: '+str(found))
+          jobs=json.loads(subprocess.check_output(['gh','api',f"repos/{repo}/actions/runs/{found['id']}/jobs?per_page=100"]))['jobs']
+          verified=[j for j in jobs if j['name'].startswith('離線驗證｜') and j['conclusion']=='success']
+          crawlers=[j for j in jobs if j['name'].startswith('爬蟲工作機') and j['conclusion']=='success']
+          if len(verified)!=1 or crawlers:
+              raise RuntimeError('Offline verify did not isolate UE crawler jobs')
+          print('FR_ONE_ACTION_REAL_OFFLINE_VERIFIED='+json.dumps({'run':found['id'],
+                'status':found['conclusion'],'offline_success':len(verified),
+                'crawlers_started':len(crawlers)}),flush=True)
+          PY

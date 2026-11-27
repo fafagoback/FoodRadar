@@ -52,6 +52,12 @@ jobs:
             python3 scripts/cleanup_sqlite_previews.py --apply
           fi
 
+      - name: 只清理已從 main 移除、完全停止的舊版 Workflows 與其執行紀錄
+        if: ${{ success() && inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/prune_legacy_fr_workflows.py
+
       - name: HF Raw 僅保留 60 天，清除歷史提交及舊檔案版本
         if: ${{ success() }}
         env:
