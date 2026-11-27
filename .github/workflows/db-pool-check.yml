@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install 'requests>=2.31,<3'
+      - run: pip install -r requirements.txt
       - name: Python 語法與任務池測試
         run: |
           python -m compileall -q src/db_task_pool.py scripts/db_stage_plan.py scripts/db_stage_worker.py scripts/db_stage_merge.py scripts/db_stage_smoke.py tests/test_db_task_pool.py tests/test_db_stage_integration.py
