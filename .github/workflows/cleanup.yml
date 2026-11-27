@@ -1,6 +1,9 @@
 name: FoodRadar 03｜儲存空間清理
 run-name: 'FoodRadar 03｜儲存空間清理｜執行編號 #${{ github.run_number }}'
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/cleanup.yml']
   workflow_run:
     workflows: ["FoodRadar 02｜網站部署"]
     types: [completed]
