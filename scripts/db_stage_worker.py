@@ -167,9 +167,19 @@ def work(index,source_run,batch,plan,pool=None):
                 preferred=source["artifact"]
                 folder=get_artifact(source,root,source_run)
                 task_folder=folder/"tasks"/source["task_folder"]
-                if not task_folder.is_dir():
-                    raise RuntimeError("Store is missing from its declared artifact")
-                doc,issue=decode_task(task_folder,claim,batch)
+                # Any ONE store may be corrupt/incomplete. Preserve the old
+                # price and keep processing everyone else. The 17 gate is the
+                # single authority for the aggregate <=5% failure policy.
+                try:
+                    if not task_folder.is_dir():
+                        raise ValueError("Missing store in declared worker Artifact")
+                    doc,issue=decode_task(task_folder,claim,batch)
+                except (OSError,ValueError,KeyError,TypeError,RuntimeError) as exc:
+                    doc=None
+                    issue="invalid_store_capture:"+type(exc).__name__
+                    print("FOODRADAR_DB_STORE_QUARANTINED="+json.dumps({
+                        "store_uuid":claim["store_uuid"],"reason":issue,
+                        "source":source["artifact"]}),flush=True)
                 token=claim["lease_token"]
                 sid=claim["store_uuid"]
                 if issue:
