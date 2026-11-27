@@ -183,11 +183,13 @@ def persist(api):
     rev, files = snapshot(api)
     records = all_records(files, rev)
     new_count = check_prefix(meta, records)
+    previous = None
     if STATE + "manifest.json" in files:
         previous = json.loads(read(STATE + "manifest.json", rev))
         old_count = check_prefix(previous, records)
         if old_count > new_count:
             raise ValueError("Refusing to replace newer durable checkpoint")
+        verify_remote_checkpoint(api, previous, files, rev)
     parts = checkpoint_parts(meta)
     for path, sha in parts.items():
         if digest(CACHE / path) != sha:
@@ -195,8 +197,12 @@ def persist(api):
     expected = {STATE + path for path in parts} | {STATE + "manifest.json"}
     ops = [CommitOperationDelete(path_in_repo=p) for p in sorted(files)
            if p.startswith(STATE) and p not in expected]
+    old_parts = checkpoint_parts(previous) if previous else {}
     ops.extend(CommitOperationAdd(path_in_repo=STATE + path, path_or_fileobj=str(CACHE / path))
-               for path in parts)
+               for path in parts if old_parts.get(path) != parts[path])
+    if previous and meta == previous and not ops:
+        print("FOODRADAR_DURABLE_CHECKPOINT_ALREADY_CURRENT=" + meta["batch_id"], flush=True)
+        return
     ops.append(CommitOperationAdd(path_in_repo=STATE + "manifest.json", path_or_fileobj=str(meta_path)))
     api.create_commit(REPO, repo_type="dataset", revision="main", parent_commit=rev,
                       operations=ops, commit_message="Replace verified project compact state")

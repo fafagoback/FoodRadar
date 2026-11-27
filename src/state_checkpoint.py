@@ -540,7 +540,7 @@ def new_direct(cache=CACHE):
     cache.mkdir(parents=True)
     return CompactCollection([CompactStore(cache/"serving.compact.db",empty=True)])
 
-def save_direct(state,raw_index_path,cache=CACHE,root=ROOT):
+def save_direct(state,raw_index_path,cache=CACHE,root=ROOT,*,optimize=True):
     from compact_direct import MAX_BYTES
     cache=Path(cache)
     index=json.loads(Path(raw_index_path).read_text(encoding="utf-8"))
@@ -549,9 +549,10 @@ def save_direct(state,raw_index_path,cache=CACHE,root=ROOT):
         or len(state.batch_rows())!=index.get("verified_batches")):
         raise ValueError("Direct cache publication provenance differs")
     state.flush()
-    from compact_repack import optimize_part
-    for part in state.parts:
-        optimize_part(part)
+    if optimize:
+        from compact_repack import optimize_part
+        for part in state.parts:
+            optimize_part(part)
     if any(p.path.stat().st_size>=MAX_BYTES for p in state.parts):
         raise ValueError("Compact partition exceeds strict byte budget")
     counts=state.stats()

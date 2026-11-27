@@ -178,7 +178,7 @@ def restore_history(config, rebuild_all=False):
         }
         index_path = destination / "raw-manifest-index.json"
         index_path.write_text(json.dumps(raw_index, ensure_ascii=False, indent=2), encoding="utf-8")
-        save_direct(state, index_path)
+        save_direct(state, index_path, optimize=False)
         persist(api)
         print("FOODRADAR_REPLAY_PREFIX_DURABLE=" + batch, flush=True)
 

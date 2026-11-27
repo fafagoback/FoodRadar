@@ -24,6 +24,8 @@ def main():
             raise ValueError("Existing durable DB has an incompatible contract; preserve it and review migration before recovery")
     if not records:
         raise ValueError("No sealed Raw manifests")
+    if any(m.get('_frt_retired') is True for _,m,_ in records[prefix:]):
+        raise ValueError('Retired Raw is missing from the durable checkpoint; cannot reconstruct it')
     pending = [m["batch_id"] for p,m,_ in records[prefix:] if raw_manifest_should_replay(m,p,FOLDER)]
     if not pending and not prefix:
         raise ValueError("No replayable Raw")
