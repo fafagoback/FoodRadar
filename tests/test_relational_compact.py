@@ -48,8 +48,8 @@ class TestCompactRelational(unittest.TestCase):
         s=db.execute("SELECT product_state,history FROM store_aux ORDER BY store_id").fetchall()
         self.assertEqual(len(decompress(s[0][0])[1]),3)
         self.assertEqual(len(decompress(s[1][0])[1]),2)
-        self.assertEqual(sum(len(e) for _,e in decompress(s[0][1])),3)
-        self.assertEqual(sum(len(e) for _,e in decompress(s[1][1])),2)
+        self.assertEqual(sum(int.from_bytes(row[2],"little").bit_count() for row in decompress(s[0][1])),3)
+        self.assertEqual(sum(int.from_bytes(row[2],"little").bit_count() for row in decompress(s[1][1])),2)
     def test_price_diff_does_not_merge(self):
         _,db=self.run_build([sample("A",["商品2"],[200]),
                               sample("B",["商品2"],[225])])
@@ -75,6 +75,6 @@ class TestCompactRelational(unittest.TestCase):
         result,db=self.run_build([(store,items,[quotes[0],tuple(old)])])
         self.assertEqual(result["expired_observations_ignored"],1)
         self.assertEqual(result["observations"],1)
-        self.assertEqual(sum(len(e) for _,e in decompress(
+        self.assertEqual(sum(int.from_bytes(row[2],"little").bit_count() for row in decompress(
             db.execute("SELECT history FROM store_aux").fetchone()[0])),1)
 if __name__=="__main__":unittest.main()
