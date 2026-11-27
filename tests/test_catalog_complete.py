@@ -78,6 +78,16 @@ class CatalogCompleteness(unittest.TestCase):
         ):
             self.assertFalse(is_recoverable_catalog_failure(error), error)
 
+    def test_section_concurrency_is_configurable_and_bounded(self):
+        from catalog_complete import MAX_SECTION_THREADS
+        self.assertEqual(MAX_SECTION_THREADS, 8)
+        with self.assertRaises(ValueError):
+            capture_catalog(Session(), "store", {"aisles": {}},
+                            Path("."), {}, lambda *args: None, section_workers=9)
+        with self.assertRaises(ValueError):
+            capture_catalog(Session(), "store", {"aisles": {}},
+                            Path("."), {}, lambda *args: None, section_workers=0)
+
     def test_collect_two_pages_and_merge(self):
         sid = "d2e50ee1-69da-5eff-95f0-eb0dbaeb9e42"
         data = {"title":"北投店","catalogSectionsMap":{}, "aisles":{sid:[

@@ -5,7 +5,9 @@ import json
 import os
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
+import re
+import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
@@ -36,6 +38,30 @@ def should_split_catalog(sections_count, elapsed_ms, native_children=0):
 
 def batch_name(state, index, wave):
     return f"fr-worker-{state['epoch']}-{index}-w{wave:02d}"
+
+def raw_response_category(path):
+    """Classify immutable responses without fetching anything again."""
+    if path.startswith("catalog/"):
+        if "-collection-" in path:
+            return "catalog_collection_probe"
+        return "catalog_page"
+    if path.startswith("stores/"):
+        if "-metadata-refresh-" in path:
+            return "store_metadata_refresh"
+        return "store_metadata"
+    return "other_raw"
+
+
+def count_raw_http_responses(paths):
+    """Count captured bodies; socket failures may lack a body."""
+    counts = Counter()
+    for path in paths:
+        counts[raw_response_category(path)] += 1
+        match = re.search(r"-attempt-(\d+)-status-\d+\.body$", path)
+        if match and int(match.group(1)) > 1:
+            counts["retry_response"] += 1
+    return counts
+
 
 def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                    capture=fetch_store_raw):
@@ -68,6 +94,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     next_claim_at, next_status_at, last_flush_at = 0.0, 0.0, 0.0
     claim_seconds, idle_seconds, local_commit_seconds = 0.0, 0.0, 0.0
     last_task_finished = None
+    raw_http_counts = Counter()
+    raw_http_lock = threading.Lock()
 
     def claim(count):
         t = time.monotonic()
@@ -90,6 +118,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         result["crawl_elapsed_ms"] = max(1, round((time.monotonic()-t)*1000))
         checks = body_checksums(raw)
         result["crawl_api_requests"] = len(checks)
+        with raw_http_lock:
+            raw_http_counts.update(count_raw_http_responses(checks))
         doc = {"run_id":state["run_id"], "source_sha":state["source_sha"],
                "epoch":state["epoch"], "store_uuid":sid, "token":lease["token"],
                "worker":index, "store":result, "responses":checks}
@@ -282,9 +312,13 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                 "wave": wave, "name": batch_name(state, index, wave), "records": finished,
                  "sections": section_finished}
     (base / "batch.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf8")
+    counts = dict(sorted(raw_http_counts.items()))
+    recorded = sum(v for k, v in counts.items() if k != "retry_response")
     summary = {"run_id": state["run_id"], "source_sha": state["source_sha"],
                "epoch": state["epoch"], "shard_index": index, "public_ip": public_ip(),
                "thread_learning": ctrl.report(), "api": global_limiter.snapshot(),
+               "captured_raw_http_responses": recorded,
+               "captured_raw_http_by_type": counts,
                "completed": len(finished), "sections_completed": sum(len(x) for x in section_finished.values()),
                 "wave": wave, "artifact_uploads": 1,
                "budget_exhausted": False,

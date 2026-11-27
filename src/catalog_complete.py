@@ -13,6 +13,7 @@ from menu_core import global_limiter, response_retry_after
 CATALOG_API = "https://www.ubereats.com/api/getCatalogPresentationV2"
 MAX_CATALOG_PAGES = 250
 DEEP_OFFSET_BOUNDARY = 1000
+MAX_SECTION_THREADS = 8
 
 
 def is_recoverable_catalog_failure(error):
@@ -179,6 +180,8 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     to a terminal page, and verify that all earlier parent UUIDs are retained.
     Never fabricate a category, response, or a completed status.
     """
+    if not isinstance(section_workers, int) or not 1 <= section_workers <= MAX_SECTION_THREADS:
+        raise ValueError("section_workers must be 1..8")
     section_uuids = _section_ids(base_data)
     target_path = tuple(subsection_path or ())
     if target_path and (len(target_path)>7 or len(set(target_path))!=len(target_path)
@@ -492,7 +495,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     # request pacing, and each pagination chain remains strictly sequential.
     if (session_factory is not None and section_workers > 1 and len(pairs) >= 8
             and promote_store is None and defer_children is None and not target_path):
-        with ThreadPoolExecutor(max_workers=min(3, section_workers)) as executor:
+        with ThreadPoolExecutor(max_workers=section_workers) as executor:
             partitions = list(executor.map(capture_section, pairs))
     else:
         partitions = []

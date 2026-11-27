@@ -1,0 +1,19 @@
+name: Temporary FR API diagnostics regression
+on:
+  push:
+    branches: [fix/observability-and-section-bounds-20261127]
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -p 'test_batch_crawl.py' -v
+      - run: python -m unittest discover -s tests -p 'test_catalog_complete.py' -v
+      - run: python -m unittest discover -s tests -p 'test_parallel_worker_slots.py' -v
+      - run: python -m unittest discover -s tests -p 'test_adaptive_threads.py' -v
+      - run: python -m unittest discover -s tests -p 'test_sb_task_pool_transport.py' -v
