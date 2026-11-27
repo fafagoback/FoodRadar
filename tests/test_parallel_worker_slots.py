@@ -94,7 +94,7 @@ class ParallelWorkerSlotTests(unittest.TestCase):
         self.assertLessEqual(q.max_claim_slots, 12)
 
     def test_independent_refill_for_dynamic_worker_counts(self):
-        for parallel in (4, 8, 16, 32):
+        for parallel in (4, 8, 16, 32, 64):
             with self.subTest(worker_threads=parallel):
                 self.run_slots(parallel)
 
