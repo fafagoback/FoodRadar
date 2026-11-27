@@ -39,12 +39,14 @@ def read_verified_documents(result_folder, results):
                         row=json.loads(line)
                         sid=row["store_uuid"]
                         expected=completed.get(sid)
-                        if (expected is None or sid in consumed
-                                or expected["result"]["artifact"]!=artifact
-                                or hashlib.sha256(payload).hexdigest()
-                                   != expected["result"]["sha256"]
+                        # A failed job may have uploaded an uncommitted artifact.
+                        # Only fenced rows listed by Supabase are eligible.
+                        if expected is None or expected["result"]["artifact"]!=artifact:
+                            continue
+                        if (sid in consumed or
+                            hashlib.sha256(payload).hexdigest()!=expected["result"]["sha256"]
                                 or row["document"].get("store_uuid")!=sid):
-                            raise ValueError("Duplicate, missing, or changed DB output")
+                            raise ValueError("Duplicate or changed committed DB output")
                         consumed.add(sid)
                         spool.append(row["document"])
     if consumed!=set(completed):
