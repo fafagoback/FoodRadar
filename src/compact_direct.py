@@ -439,42 +439,100 @@ class CompactCollection:
                 "max_shop_observations":max(p.max_shop_observations for p in self.parts),
                 "modified_payloads":sum(p.writes for p in self.parts)}
     def rebuild_partitions(self,folder):
-        """Drop unused dictionary tokens; split by actual bytes when needed.
+        """One-pass bounded compact sharding: avoid re-encoding the whole DB
+        at every recursive bisection. Preserve existing compact wire contracts.
 
-        Each output partition is bounded by MAX_BYTES. Only compact source and
-        compact output coexist; no complete normalized SQL database is made.
+        Accumulate geographic-order stores into a compact partition, stopping
+        slightly before the actual byte budget. Only the rare overflowing
+        partition is bisected and re-encoded, never the full database.
         """
         import shutil,tempfile
+        start=perf_counter()
         folder=Path(folder)
-        with tempfile.TemporaryDirectory(dir=folder) as tmp:
-            tmp=Path(tmp);out=[]
+        with tempfile.TemporaryDirectory(dir=folder) as temp:
+            tmp=Path(temp);out=[]
+            created=0
+            rewritten=0
             # Stable geographic order, with UUID tie breaker.
             sorted_ids=[s["store_uuid"] for s in sorted(self.stores(),key=lambda s:(
-                int((s.get("latitude") or 0)*10),int((s.get("longitude") or 0)*10),s["store_uuid"]))]
+                int((s.get("latitude") or 0)*10),
+                int((s.get("longitude") or 0)*10),s["store_uuid"]))]
+            def fresh():
+                nonlocal created
+                path=tmp/f"working-{created:05d}.db"
+                created+=1
+                return CompactStore(path,empty=True)
+            def append_completed(part, ids):
+                part.set_globals(self.meta,self.batches)
+                part.flush()
+                part.conn.execute("VACUUM")
+                part.close()
+                size=part.path.stat().st_size
+                if size>=MAX_BYTES:
+                    part.path.unlink()
+                    if len(ids)<=1:
+                        raise ValueError("One shop exceeds compact byte budget")
+                    # Split only the last locally oversized chunk.
+                    midpoint=len(ids)//2
+                    emit(ids[:midpoint])
+                    emit(ids[midpoint:])
+                    return
+                final=tmp/f"part-{len(out):05d}.db"
+                part.path.replace(final)
+                out.append(final)
             def emit(ids):
-                path=tmp/f"part-{len(out):05d}.db"
-                part=CompactStore(path,empty=True)
+                nonlocal rewritten
+                if not ids:return
+                part=fresh()
                 for sid in ids:
-                    s,p,q=self.shop(sid);part.put_shop(s,p,q)
-                part.set_globals(self.meta,self.batches);part.flush()
-                part.conn.execute("VACUUM");part.close()
-                if path.stat().st_size>=MAX_BYTES:
-                    path.unlink()
-                    if len(ids)==1:raise ValueError("One shop exceeds compact byte budget")
-                    mid=len(ids)//2;emit(ids[:mid]);emit(ids[mid:])
-                else:out.append(path)
-            emit(sorted_ids)
+                    s,p,q=self.shop(sid)
+                    part.put_shop(s,p,q)
+                    rewritten+=1
+                append_completed(part,ids)
+
+            current=fresh()
+            group=[]
+            for sid in sorted_ids:
+                s,p,q=self.shop(sid)
+                current.put_shop(s,p,q)
+                rewritten+=1
+                group.append(sid)
+                # SQLite page_count is a fast size estimate without forcing
+                # a VACUUM after each individual store.
+                if len(group)%32 == 0:
+                    pages=current.conn.execute("PRAGMA page_count").fetchone()[0]
+                    page_size=current.conn.execute("PRAGMA page_size").fetchone()[0]
+                    if pages*page_size >= MAX_BYTES*0.92:
+                        append_completed(current,group)
+                        current=fresh()
+                        group=[]
+            if group:
+                append_completed(current,group)
+            else:
+                current.close()
+                current.path.unlink(missing_ok=True)
+            if not out:
+                raise ValueError("Empty compact shard rebuild")
+            print("FOODRADAR_COMPACT_RESHARD="+json.dumps({
+                "stores":len(sorted_ids),"encoded_store_visits":rewritten,
+                "parts":len(out),"seconds":round(perf_counter()-start,2)
+            }),flush=True)
             old_metrics=self.metrics()
             self.close()
             for p in self.parts:p.path.unlink(missing_ok=True)
             target=folder/"shards"
             shutil.rmtree(target,ignore_errors=True)
             if len(out)==1:
-                dest=folder/"serving.compact.db";out[0].replace(dest);paths=[dest]
+                dest=folder/"serving.compact.db"
+                out[0].replace(dest)
+                paths=[dest]
             else:
-                target.mkdir();paths=[]
+                target.mkdir()
+                paths=[]
                 for path in out:
-                    dest=target/path.name;path.replace(dest);paths.append(dest)
+                    dest=target/path.name
+                    path.replace(dest)
+                    paths.append(dest)
             replacement=CompactCollection([CompactStore(p) for p in paths])
             replacement.parts[0].max_scratch_bytes=old_metrics["max_shop_scratch_bytes"]
             replacement.parts[0].max_shop_products=old_metrics["max_shop_products"]
