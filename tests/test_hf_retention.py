@@ -134,8 +134,8 @@ class RetentionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp)
             (cache / "manifest.json").write_bytes(r.pack(previous))
-            with patch.object(r, "CACHE", cache), patch.object(r, "config", return_value={}), \\
-                 patch.object(r, "read", side_effect=lambda path, rev: api.files[path]):
+            with (patch.object(r, "CACHE", cache), patch.object(r, "config", return_value={}),
+                  patch.object(r, "read", side_effect=lambda path, rev: api.files[path])):
                 with self.assertRaisesRegex(ValueError, "newer durable checkpoint"):
                     r.persist(api)
         self.assertEqual(api.writes, 0)
