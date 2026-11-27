@@ -605,7 +605,7 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                 # not a verified payable-price observation. Keep it in HF Raw,
                 # not in certified V2 history or the seven-day baseline.
                 quote_valid = bool(price_valid)
-                quote = (observed_price if 0 < observed_price < 1_000_000 else None,
+                quote = (observed_price if quote_valid or 0 < observed_price < 1_000_000 else None,
                          verified_effective if quote_valid else None,
                          observed_promo if quote_valid else "未驗證",
                          observed_qty if quote_valid else None,
@@ -649,9 +649,9 @@ def apply_snapshot(conn: sqlite3.Connection, docs: Iterable[dict[str, Any]], bat
                     point for point in previous_quotes
                     if isinstance(point, (list, tuple)) and len(point) >= 2
                     and isinstance(point[0], str) and cutoff <= point[0] < now
-                    and isinstance(point[1], (int, float)) and 0 < point[1] < 1_000_000
+                    and isinstance(point[1], (int, float)) and 0 < point[1] < float('inf')
                 ]
-                if quote_valid and quote[1] is not None:
+                if quote_valid and quote[0] is not None and quote[1] is not None:
                     quote_history.append([
                         now, round(quote[1], 2), round(quote[0], 2),
                         quote[2] or "無", quote[3]

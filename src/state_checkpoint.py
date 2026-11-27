@@ -389,11 +389,28 @@ REVIEWED_CAPTURE_ONLY_DIGESTS = {
     ),
 }
 
+# Exact reviewed replay fix: successful old native observations are unchanged;
+# the high-price row previously raised before checkpoint commit, and malformed
+# converted quotes cannot be produced by the native evidence decoder.
+# The durable-prefix scheduling change has no effect on the stored schema.
+REVIEWED_REPLAY_FIX_DIGESTS = {
+    "1d1eadfe2ddcc7c726f72519e951c11505b09984ce959490b70e19d831323c73":
+        "64a2c6abaccfb44cdd3d2a96c98c10685b3e399d5911fad91524b5bc8612b872",
+    "f00f062980735e9a2de115caeeb02d120cf1633b4a87f76a5a7976a6642933f8":
+        "e6e2e3c8d27b8a58cb5e11280d4037ab90d142950ad4d96a184de13502a72200",
+}
+
 def compatible_direct_contract(meta,root=ROOT):
     fmt=meta.get("format")
     current=direct_contract_digest(root) if fmt=="foodradar-checkpoint-v4" else None
     if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==current:
         return True
+    predecessor=REVIEWED_REPLAY_FIX_DIGESTS.get(current)
+    if predecessor:
+        if meta.get("contract_digest")==predecessor:
+            print("FOODRADAR_CHECKPOINT_EXACT_REPLAY_FIX_MIGRATION=PASS",flush=True)
+            return True
+        current=predecessor
     reviewed=REVIEWED_CAPTURE_ONLY_DIGESTS.get(current) if current else None
     if reviewed and meta.get("contract_digest") in reviewed:
         print("FOODRADAR_CHECKPOINT_EXACT_CAPTURE_ONLY_MIGRATION=PASS",flush=True)
@@ -540,7 +557,7 @@ def new_direct(cache=CACHE):
     cache.mkdir(parents=True)
     return CompactCollection([CompactStore(cache/"serving.compact.db",empty=True)])
 
-def save_direct(state,raw_index_path,cache=CACHE,root=ROOT):
+def save_direct(state,raw_index_path,cache=CACHE,root=ROOT,*,optimize=True):
     from compact_direct import MAX_BYTES
     cache=Path(cache)
     index=json.loads(Path(raw_index_path).read_text(encoding="utf-8"))
@@ -549,9 +566,10 @@ def save_direct(state,raw_index_path,cache=CACHE,root=ROOT):
         or len(state.batch_rows())!=index.get("verified_batches")):
         raise ValueError("Direct cache publication provenance differs")
     state.flush()
-    from compact_repack import optimize_part
-    for part in state.parts:
-        optimize_part(part)
+    if optimize:
+        from compact_repack import optimize_part
+        for part in state.parts:
+            optimize_part(part)
     if any(p.path.stat().st_size>=MAX_BYTES for p in state.parts):
         raise ValueError("Compact partition exceeds strict byte budget")
     counts=state.stats()

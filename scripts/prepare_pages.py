@@ -272,6 +272,7 @@ def prepare(web_dir, source_dir, commit=None):
     if manifest["schema"] == "foodradar-static-v1":
         manifest = _paged_manifest(manifest, data)
     manifest = augment_geo_index(manifest, data)
+    print("FOODRADAR_FINAL_PAGES_DATA_BYTES=" + str(manifest["bytes"]), flush=True)
     (data/"manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),encoding="utf-8")
     commit = (commit or os.getenv("GITHUB_SHA") or "").strip()
     if not commit:
