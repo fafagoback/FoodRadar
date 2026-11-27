@@ -10,7 +10,6 @@ import hashlib
 import io
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -93,42 +92,74 @@ def build(batch,source_run,source_count,folder,*,pool=None,apply=True):
         return
     config=json.loads((ROOT/"config.json").read_text(encoding="utf-8"))
     records=raw_records(config)
-    usable=[(p,m,h) for p,m,h in records
-            if raw_manifest_should_replay(m,p,config["hf_folder"].strip("/"))]
-    if batch not in [m["batch_id"] for _,m,_ in usable]:
-        raise ValueError("DB batch has no verified HF raw provenance")
+    folder_name=config["hf_folder"].strip("/")
+    available=[i for i,(path,meta,sha) in enumerate(records)
+               if raw_manifest_should_replay(meta,path,folder_name)]
+    candidates=[i for i in available if records[i][1]["batch_id"]==batch]
+    if len(candidates)!=1:
+        raise ValueError("Requested DB batch has no unique verified HF Raw manifest")
+    position=candidates[0]
+    raw_meta=records[position][1]
+    if len(raw_meta["stores"])!=source_count:
+        raise RuntimeError("HF Raw store roster differs from DB task source")
+    from menu_core import canonical_store_uuid
+    raw_ids={canonical_store_uuid(s["store_uuid"],s["store_url"]) for s in raw_meta["stores"]}
+    if len(raw_ids)!=source_count or raw_ids!={r["store_uuid"] for r in results}:
+        raise RuntimeError("DB task identities differ from immutable HF Raw")
     restored=restore_direct(records,config)
     if restored:
-        state,previous,offset=restored
+        state,previous,prefix=restored
         if previous>=batch:
-            raise RuntimeError("DB batch already applied, refusing overwrite")
-        if usable[offset:][-1][1]["batch_id"]!=batch or len(usable[offset:])!=1:
-            raise RuntimeError("Must apply historical batches in order")
+            state.close()
+            raise RuntimeError("Already checkpointed or stale batch; preserve existing HF DB")
+        if position!=prefix:
+            state.close()
+            raise RuntimeError("Missing historical DB batch; apply in HF manifest order")
     else:
-        if len(usable)!=1 or usable[0][1]["batch_id"]!=batch:
+        if available[0]!=position:
             raise RuntimeError(
-                "Existing HF history has no compatible durable DB checkpoint. "
-                "A sequential historical backfill is required; do not erase price history.")
+                "No compatible historical DB checkpoint. Complete the pending "
+                "offline backfill before applying this newer batch.")
         state=new_direct()
+    prefix_count=position+1
+    completed_prefix=sum(i<prefix_count for i in available)
     try:
         state.apply_batch(spool,batch,failed_ids)
+        state.meta["latest_raw_completeness"]=(
+            "partial_verified" if failed_ids or raw_meta.get("complete") is not True
+            else "complete")
+        state.meta["latest_unverified_store_uuids"]=json.dumps(
+            failed_ids,ensure_ascii=False)
+        if config.get("hf_raw_retention_days")!=60:
+            raise ValueError("FR/FRT DB history must retain exactly 60 days")
+        from price_retention import prune_price_history
+        prune_price_history(state)
         state.refresh_weekly(batch)
+        state.meta.update(raw_source=f"{folder_name}/",
+                          raw_snapshot_count=str(completed_prefix))
         state.flush()
-        # Keep serving_state's current integrity and compact-size checks.
         if any(p.path.stat().st_size>=MAX_BYTES for p in state.parts):
             state=state.rebuild_partitions(CACHE)
-        index={"repo_id":config["hf_repo_id"],"folder":config["hf_folder"].strip("/"),
-               "batch_id":batch,"manifest_count":len(records),
-               "verified_batches":len(state.batch_rows()),
-               "manifest_digest":manifest_digest(records),
-               "contract_digest":direct_contract_digest()}
-        out=ROOT/"data"/"db-stage-checkpoint"
+        index={"repo_id":config["hf_repo_id"],"folder":folder_name,
+               "batch_id":batch,"manifest_count":prefix_count,
+               "verified_batches":completed_prefix,
+               "manifest_digest":manifest_digest(records[:prefix_count]),
+               "contract_digest":direct_contract_digest(),
+               "retention_days":60,
+               "retention_cutoff":state.meta["price_history_cutoff"]}
+        out=ROOT/"data"/batch
         out.mkdir(parents=True,exist_ok=True)
         path=out/"raw-manifest-index.json"
-        path.write_text(json.dumps(index),encoding="utf-8")
-        save_direct(state,path)
-        print("FOODRADAR_DB_STAGE_17_CHECKPOINT="+json.dumps({
-            "batch":batch,**state.metrics()}),flush=True)
+        path.write_text(json.dumps(index,ensure_ascii=False),encoding="utf-8")
+        save_direct(state,path,optimize=False)
+        # Persist independently of the website builder: failure after this
+        # point must not reprocess the verified batch.
+        from huggingface_hub import HfApi
+        from hf_retention import persist
+        persist(HfApi(token=os.environ["HF_TOKEN"]))
+        print("FOODRADAR_DB_STAGE_17_DURABLE="+json.dumps({
+            "batch":batch,"prefix":prefix_count,
+            **state.metrics()}),flush=True)
     finally:
         state.close()
         spool.close()
