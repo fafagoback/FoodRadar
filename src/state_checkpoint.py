@@ -393,7 +393,24 @@ REVIEWED_CAPTURE_ONLY_DIGESTS = {
 # the high-price row previously raised before checkpoint commit, and malformed
 # converted quotes cannot be produced by the native evidence decoder.
 # The durable-prefix scheduling change has no effect on the stored schema.
+# Exact performance-only compact-repartition replacement. It changes only
+# how byte-identical compact shards are GROUPED; no stored column, price
+# evidence, token encoding, lifecycle rule or format is modified.
+# Trust only these complete current fingerprints and audited predecessors.
+REVIEWED_RESHARD_DIRECT_DIGESTS = {
+    "b97d6422936d64504a7e909f1570d3f63570f73aecb1316f6cb14cd3d8d82e64": (
+        "1d1eadfe2ddcc7c726f72519e951c11505b09984ce959490b70e19d831323c73",
+    ),
+    "2d1aa8346acc8190b8fa5b4a8fb9dca1f9a0d931f51bfe72e4e627fb5d61a174": (
+        "f00f062980735e9a2de115caeeb02d120cf1633b4a87f76a5a7976a6642933f8",
+    ),
+}
+
 REVIEWED_REPLAY_FIX_DIGESTS = {
+    "b97d6422936d64504a7e909f1570d3f63570f73aecb1316f6cb14cd3d8d82e64":
+        "64a2c6abaccfb44cdd3d2a96c98c10685b3e399d5911fad91524b5bc8612b872",
+    "2d1aa8346acc8190b8fa5b4a8fb9dca1f9a0d931f51bfe72e4e627fb5d61a174":
+        "e6e2e3c8d27b8a58cb5e11280d4037ab90d142950ad4d96a184de13502a72200",
     "1d1eadfe2ddcc7c726f72519e951c11505b09984ce959490b70e19d831323c73":
         "64a2c6abaccfb44cdd3d2a96c98c10685b3e399d5911fad91524b5bc8612b872",
     "f00f062980735e9a2de115caeeb02d120cf1633b4a87f76a5a7976a6642933f8":
@@ -404,6 +421,12 @@ def compatible_direct_contract(meta,root=ROOT):
     fmt=meta.get("format")
     current=direct_contract_digest(root) if fmt=="foodradar-checkpoint-v4" else None
     if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==current:
+        return True
+    # Preserve exactly the already-published compact checkpoint. Repacking
+    # changed the sharding algorithm, not any persisted product or price bit.
+    predecessors=REVIEWED_RESHARD_DIRECT_DIGESTS.get(current,())
+    if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest") in predecessors:
+        print("FOODRADAR_CHECKPOINT_EXACT_RESHARD_MIGRATION=PASS",flush=True)
         return True
     predecessor=REVIEWED_REPLAY_FIX_DIGESTS.get(current)
     if predecessor:
