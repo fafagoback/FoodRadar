@@ -1,0 +1,17 @@
+name: Temporary FR slot regression
+on:
+  push:
+    branches: [fix/parallel-worker-slots-20261127]
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -p 'test_parallel_worker_slots.py' -v
+      - run: python -m unittest discover -s tests -p 'test_batch_crawl.py' -v
+      - run: python -m unittest discover -s tests -p 'test_adaptive_threads.py' -v

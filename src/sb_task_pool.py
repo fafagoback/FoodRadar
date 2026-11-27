@@ -11,6 +11,7 @@ import uuid
 import urllib.request
 import urllib.parse
 import urllib.error
+import requests
 from crawl_queue import initial_state, validate_state, validate_batch_group
 
 ENDPOINT = "https://unapiwajmgqqtdkixaab.supabase.co/functions/v1/fr-task-pool"
@@ -26,6 +27,8 @@ class SupabaseQueue:
         self.calls = 0
         self.rate_limits = 0
         self.retry_seconds = 0.0
+        self.http = requests.Session()  # single coordinator, reusable HTTP connections
+        self.http_seconds = 0.0
 
     def _oidc(self):
         if self.token is None or time.monotonic() >= self.token_until:
@@ -46,24 +49,29 @@ class SupabaseQueue:
             for attempt in range(5):
                 retry_after = 0
                 try:
-                    req = urllib.request.Request(ENDPOINT,data=body,headers={
-                        "Content-Type":"application/json","X-FR-Workflow-Token":self._oidc()})
+                    token = self._oidc()
                     self.calls += 1
-                    with urllib.request.urlopen(req,timeout=20) as res:
-                        return json.load(res)
-                except urllib.error.HTTPError as exc:
-                    if exc.code == 401 and attempt == 0:
+                    started = time.monotonic()
+                    try:
+                        response = self.http.post(ENDPOINT, data=body, headers={
+                            "Content-Type":"application/json","X-FR-Workflow-Token":token},
+                            timeout=20)
+                    finally:
+                        self.http_seconds += time.monotonic() - started
+                    if response.status_code == 200:
+                        return response.json()
+                    if response.status_code == 401 and attempt == 0:
                         self.token = None
                         continue
-                    if exc.code == 429:
+                    if response.status_code == 429:
                         self.rate_limits += 1
                         try:
-                            retry_after = float(exc.headers.get("Retry-After","0"))
+                            retry_after = float(response.headers.get("Retry-After","0"))
                         except ValueError:
                             retry_after = 0
-                    elif exc.code not in (502,503,504,500,408):
-                        raise RuntimeError(f"SB pool {op} HTTP {exc.code}") from None
-                except (OSError, TimeoutError):
+                    elif response.status_code not in (502,503,504,500,408):
+                        raise RuntimeError(f"SB pool {op} HTTP {response.status_code}") from None
+                except requests.RequestException:
                     pass
                 if attempt == 4:
                     break
@@ -204,4 +212,5 @@ class SupabaseQueue:
 
     def metrics(self):
         return {"rpc_calls":self.calls,"http_429":self.rate_limits,
-                "retry_seconds":round(self.retry_seconds,2)}
+                "retry_seconds":round(self.retry_seconds,2),
+                "http_seconds":round(self.http_seconds,2)}
