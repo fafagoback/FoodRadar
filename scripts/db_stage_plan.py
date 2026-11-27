@@ -47,9 +47,15 @@ def source_artifacts(source_run, token, repo):
         raise RuntimeError("No durable worker artifacts in this crawl")
     if run.get("conclusion")!="success":
         raise RuntimeError("Only a verified successful source run can seed the DB pool")
+    # A runner with zero assigned shops still uploads a valid batch.json-only
+    # Artifact (normally ~900 bytes). Size is not an integrity signal.
+    # Full batch manifest, response hashes and shop roster are checked by
+    # get_artifact()/decode_task() and the fenced SB source receipt.
+    if len({a["name"] for a in artifacts})!=len(artifacts):
+        raise RuntimeError("Duplicate source worker artifact")
     for a in artifacts:
-        if a.get("size_in_bytes",0)<1000:
-            raise RuntimeError("Unexpectedly small source artifact")
+        if int(a.get("size_in_bytes") or 0)<=0:
+            raise RuntimeError("Empty source artifact")
     return run,sorted(a["name"] for a in artifacts)
 
 
