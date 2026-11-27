@@ -77,6 +77,7 @@ class AdaptiveThreads:
         self._log(tested, "failed", reason)
 
     def observe(self, now, snapshot, saturated, active_count=None):
+        saturated = bool(saturated and (active_count is None or active_count >= self.target))
         if not self.baseline:
             self.reset(now, snapshot)
             self.saturated = saturated
@@ -107,7 +108,7 @@ class AdaptiveThreads:
         self.last_tick = now
         self.baseline = dict(snapshot)
         self.saturated = saturated
-        if not (was_saturated or saturated) or not successes:
+        if not was_saturated or not successes:
             return
         tested = self.target
         if self.best == tested and self.upper is not None and self.upper - self.lower <= 1:
@@ -166,6 +167,7 @@ def run_adaptive(items, capture, limiter, initial, on_result, clock=time.monoton
                 if pending:
                     time.sleep(min(1, max(.05, current["cooldown_remaining_seconds"])))
                 continue
+            ctrl.observe(clock(), snap(), len(active) >= ctrl.target, len(active))
             done, _ = wait(active, timeout=.25, return_when=FIRST_COMPLETED)
             ctrl.observe(clock(), snap(), len(active) >= ctrl.target, len(active))
             for future in done:

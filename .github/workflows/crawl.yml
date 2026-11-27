@@ -49,6 +49,26 @@ concurrency:
   # A checkpoint-only republish must preserve the currently running crawl.
   cancel-in-progress: ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION')) }}
 jobs:
+  verify_thread_settings:
+    name: 驗證 Supabase 執行緒設定（不爬取）
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_SETTINGS_TEST') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 驗證學習與設定持久化
+        run: |
+          python -m unittest discover -s tests -p test_adaptive_threads.py -v
+          python -m unittest discover -s tests -p test_save_crawl_settings.py -v
+          python -m unittest discover -s tests -p test_parallel_worker_slots.py -v
+          value=$(python scripts/save_crawl_settings.py --read)
+          echo "Supabase 現有執行緒設定：$value" >> "$GITHUB_STEP_SUMMARY"
   discover_once:
     name: 統一探索設定範圍，建立 15 台共用任務池
     if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"

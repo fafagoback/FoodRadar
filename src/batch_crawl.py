@@ -183,6 +183,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             jobs,done=queue.exchange(owner,index,slots,stores,sections)
                             return jobs,done,time.monotonic()-begin
                         pending_exchange=coordinator.submit(do_exchange)
+                    ctrl.observe(time.monotonic(), {**global_limiter.snapshot(), "completed_stores": len(finished)}, len(active) >= ctrl.target, len(active))
                     waiting=set(active)
                     if pending_exchange is not None:
                         waiting.add(pending_exchange)

@@ -26,13 +26,15 @@ class AdaptiveThreadTests(unittest.TestCase):
         c.reset(0,snap())
         successes=0
         for expected in (8,16,32,64,128):
+            c.observe(successes,snap(successes),True,c.target)
             successes += 1
             c.observe(successes,snap(successes),True,c.target)
             self.assertEqual(c.target,expected)
         c.observe(10,snap(successes,1,30),True,128)
         self.assertEqual((c.lower,c.upper,c.target),(64,128,96))
         c.observe(41,snap(successes,1),False,0)
-        c.observe(42,snap(successes+1,1),True,96)
+        c.observe(42,snap(successes,1),True,96)
+        c.observe(43,snap(successes+1,1),True,96)
         self.assertEqual((c.best,c.target),(96,112))
 
     def test_upstream_429_bisects_without_fake_64_cap(self):
@@ -47,15 +49,14 @@ class AdaptiveThreadTests(unittest.TestCase):
         c.observe(53,snap(72,2),True,64)
         self.assertEqual((c.best,c.target),(64,96))
 
-    def test_no_work_not_failure_and_busy_samples_accumulate(self):
+    def test_no_work_not_failure_and_partial_target_not_credited(self):
         c=AdaptiveThreads(4); c.reset(0,snap())
         c.observe(1,snap(),True,4)
         c.observe(6,snap(8),False,0)
-        c.observe(100,snap(8),True,4)
-        c.observe(106,snap(16),True,4)
         self.assertEqual((c.best,c.target),(4,8))
-        c.observe(150,snap(20),False,0)
-        self.assertEqual(c.best,4)
+        c.observe(100,snap(8),False,4)
+        c.observe(106,snap(16),False,4)
+        self.assertEqual((c.best,c.target),(4,8))
         self.assertIsNone(c.upper)
 
     def test_first_failure_halves_and_cooldown(self):
