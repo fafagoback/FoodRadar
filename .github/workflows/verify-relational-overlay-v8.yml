@@ -33,6 +33,7 @@ jobs:
       - name: 真實資料測量原版 + SQL 索引整體容量
         run: |
           python scripts/build_relational_overlay_v8.py --checkpoint data/state-checkpoint --output data/relational-overlay-v8.db --report data/relational-v8-audit.json
+          python scripts/profile_relational_v8.py --checkpoint data/state-checkpoint --file data/relational-overlay-v8.db
           python - <<'PY'
           import json,sqlite3
           from pathlib import Path
