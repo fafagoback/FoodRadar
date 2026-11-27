@@ -1,0 +1,52 @@
+name: FR／FRT HF 公開 Range 與 CORS 實測
+on:
+  push:
+    branches: [feature/shared-relational-sqlite]
+    paths: ['.github/workflows/verify-hf-public-range.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  browser-origin:
+    name: 模擬兩個網站從 HF 讀取 SQLite（不爬取）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: HTTP 206 / Origin CORS / Content-Range 真實檢測
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.request
+          from urllib.error import HTTPError, URLError
+          origin = 'https://fafagoback.github.io'
+          for label, repo in (
+             ('FR','hub-google/FoodRadar'),
+             ('FRT','hub-google/Foodradar-TW')):
+              base = 'https://huggingface.co/datasets/' + repo + '/resolve/main/'
+              print('===', label, repo, '===')
+              try:
+                  request=urllib.request.Request(base+'State/current/manifest.json',
+                      headers={'Origin':origin,'User-Agent':'FR-Web-Range-Probe/1.0'})
+                  with urllib.request.urlopen(request,timeout=30) as res:
+                      meta=json.load(res)
+                      print('manifest status:',res.status,'CORS:',res.headers.get('Access-Control-Allow-Origin'))
+                  part=(meta.get('parts') or [{'path':'serving.compact.db'}])[0]['path']
+                  url=base+'State/current/'+part
+                  req=urllib.request.Request(url,headers={
+                      'Origin':origin,'Range':'bytes=0-1023',
+                      'User-Agent':'FR-Web-Range-Probe/1.0'})
+                  with urllib.request.urlopen(req,timeout=30) as res:
+                      body=res.read(1025)
+                      print('DB status:',res.status,'Range:',res.headers.get('Content-Range'),
+                         'CORS:',res.headers.get('Access-Control-Allow-Origin'),
+                         'Expose:',res.headers.get('Access-Control-Expose-Headers'),
+                         'Bytes:',len(body))
+                      ok=(res.status==206 and len(body)==1024 and
+                          res.headers.get('Access-Control-Allow-Origin') in ('*',origin) and
+                          res.headers.get('Content-Range') is not None and
+                          ('content-range' in (res.headers.get('Access-Control-Expose-Headers') or '').lower()))
+                      print('BROWSER_RANGE_CANDIDATE_OK=',ok)
+              except Exception as exc:
+                  print('BROWSER_RANGE_CANDIDATE_ERROR=',repr(exc))
+          PY
