@@ -302,9 +302,15 @@ def run(source_run_id=None):
         import sys
         subprocess.run([sys.executable, str(ROOT / "scripts" / "save_crawl_settings.py")],
                        check=True)
-    merge_shards(config, parts, count=15, discovery_file=discovery_file, upload_raw=True,
+    verified=merge_shards(config, parts, count=15, discovery_file=discovery_file, upload_raw=True,
                  prepared_archive=archive_path, verified_checks=checks_by_worker,
                  batch_override=batch)
+    if not reuse and source_run==os.environ.get("GITHUB_RUN_ID"):
+        receipt={"source_run_id":str(source_run),"source_sha":os.environ["GITHUB_SHA"],
+                 "batch_id":verified["batch"],"stores":verified["captured_stores"]}
+        file=ROOT/"data"/"fr-db-source.json"
+        file.write_text(json.dumps(receipt,ensure_ascii=False,sort_keys=True),encoding="utf-8")
+        print("FR_DB_VERIFIED_SOURCE="+json.dumps(receipt),flush=True)
     print("FOODRADAR_STREAM_INGEST_COMPLETE=" + json.dumps({
         "source_run": source_run, "reused": reuse, "stores": len(owners),
         "responses": len(response_checks), "raw_bytes": raw_bytes,

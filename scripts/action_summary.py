@@ -167,11 +167,15 @@ def main(kind):
             add("精簡資料庫總容量",mb(direct.get("compact_bytes")))
             add("單店暫存記憶體資料庫峰值",mb(direct.get("max_shop_scratch_bytes")))
             add("資料庫與網站完整處理秒數",direct.get("seconds"))
-        succeeded = os.environ.get("INGEST_RESULT") == "success" and isinstance(m, dict)
+        ingested = os.environ.get("INGEST_RESULT") == "success"
+        succeeded = ingested and isinstance(m, dict)
+        raw_only = ingested and isinstance(read("action-reports/metrics/shard-reconciliation.json"), dict) and not succeeded
         add("資料更新結果", "已完成驗證並產出新的可部署資料包" if succeeded else
+            "HF Raw 已驗證，等待 15 台 DB 工作機處理" if raw_only else
             "未完成可確認的資料更新")
-        add("網站部署結果", "尚待網站部署" if succeeded else "本次無法宣稱網站部署成功")
-        messages.append("資料爬取與網站部署是兩個不同流程；網站成功上線與否，請以「FoodRadar 02｜網站部署」的最終摘要為準。")
+        add("網站部署結果", "等待第 17 台 DB 驗證後發布 SQLite" if raw_only else
+            "尚待網站部署" if succeeded else "本次無法宣稱網站部署成功")
+        messages.append("Raw、分散式 DB 運算及 SQLite 網站是三個階段，須通過線上驗收才算完成。")
     elif kind == "pages":
         deploy = os.environ.get("DEPLOY_RESULT")
         add("資料更新確認", "使用既有已驗證資料" if os.environ.get("GATE_RESULT") == "skipped"

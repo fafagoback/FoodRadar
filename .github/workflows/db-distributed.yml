@@ -1,21 +1,21 @@
-name: FoodRadar DB｜既有資料15台分散運算
+name: FR DB｜15台共用工作池與17台增量彙整
+run-name: FR DB｜同批 Raw 15 台分工→17台整併（不爬取）
 on:
-  # One-time 2026-11-27 offline acceptance; does not call Uber Eats.
-  push:
-    branches: [main]
-    paths: ['.github/one-time/fr-db-20261127.flag']
+  workflow_run:
+    workflows: ["FoodRadar 01｜資料爬取與更新"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: '已完成的原始爬蟲 Run ID'
+        description: '既有成功爬蟲 Run ID；不爬取 Uber Eats'
         required: true
         type: string
       batch_id:
-        description: '同一次爬蟲的 HF Raw 14 碼批次'
+        description: '既有 HF Raw 14 碼批次'
         required: true
         type: string
       apply:
-        description: '驗證通過後更新正式 HF compact checkpoint（不部署網站）'
+        description: '驗證後才正式更新60天增量DB並發布網站'
         type: boolean
         default: false
 permissions:
@@ -27,24 +27,56 @@ concurrency:
   cancel-in-progress: false
 env:
   GH_TOKEN: ${{ github.token }}
-  SOURCE_RUN: ${{ github.event_name == 'push' && '45951424825' || inputs.source_run_id }}
-  BATCH: ${{ github.event_name == 'push' && '20261127143027' || inputs.batch_id }}
 jobs:
-  plan:
-    if: github.ref == 'refs/heads/main'
-    name: 第16台｜確認 HF Raw 並建立 DB 共用任務池
+  resolve_source:
+    name: 00A｜確認剛完成的爬蟲 Raw 批次，不推測時間
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
     runs-on: ubuntu-latest
+    outputs:
+      source_run_id: ${{ steps.verify.outputs.source_run_id }}
+      batch_id: ${{ steps.verify.outputs.batch_id }}
     steps:
+      - uses: actions/checkout@v4
+      - name: 取得第16台已保存的 Raw 批次憑證
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          mkdir -p data/db-handoff
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name fr-db-source --dir data/db-handoff
+      - name: 比對 GitHub Run、Commit、批次及店家名冊
+        id: verify
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: python scripts/db_stage_source.py --path data/db-handoff/fr-db-source.json --source-run "$SOURCE_RUN_ID" --source-sha "$SOURCE_SHA" --output "$GITHUB_OUTPUT"
+  plan:
+    name: 00｜驗證 HF Raw，建立專屬 DB 共享工作池
+    needs: [resolve_source]
+    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || needs.resolve_source.result == 'success') }}
+    runs-on: ubuntu-latest
+    outputs:
+      source_run_id: ${{ steps.inputs.outputs.source_run_id }}
+      batch_id: ${{ steps.inputs.outputs.batch_id }}
+    env:
+      SOURCE_RUN: ${{ github.event_name == 'workflow_run' && needs.resolve_source.outputs.source_run_id || inputs.source_run_id }}
+      BATCH: ${{ github.event_name == 'workflow_run' && needs.resolve_source.outputs.batch_id || inputs.batch_id }}
+    steps:
+      - name: 固定同一次原始資料來源
+        id: inputs
+        run: |
+          test -n "$SOURCE_RUN" && test -n "$BATCH"
+          echo "source_run_id=$SOURCE_RUN" >> "$GITHUB_OUTPUT"
+          echo "batch_id=$BATCH" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: 確認既有 HF Raw，不重新爬取
+      - name: 核對既存 HF Raw，絕不呼叫 UE
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/db_stage_hf.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
-      - name: 建立獨立 DB 任務池
+      - name: 清除已結束的舊 DB 任務、從爬蟲名冊逐筆派工
         run: python scripts/db_stage_plan.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
       - uses: actions/upload-artifact@v4
         with:
@@ -54,15 +86,18 @@ jobs:
           if-no-files-found: error
   workers:
     name: DB 工作機 ${{ matrix.index }}
-    needs: plan
+    needs: [plan]
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       max-parallel: 15
       matrix:
-        index: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        index: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
     env:
       INDEX: ${{ matrix.index }}
+      SOURCE_RUN: ${{ needs.plan.outputs.source_run_id }}
+      BATCH: ${{ needs.plan.outputs.batch_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -73,33 +108,39 @@ jobs:
         with:
           name: fr-db-plan
           path: data
-      - name: 從共用工作池逐一領取店家並解析
+      - name: 已完成一店就補領下一店，不分固定工作包
         id: worker
         shell: bash
         run: |
           set -euo pipefail
-          name=$(printf 'db-worker-%s-%02d' "$GITHUB_RUN_ID" "$INDEX")
-          folder=$(printf 'data/db-worker-%02d' "$INDEX")
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+          echo "name=$(printf 'db-worker-%s-%02d' "$GITHUB_RUN_ID" "$INDEX")" >> "$GITHUB_OUTPUT"
+          echo "folder=$(printf 'data/db-worker-%02d' "$INDEX")" >> "$GITHUB_OUTPUT"
           python scripts/db_stage_worker.py worker --index "$INDEX" --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
           nohup python scripts/db_stage_worker.py heartbeat --index "$INDEX" --done-file "$RUNNER_TEMP/fr-db-finalized" > "$RUNNER_TEMP/fr-db-heartbeat.log" 2>&1 < /dev/null &
-      - uses: actions/upload-artifact@v4
+      - name: 各台結果先完整上傳 GitHub Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.worker.outputs.name }}
           path: ${{ steps.worker.outputs.folder }}
           retention-days: 3
           if-no-files-found: error
-      - name: 確認已持久化資料
+      - name: 上傳後逐店確認 DB 任務租約完成
         run: python scripts/db_stage_worker.py finalize --index "$INDEX"
-      - name: 停止租約心跳
+      - name: 停止上傳期間租約心跳
         if: always()
         run: touch "$RUNNER_TEMP/fr-db-finalized"
   merge:
-    name: 第17台｜驗證結果及選擇性更新 checkpoint
-    needs: [plan, workers]
+    name: 17｜核對全部店家、5%門檻、保存60天DB並啟動SQLite驗收
+    needs: [plan,workers]
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: write
+      id-token: write
     env:
+      SOURCE_RUN: ${{ needs.plan.outputs.source_run_id }}
+      BATCH: ${{ needs.plan.outputs.batch_id }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -118,22 +159,15 @@ jobs:
           pattern: db-worker-${{ github.run_id }}-*
           path: data/db-artifacts
           merge-multiple: false
-      - name: 驗證完整店家名冊及 5% 容錯規則
+      - name: 獨立驗收完整名冊、結果雜湊、5%容錯
         run: python scripts/db_stage_merge.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH" --verify-only
-      - name: 選擇正式更新時才寫入 HF
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.apply }}
+      - name: 只在自動新資料或明確授權時更新唯一增量 State
+        if: ${{ github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
         run: |
           python src/hf_retention.py restore
           python scripts/db_stage_merge.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
-      - name: 建立及檢查 SQLite v9 候選資料庫
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.apply }}
+      - name: DB成功後正式啟動SQLite與Pages全套驗收
+        if: ${{ github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
         run: |
-          python scripts/build_relational_overlay_v9.py --output data/relational-overlay-v9.db --report data/relational-v9-audit.json
-          python scripts/publish_relational_overlay_v9.py --file data/relational-overlay-v9.db
-      - uses: actions/upload-artifact@v4
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.apply }}
-        with:
-          name: fr-db-relational-audit
-          path: data/relational-v9-audit.json
-          retention-days: 7
-          if-no-files-found: error
+          gh workflow run sqlite-release.yml --ref main
+          echo '15 台 DB 運算與 17 台歷史寫入成功，SQLite 將獨立查詢 HF 並發布（不重爬、不再製作 Pages 商品副本）。' >> "$GITHUB_STEP_SUMMARY"
