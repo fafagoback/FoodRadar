@@ -66,6 +66,10 @@ class DBTaskPool:
             time.sleep(max(delay, min(20, 2 ** retry) + random.random()))
         raise RuntimeError(f"DB task pool {operation} exhausted retries")
 
+    def requeue(self):
+        """Only after all worker jobs stopped: recover uncommitted store leases."""
+        return self.command("requeue")
+
     def purge(self):
         """00 only: refuse to clear any pool containing live leases."""
         return self.command("purge")
