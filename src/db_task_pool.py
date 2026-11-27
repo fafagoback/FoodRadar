@@ -71,13 +71,39 @@ class DBTaskPool:
         return self.command("purge")
 
     def seed_from_crawl(self, source_run_id, source_attempt=1):
-        """00 only: seed directly from verified first-stage store rows.
+        """00: cursor-page verified stores without downloading a single menu.
 
-        This avoids a 7 GB scan, and never changes the crawl task table.
+        Each database transaction is bounded, but there is no cap on stores.
+        Repeating a page after a timeout is safe (unique run/store key).
         """
-        return self.command("seed_from_crawl",
-                            source_run_id=str(source_run_id),
-                            source_attempt=int(source_attempt))
+        cursor = 0
+        counted = 0
+        expected = None
+        pages = 0
+        while True:
+            row = self.command("seed_from_crawl",
+                               source_run_id=str(source_run_id),
+                               source_attempt=int(source_attempt),
+                               after_id=cursor)
+            page_count = int(row["page_rows"])
+            next_cursor = int(row["next_id"])
+            if page_count < 0 or (page_count and next_cursor <= cursor):
+                raise RuntimeError("Nonmonotonic database seed cursor")
+            if expected is None:
+                expected = int(row["source_stores"])
+                if expected <= 0:
+                    raise RuntimeError("Empty verified crawler source")
+            counted += page_count
+            pages += 1
+            if counted > expected:
+                raise RuntimeError("DB task source count exceeded verified crawl")
+            cursor = next_cursor
+            if row["done"]:
+                if counted != expected:
+                    raise RuntimeError("DB task source roster stopped early")
+                result = {"source_stores":expected,"inserted":counted,"pages":pages}
+                print("FOODRADAR_DB_POOL_SEEDED="+json.dumps(result),flush=True)
+                return result
 
     def claim(self, worker, preferred_artifact=""):
         """Claim exactly one store, with optional artifact-locality preference."""
