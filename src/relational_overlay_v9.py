@@ -160,10 +160,7 @@ def build(collection, target, *, source_bytes=None):
                                 VALUES(?,?,?)""",key)
                             pid=db.execute("SELECT last_insert_rowid()").fetchone()[0]
                             defs[key]=pid
-                            name_id=key[0]
-                            if name_id not in indexed_names:
-                                indexed_names.add(name_id)
-                                # Names are stored ONLY in the original dictionary.
+                            # Product names are referenced by existing token IDs only.
                         term=_current(item)
                         # Current price terms have kind CURRENT and zero observation fields.
                         price=(term[1],term[2],term[3],term[4])
