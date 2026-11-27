@@ -1,0 +1,44 @@
+name: FR 正規化 SQLite｜真實 HF 資料驗證
+on:
+  push:
+    branches: [feature/shared-relational-sqlite]
+    paths: ['.github/workflows/verify-relational-hf.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-data-audit:
+    name: 由 HF 60天資料建置並比對 SQLite（不爬取、不上傳）
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝 SQLite 還原所需套件
+        run: pip install 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1' 'msgpack>=1,<2'
+      - name: 驗證保留政策並從 HF 還原已驗證 checkpoint
+        run: python src/hf_retention.py restore
+      - name: 真實資料正規化與 SQL 完整性驗證
+        run: |
+          python scripts/build_relational_db.py --checkpoint data/state-checkpoint --output data/relational-candidate.db --report data/relational-report.json
+          python scripts/verify_relational_db.py --checkpoint data/state-checkpoint --file data/relational-candidate.db --samples 1000 --report data/relational-audit.json
+          python scripts/publish_relational_db.py --file data/relational-candidate.db --repo hub-google/FoodRadar
+      - name: 輸出真實資料量報告
+        if: always()
+        run: |
+          if [ -f data/relational-audit.json ]; then
+            cat data/relational-audit.json | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fr-relational-hf-audit
+          path: |
+            data/relational-report.json
+            data/relational-audit.json
+          if-no-files-found: ignore
+          retention-days: 7
