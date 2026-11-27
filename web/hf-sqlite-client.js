@@ -31,19 +31,13 @@ export async function connectHFSQLite({manifestUrl,createDbWorker,workerUrl,wasm
   const worker=await createDbWorker([{from:"inline",config:{
     serverMode:"full",url:url.href,requestChunkSize
   }}],String(workerUrl),String(wasmUrl));
-  const boot=await worker.db.exec("SELECT value FROM metadata WHERE key='batch'");
-  const rows=(boot?.[0]?.values||[]).map(v=>({value:v[0]}));
+  const rows=await worker.db.query("SELECT value FROM metadata WHERE key='batch'");
   need(rows.length===1 && JSON.parse(rows[0].value)===meta.batch,"Wrong DB version");
   state.worker=worker;state.manifest=meta;
   return {manifest:meta,url:url.href};
 }
 function db(){need(state.worker,"Not connected to HF SQLite");return state.worker.db;}
-async function query(sql){
-  const sets=await db().exec(sql);
-  need(Array.isArray(sets),"SQLite HTTP VFS returned invalid results");
-  return sets.flatMap(set=>(set.values||[]).map(row=>
-    Object.fromEntries((set.columns||[]).map((key,i)=>[key,row[i]]))));
-}
+async function query(sql){return db().query(sql);}
 export async function sqlMetadata(){
   const rows=await query("SELECT key,value FROM metadata");
   return Object.fromEntries(rows.map(({key,value})=>[key,JSON.parse(value)]));
