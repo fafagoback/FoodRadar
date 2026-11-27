@@ -1,0 +1,72 @@
+name: FR｜離線整合回歸驗收
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fr-integration-tests.yml'
+      - '.github/workflows/crawl.yml'
+      - '.github/workflows/db-distributed.yml'
+      - '.github/workflows/sqlite-release.yml'
+      - '.github/workflows/cleanup.yml'
+      - 'src/db_task_pool.py'
+      - 'src/state_checkpoint.py'
+      - 'src/compact_direct.py'
+      - 'src/stream_ingest.py'
+      - 'scripts/db_stage_*.py'
+      - 'scripts/cleanup_sqlite_previews.py'
+      - 'scripts/db_stage_source.py'
+      - 'scripts/build_relational_*.py'
+      - 'src/relational_*.py'
+      - 'tests/test_db_*.py'
+      - 'tests/test_fr_workflow_wiring.py'
+      - 'tests/test_cleanup_sqlite_previews.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-contract:
+    name: 驗證 FR 15 台與 SQLite 全部接線（不碰 UE/HF 正式資料）
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安裝唯讀測試套件
+        run: pip install -r requirements.txt 'PyYAML==6.0.2'
+      - name: Python 語法檢查
+        run: |
+          python -m compileall -q src scripts tests
+          node --check web/app.js
+          node --check web/sqlite-catalog.js
+          node --check web/sqlite-storage.js
+      - name: GitHub Actions 流程接線、停爬及來源保護
+        run: |
+          python -m unittest discover -s tests -p 'test_fr_workflow_wiring.py' -v
+          python -m unittest discover -s tests -p 'test_db_stage_source.py' -v
+          python -m unittest discover -s tests -p 'test_db_stage_plan.py' -v
+      - name: DB 工作池、15 台結果與第17台合併驗證
+        run: |
+          python -m unittest discover -s tests -p 'test_db_task_pool.py' -v
+          python -m unittest discover -s tests -p 'test_db_stage_integration.py' -v
+          python -m unittest discover -s tests -p 'test_db_stage_hf.py' -v
+          python -m unittest discover -s tests -p 'test_compact_direct.py' -v
+          python -m unittest discover -s tests -p 'test_compact_incremental.py' -v
+          python -m unittest discover -s tests -p 'test_db_checkpoint_reshard_migration.py' -v
+          python -m unittest discover -s tests -p 'test_incremental_checkpoint.py' -v
+      - name: HF 60天保留、商品關聯及無用版本清理
+        run: |
+          python -m unittest discover -s tests -p 'test_relational_overlay_v9.py' -v
+          python -m unittest discover -s tests -p 'test_hf_retention.py' -v
+          python -m unittest discover -s tests -p 'test_cleanup_sqlite_previews.py' -v
+          PYTHONPATH=src python -c 'from state_checkpoint import direct_contract_digest;print("FR_DIRECT_SCHEMA="+direct_contract_digest())'
+      - name: 最終檢查結論
+        run: |
+          echo '## FR 回歸驗收成功' >> "$GITHUB_STEP_SUMMARY"
+          echo '既有 Crawling 停用；Raw、DB 工作池、HF 60 天、SQLite 正式發布及原網站契約的離線測試均通過。' >> "$GITHUB_STEP_SUMMARY"
