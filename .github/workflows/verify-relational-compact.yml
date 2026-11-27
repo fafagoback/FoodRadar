@@ -1,0 +1,59 @@
+name: FR SQLite v2｜真實容量與 SQL 驗證
+on:
+  push:
+    branches: [feature/shared-relational-sqlite]
+    paths: ['.github/workflows/verify-relational-compact.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    name: 2,606家店資料實測（離線、無 UE 抓取）
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝資料庫套件
+        run: pip install 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1' 'msgpack>=1,<2'
+      - name: v2共用商品與價格歷史測試
+        run: python -m unittest discover -s tests -p test_relational_compact.py -v
+      - name: 讀取現有 HF 真實 checkpoint（不爬取）
+        run: python src/hf_retention.py restore
+      - name: 建立 v2 正規化 SQLite 實際量測
+        run: |
+          python scripts/build_relational_compact.py --checkpoint data/state-checkpoint --output data/relational-compact-v2.db --report data/relational-v2.json
+          python - <<'PY'
+          import json,sqlite3
+          from pathlib import Path
+          current=Path('data/relational-compact-v2.db')
+          prior=sum(p.stat().st_size for p in Path('data/state-checkpoint').rglob('*.db'))
+          data=json.loads(Path('data/relational-v2.json').read_text())
+          with sqlite3.connect(current) as db:
+              assert db.execute('pragma integrity_check').fetchone()[0]=='ok'
+              assert not list(db.execute('pragma foreign_key_check'))
+              for table in ('stores','products','store_products','price_terms','store_aux'):
+                  data['table_'+table]=db.execute('select count(*) from '+table).fetchone()[0]
+          data['compact_source_bytes']=prior
+          data['capacity_ratio_to_source']=round(data['bytes']/prior,3)
+          print('FR_REAL_RELATIONAL_V2='+json.dumps(data,ensure_ascii=False),flush=True)
+          Path('data/relational-v2-audit.json').write_text(json.dumps(data,ensure_ascii=False,indent=2))
+          with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('## 真實 FR SQLite v2 容量實測\n\n')
+              f.write('原版 DB：'+str(prior)+' bytes\n\n')
+              f.write('v2 DB：'+str(data['bytes'])+' bytes\n\n')
+              f.write('倍率：'+str(data['capacity_ratio_to_source'])+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fr-relational-v2-report
+          path: |
+            data/relational-v2.json
+            data/relational-v2-audit.json
+          if-no-files-found: ignore
+          retention-days: 7
