@@ -1,0 +1,23 @@
+name: FR DB 工作池｜離線單元驗證
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/db-pool-check.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    name: 驗證第二階段共用任務池（不爬取）
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'requests>=2.31,<3'
+      - name: Python 語法與任務池測試
+        run: |
+          python -m compileall -q src/db_task_pool.py tests/test_db_task_pool.py
+          python -m unittest discover -s tests -p test_db_task_pool.py -v
