@@ -131,7 +131,9 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     if drained and not active and not reserved and not uncommitted and not uncommitted_sections and pending_exchange is None:
                         break
                     # Report the completed store and claim at most one next store.
-                    free=max(0,ctrl.target-len(active)-len(reserved))
+                    # Supabase RPC accepts 0..12 claims per request; replenish again
+                    # if more than 12 worker slots remain free.
+                    free=max(0,min(12,ctrl.target-len(active)-len(reserved)))
                     if snap["cooldown_remaining_seconds"]>0:
                         free=0
                     done_count=len(uncommitted)+sum(map(len,uncommitted_sections.values()))
