@@ -47,7 +47,7 @@ jobs:
           fi
           sleep 3
           existing=$(gh api "$api/workflows/crawl.yml/runs?per_page=100" --jq \
-            --arg SHA "$GITHUB_SHA" '[.workflow_runs[] | select(.event=="workflow_dispatch" and .head_sha==$SHA)] | sort_by(.id) | last | .id // empty')
+            "[.workflow_runs[] | select(.event==\"workflow_dispatch\" and .head_sha==\"$GITHUB_SHA\")] | sort_by(.id) | last | .id // empty")
           if [[ -n "$existing" ]]; then
             crawl_id="$existing"
             echo "FR_CRAWL_REUSING_EXISTING_RUN=$crawl_id"
@@ -56,7 +56,7 @@ jobs:
             crawl_id=""
             for attempt in {1..40}; do
               crawl_id=$(gh api "$api/workflows/crawl.yml/runs?per_page=100" --jq \
-                --arg SHA "$GITHUB_SHA" '[.workflow_runs[] | select(.event=="workflow_dispatch" and .head_sha==$SHA)] | sort_by(.id) | last | .id // empty')
+                "[.workflow_runs[] | select(.event==\"workflow_dispatch\" and .head_sha==\"$GITHUB_SHA\")] | sort_by(.id) | last | .id // empty")
               [[ -n "$crawl_id" ]] && break
               sleep 3
             done
@@ -79,7 +79,7 @@ jobs:
           db_id=""
           for attempt in {1..50}; do
             db_id=$(gh api "$api/workflows/db-distributed.yml/runs?per_page=100" --jq \
-              --arg SHA "$GITHUB_SHA" '[.workflow_runs[] | select(.event=="workflow_run" and .head_sha==$SHA)] | sort_by(.id) | last | .id // empty')
+              "[.workflow_runs[] | select(.event==\"workflow_run\" and .head_sha==\"$GITHUB_SHA\")] | sort_by(.id) | last | .id // empty")
             [[ -n "$db_id" ]] && break
             sleep 6
           done
@@ -100,7 +100,7 @@ jobs:
           release_id=""
           for attempt in {1..50}; do
             release_id=$(gh api "$api/workflows/sqlite-release.yml/runs?per_page=100" --jq \
-              --arg SHA "$GITHUB_SHA" '[.workflow_runs[] | select(.event=="workflow_dispatch" and .head_sha==$SHA)] | sort_by(.id) | last | .id // empty')
+              "[.workflow_runs[] | select(.event==\"workflow_dispatch\" and .head_sha==\"$GITHUB_SHA\")] | sort_by(.id) | last | .id // empty")
             [[ -n "$release_id" ]] && break
             sleep 6
           done
