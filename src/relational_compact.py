@@ -17,7 +17,7 @@ import msgpack
 import zstandard as zstd
 
 TW=timezone(timedelta(hours=8))
-SCHEMA_VERSION=2
+SCHEMA_VERSION=3
 SCHEMA="""
 PRAGMA page_size=4096;
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
@@ -93,6 +93,10 @@ def build(shops,target,batch,*,retention_days=60):
     path.parent.mkdir(parents=True,exist_ok=True)
     temp=path.with_suffix(path.suffix+".building")
     counts=Counter()
+    # Match the existing compact checkpoint: share one batch dictionary and
+    # encode repeated product prices as per-store bit masks, not 2.3m rows.
+    batch_keys=[]
+    batch_index={}
     encoder=zstd.ZstdCompressor(level=15,write_content_size=True)
     try:
         with sqlite3.connect(temp) as db:
@@ -161,7 +165,8 @@ def build(shops,target,batch,*,retention_days=60):
                               "quantity","promo_type"}
                     auxiliary.append([sku,{k:v for k,v in product.items() if k not in excluded}])
                     counts["store_products"]+=1
-                histories=defaultdict(list)
+                histories=defaultdict(int)
+                seen=set()
                 for quote in quotes:
                     if len(quote)<11 or quote[1]!=sid or quote[2] not in sku_index:
                         raise ValueError("Orphan or cross-shop observation")
@@ -170,10 +175,22 @@ def build(shops,target,batch,*,retention_days=60):
                         counts["expired_observations_ignored"]+=1
                         continue
                     if at>latest:raise ValueError("Future observation")
-                    histories[sku_index[quote[2]]].append(
-                        [quote[0],at,shared_price(_observation(quote))])
+                    ordinal=sku_index[quote[2]]
+                    key=(quote[0],at)
+                    if (ordinal,key) in seen:
+                        raise ValueError("Duplicate SKU observation in same batch")
+                    seen.add((ordinal,key))
+                    bi=batch_index.get(key)
+                    if bi is None:
+                        bi=len(batch_keys)
+                        batch_index[key]=bi
+                        batch_keys.append(key)
+                    price_id=shared_price(_observation(quote))
+                    histories[(ordinal,price_id)]|=1<<bi
                     counts["observations"]+=1
-                packed_history=[[i,entries] for i,entries in sorted(histories.items())]
+                packed_history=[[ordinal,price_id,mask.to_bytes(
+                    (mask.bit_length()+7)//8,"little")]
+                    for (ordinal,price_id),mask in sorted(histories.items())]
                 db.execute("INSERT INTO store_aux VALUES(?,?,?)",(
                     store_id,_compress([extras,auxiliary],encoder),
                     _compress(packed_history,encoder)))
@@ -184,7 +201,8 @@ def build(shops,target,batch,*,retention_days=60):
             counts["price_terms"]=db.execute("SELECT COUNT(*) FROM price_terms").fetchone()[0]
             for key,value in {
                 "schema_version":SCHEMA_VERSION,"batch":batch,
-                "retention_days":retention_days,"counts":dict(counts)
+                "retention_days":retention_days,"counts":dict(counts),
+                "batch_keys":batch_keys,
             }.items():
                 db.execute("INSERT INTO metadata VALUES(?,?)",(key,_json(value)))
             db.commit()
