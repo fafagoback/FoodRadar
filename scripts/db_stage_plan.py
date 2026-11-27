@@ -7,6 +7,9 @@ import os
 import sys
 import urllib.request
 from pathlib import Path
+from datetime import datetime,timedelta,timezone
+
+TAIPEI=timezone(timedelta(hours=8))
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"src"))
@@ -48,8 +51,27 @@ def source_artifacts(source_run, token, repo):
     return run,sorted(a["name"] for a in artifacts)
 
 
-def plan(source_run_id, pool, token, repo):
+def assert_batch_provenance(run,batch_id):
+    """A Raw batch cannot predate its source crawl or postdate its Action.
+    Reject mislabeling the previous day's data before seeding any store.
+    """
+    if len(batch_id)!=14 or not batch_id.isdecimal():
+        raise ValueError("Raw batch must be an immutable 14-digit timestamp")
+    if run.get("path","").split("@")[0]!=".github/workflows/crawl.yml":
+        raise ValueError("Source must be the original crawler workflow")
+    when=datetime.strptime(batch_id,"%Y%m%d%H%M%S").replace(tzinfo=TAIPEI)
+    began=datetime.fromisoformat(run["created_at"].replace("Z","+00:00"))
+    finished=datetime.fromisoformat(run["updated_at"].replace("Z","+00:00"))
+    if not began<=when<=finished:
+        raise ValueError(
+            f"Raw batch {batch_id} is OUTSIDE source Action time window. "
+            "Do not label one crawl as another batch.")
+    return batch_id
+
+
+def plan(source_run_id, batch_id, pool, token, repo):
     run,artifacts=source_artifacts(source_run_id,token,repo)
+    assert_batch_provenance(run,batch_id)
     # New run only; never clear live leases from another run.
     pool.purge()
     result=pool.seed_from_crawl(source_run_id,run.get("run_attempt",1))
@@ -60,24 +82,27 @@ def plan(source_run_id, pool, token, repo):
     if int(state.get("pending",0))!=count:
         raise RuntimeError("DB task pool count differs from verified crawl")
     output={"source_run_id":str(source_run_id),"source_attempt":run.get("run_attempt",1),
-            "source_sha":run["head_sha"],"stores":count,"artifacts":artifacts}
+            "source_sha":run["head_sha"],"batch_id":batch_id,
+            "stores":count,"artifacts":artifacts}
     return output
 
 
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--source-run-id",required=True)
+    parser.add_argument("--batch-id",required=True)
     args=parser.parse_args()
     token=os.environ["GH_TOKEN"]
     repo=os.environ["GITHUB_REPOSITORY"]
     if not args.source_run_id.isdecimal():
         raise ValueError("Numeric source run required")
-    output=plan(args.source_run_id,DBTaskPool(),token,repo)
+    output=plan(args.source_run_id,args.batch_id,DBTaskPool(),token,repo)
     path=ROOT/"data"/"db-stage-plan.json"
     path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(output,ensure_ascii=False,indent=2),encoding="utf-8")
     print("FOODRADAR_DB_STAGE_00="+json.dumps({
-      "source_run_id":output["source_run_id"],"stores":output["stores"],
+      "source_run_id":output["source_run_id"],"batch_id":output["batch_id"],
+      "stores":output["stores"],
       "source_artifacts":len(output["artifacts"])}),flush=True)
 
 
