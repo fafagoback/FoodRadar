@@ -118,9 +118,22 @@ def build(batch,source_run,source_count,folder,*,pool=None,apply=True):
     restored=restore_direct(records,config)
     if restored:
         state,previous,prefix=restored
-        if previous>=batch:
+        if previous==batch:
+            # Idempotent retry after a prior successful stage 17 or the
+            # independent historical backfill; never append prices twice.
+            if prefix!=position+1:
+                state.close()
+                spool.close()
+                raise RuntimeError("Existing same-batch checkpoint provenance mismatch")
+            print("FOODRADAR_DB_STAGE_ALREADY_CURRENT="+json.dumps({
+                "batch":batch,"checkpoint_prefix":prefix}),flush=True)
             state.close()
-            raise RuntimeError("Already checkpointed or stale batch; preserve existing HF DB")
+            spool.close()
+            return
+        if previous>batch:
+            state.close()
+            spool.close()
+            raise RuntimeError("A newer durable batch is already published")
         if position!=prefix:
             state.close()
             raise RuntimeError("Missing historical DB batch; apply in HF manifest order")
