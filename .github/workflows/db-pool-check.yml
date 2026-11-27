@@ -10,6 +10,13 @@ on:
       - 'scripts/db_stage_*.py'
       - 'tests/test_db_task_pool.py'
       - 'tests/test_db_stage_integration.py'
+      - 'tests/test_fr_workflow_wiring.py'
+      - 'src/stream_ingest.py'
+      - '.github/workflows/crawl.yml'
+      - '.github/workflows/cleanup.yml'
+      - '.github/workflows/sqlite-release.yml'
+      - 'scripts/db_stage_source.py'
+      - 'tests/test_db_stage_source.py'
       - 'src/relational_*.py'
       - 'scripts/build_relational_*.py'
       - 'tests/test_relational_overlay_v9.py'
@@ -29,7 +36,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt 'PyYAML==6.0.2'
       - name: Python 語法與任務池測試
         run: |
           python -m compileall -q src/db_task_pool.py scripts/db_stage_plan.py scripts/db_stage_worker.py scripts/db_stage_merge.py scripts/db_stage_smoke.py scripts/db_stage_hf.py tests/test_db_task_pool.py tests/test_db_stage_integration.py
@@ -40,6 +47,7 @@ jobs:
           python -m unittest discover -s tests -p test_db_stage_hf.py -v
           python -m unittest discover -s tests -p test_db_stage_plan.py -v
           python -m unittest discover -s tests -p test_db_stage_source.py -v
+          python -m unittest discover -s tests -p test_fr_workflow_wiring.py -v
           python -m unittest discover -s tests -p test_db_checkpoint_reshard_migration.py -v
           python -m unittest discover -s tests -p test_incremental_checkpoint.py -v
           PYTHONPATH=src python -c 'from state_checkpoint import direct_contract_digest; print("FOODRADAR_CURRENT_DIRECT_DIGEST="+direct_contract_digest())'

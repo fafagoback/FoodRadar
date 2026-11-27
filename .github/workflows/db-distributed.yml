@@ -35,15 +35,35 @@ jobs:
     outputs:
       source_run_id: ${{ steps.verify.outputs.source_run_id }}
       batch_id: ${{ steps.verify.outputs.batch_id }}
+      available: ${{ steps.probe.outputs.available }}
     steps:
+      - name: 探測已驗證 Raw 憑證；非爬取模式不建立 DB 任務
+        id: probe
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name=="fr-db-source" and .expired==false and .size_in_bytes>0)] | length')
+          if [[ "$count" == 1 ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$count" == 0 ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo '這次不是新爬取 Raw，略過 DB 工作池；沒有重新爬取。' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '來源批次憑證重複，拒絕派工' >&2
+            exit 1
+          fi
       - uses: actions/checkout@v4
+        if: ${{ steps.probe.outputs.available == 'true' }}
       - name: 取得第16台已保存的 Raw 批次憑證
+        if: ${{ steps.probe.outputs.available == 'true' }}
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           mkdir -p data/db-handoff
           gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name fr-db-source --dir data/db-handoff
       - name: 比對 GitHub Run、Commit、批次及店家名冊
+        if: ${{ steps.probe.outputs.available == 'true' }}
         id: verify
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
@@ -52,7 +72,7 @@ jobs:
   plan:
     name: 00｜驗證 HF Raw，建立專屬 DB 共享工作池
     needs: [resolve_source]
-    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || needs.resolve_source.result == 'success') }}
+    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (needs.resolve_source.result == 'success' && needs.resolve_source.outputs.available == 'true')) }}
     runs-on: ubuntu-latest
     outputs:
       source_run_id: ${{ steps.inputs.outputs.source_run_id }}

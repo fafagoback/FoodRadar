@@ -1,14 +1,8 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
-  # 第16台完整驗收與 60 天保留；保留每日排程。
-  push:
-    branches: [main]
-    paths: ['.github/workflows/crawl.yml']
-  # Verified FR live SB rollover and 429-safe thread-learning acceptance.
-  # 每日台灣時間 06:30、18:30（UTC 22:30、10:30）。
-  # Per explicit 2026-11-27 stop request: no automatic Uber Eats crawls.
-  # Reactivation requires a separate deliberate manual dispatch; no cron.
+  # 2026-11-27：UE 爬取維持停止。沒有排程、沒有 push 自動爬取。
+  # 若未來恢復，必須明確手動啟動；資料仍交給 DB 工作池處理。
   workflow_dispatch:
     inputs:
       mode:
