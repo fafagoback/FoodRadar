@@ -124,6 +124,22 @@ class RetentionTests(unittest.TestCase):
         self.run_cleanup(api)
         self.assertEqual((api.writes, api.squashes), (1, 1))
 
+    def test_persist_refuses_older_durable_prefix(self):
+        import tempfile
+        files, rows = fixture()
+        api = FakeHF(files)
+        previous = json.loads(files[r.STATE + "manifest.json"])
+        previous.update(manifest_count=1, verified_batches=1, batch_id=OLD,
+                        manifest_digest=manifest_digest(rows[:1]))
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            (cache / "manifest.json").write_bytes(r.pack(previous))
+            with patch.object(r, "CACHE", cache), patch.object(r, "config", return_value={}), \\
+                 patch.object(r, "read", side_effect=lambda path, rev: api.files[path]):
+                with self.assertRaisesRegex(ValueError, "newer durable checkpoint"):
+                    r.persist(api)
+        self.assertEqual(api.writes, 0)
+
     def test_no_verified_checkpoint_no_deletion(self):
         files, _ = fixture()
         del files[r.STATE + "manifest.json"]

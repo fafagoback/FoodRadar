@@ -150,6 +150,11 @@ def restore_history(config, rebuild_all=False):
     replay_download = None
     durable_progress = (os.environ.get("FOODRADAR_PERSIST_REPLAY_PROGRESS") == "1"
                         and config.get("hf_raw_retention_days") == 60 and not rebuild_all)
+    one_batch = os.environ.get("FOODRADAR_REPLAY_ONE_BATCH") == "1"
+    require_checkpoint = os.environ.get("FOODRADAR_REQUIRE_COMPLETE_CHECKPOINT") == "1"
+    if one_batch and not durable_progress:
+        state.close()
+        raise ValueError("Single-batch replay requires durable progress")
     def persist_prefix(prefix_count):
         # Only completed, integrity-checked Raw prefixes are saved. No partial
         # transaction or unverified website is ever published.
@@ -196,6 +201,8 @@ def restore_history(config, rebuild_all=False):
                 continue
             if current_batch <= batch:
                 raise ValueError('New Raw precedes checkpoint; refusing incremental replay')
+            if require_checkpoint:
+                raise ValueError("Website build requires all Raw batches already checkpointed: " + current_batch)
             t = perf_counter()
             downloaded = local_verified_archive(config, meta, ROOT)
             if downloaded is None:
@@ -281,6 +288,11 @@ def restore_history(config, rebuild_all=False):
             }, ensure_ascii=False),flush=True)
             if durable_progress:
                 persist_prefix(index + 1)
+            if one_batch:
+                return state
+        if one_batch and replayed:
+            print("FOODRADAR_REPLAY_ALL_BATCHES_CHECKPOINTED", flush=True)
+            return state
         if not replayed:
             raise RuntimeError('No complete immutable HF Raw batches to build serving DB')
         batch_count=len(state.batch_rows())
