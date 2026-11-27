@@ -12,21 +12,24 @@ const {chromium}=require("playwright");
       {waitUntil:"domcontentloaded",timeout:30000});
     await page.waitForFunction(()=>{
       const text=document.getElementById("state")?.textContent||"";
-      return /SQL|失敗|Unavailable/i.test(text)&&!text.includes("正在");
+      return text.includes("查詢耗時")||text.includes("沒有符合條件")||text.includes("查詢失敗");
     },null,{timeout:120000});
     let status=await page.locator("#state").innerText();
+    const coldDuration=await page.locator("#state").innerText();
+    const coldRows=await page.locator("#rows tr").count();
+    console.log("FR_SQLITE_COLD_SEARCH=",JSON.stringify({status,coldRows}));
     if(/失敗|Unavailable|無法/.test(status))throw Error("Initial SQL query failed: "+status);
     await page.locator("#keyword").fill("雞排");
     await page.locator("#search").click();
     await page.waitForFunction(()=>{
       const t=document.getElementById("state")?.textContent||"";
-      return t.includes("查詢耗時")||t.includes("失敗")||t.includes("沒有符合條件");
+      return (t.includes("查詢耗時")||t.includes("查詢失敗")||t.includes("沒有符合條件"))&&!t.includes("正在");
     },null,{timeout:90000});
     status=await page.locator("#state").innerText();
     const rows=await page.locator("#rows tr").count();
     if(status.includes("失敗"))throw Error(status);
     if(rows===0)throw Error("Expected real keyword search matches: "+status);
-    console.log("FR_HF_SQLITE_REAL_BROWSER=",JSON.stringify({status,rows,errors:errors.slice(0,5)}));
+    console.log("FR_HF_SQLITE_REAL_BROWSER=",JSON.stringify({status,rows,coldDuration,errors:errors.slice(0,5),phaseLogs:logs.filter(x=>x.includes("FR_SQL_"))}));
     await page.screenshot({path:"fr-hf-sqlite-browser.png",fullPage:true});
     if(errors.length)console.log("BROWSER_REQUEST_DIAGNOSTICS=",errors.slice(0,12));
   }catch(e){
