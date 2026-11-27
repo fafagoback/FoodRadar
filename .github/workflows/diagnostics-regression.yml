@@ -19,6 +19,8 @@ jobs:
           python - <<'PY'
           import hashlib, json, shutil, subprocess, tempfile
           from pathlib import Path
+          import sys
+          sys.path.insert(0,str(Path.cwd()/"src"))
           from state_checkpoint import DIRECT_LAYOUT_CONTRACTS, direct_contract_digest, retention_predecessor
           root=Path.cwd()
           cfg=json.loads((root/"config.json").read_text())
