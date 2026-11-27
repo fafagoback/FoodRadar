@@ -1,4 +1,4 @@
-name: FR SQLite v9｜序列化 Chrome 真實搜尋驗收
+name: FR SQLite v9｜Chrome 搜尋及冷啟動流量驗收
 on:
   push:
     branches: [feature/shared-relational-sqlite]
