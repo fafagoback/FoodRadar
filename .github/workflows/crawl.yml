@@ -116,9 +116,8 @@ jobs:
           set -euo pipefail
           count=$(jq -er '.owner_count | select(. == 15)' data/discovery/discovery.json)
           matrix=$(jq -cn --argjson count "$count" '{include:[range(0;$count) | {shard:.,worker:(.+1|tostring|if length==1 then "0"+. else . end)}]}')
-          limits=$(PYTHONPATH=src python -c 'from adaptive_threads import DEFAULT_THREADS,MAX_THREADS; print(DEFAULT_THREADS,MAX_THREADS)')
-          read -r default maximum <<< "$limits"
-          value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er --argjson max "$maximum" '.optimal_threads | select(type == "number" and . >= 1 and . <= $max and . == floor)') || value="$default"
+          default=$(PYTHONPATH=src python -c 'from adaptive_threads import DEFAULT_THREADS; print(DEFAULT_THREADS)')
+          value=$(gh api "repos/$GITHUB_REPOSITORY/contents/crawl-settings.json?ref=crawler-state" --jq .content | base64 -d | jq -er '.optimal_threads | select(type == "number" and . >= 1 and . == floor)') || value="$default"
           epoch=$(sha256sum data/discovery/discovery.json | cut -c1-16)
           printf 'batch_count=%s\nmatrix=%s\ninitial_threads=%s\nepoch=%s\n' "$count" "$matrix" "$value" "$epoch" >> "$GITHUB_OUTPUT"
           echo "共用任務池由固定 $count 台工作機動態領取，每台持續執行及學習，初始執行緒 $value" >> "$GITHUB_STEP_SUMMARY"
@@ -165,7 +164,6 @@ jobs:
         env:
           FR_CRAWL_WAVE: '0'
           FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
-          FOODRADAR_PARALLEL_SECTIONS: '1'
           FOODRADAR_CATALOG_429_RETRIES: '10'
           FOODRADAR_STORE_RETRIES: '9'
         run: python src/batch_crawl.py worker --index ${{ matrix.shard }}
@@ -247,7 +245,6 @@ jobs:
         env:
           FR_CRAWL_WAVE: '1'
           FOODRADAR_INITIAL_THREADS: ${{ needs.discover_once.outputs.initial_threads }}
-          FOODRADAR_PARALLEL_SECTIONS: '1'
           FOODRADAR_CATALOG_429_RETRIES: '10'
           FOODRADAR_STORE_RETRIES: '9'
         run: python src/batch_crawl.py worker --index ${{ matrix.shard }}

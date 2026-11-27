@@ -15,7 +15,7 @@ import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
-from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
+from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, valid_threads
 from crawl_queue import SharedGitQueue, HEARTBEAT_SECONDS, initial_state, artifact_name, validate_batch_group
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip, _validate_references
@@ -144,7 +144,7 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
     if not valid_threads(initial):
         raise ValueError("Invalid initial threads")
     ctrl = AdaptiveThreads(initial)
-    ctrl.reset(time.monotonic(), global_limiter.snapshot())
+    ctrl.reset(time.monotonic(), {**global_limiter.snapshot(), "completed_stores": 0})
     wave=int(os.getenv("FR_CRAWL_WAVE","0"))
     prior=restore_worker_learning(storage,state,index,wave)
     if prior is not None:
@@ -219,14 +219,14 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
     next_poll = 0.0
     has_pending = True
     try:
-        with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, len(ids))) as pool:
             while True:
                 if heartbeat_errors:
                     raise RuntimeError("Lease heartbeat failed") from heartbeat_errors[0]
                 now = time.monotonic()
                 snap = global_limiter.snapshot()
                 if snap["rate_limit_events"] > ctrl.baseline["rate_limit_events"]:
-                    ctrl.observe(now, snap, False)
+                    ctrl.observe(now, {**snap, "completed_stores": captured_count}, False)
                 free = ctrl.target - len(active)
                 if storage.exhausted and not active:
                     break
@@ -255,7 +255,7 @@ def capture_worker(config, index, discovery_file, queue=None, storage=artifact,
                         next_poll = 0
                 if active:
                     done, _ = wait(active, timeout=.25, return_when=FIRST_COMPLETED)
-                    ctrl.observe(time.monotonic(), global_limiter.snapshot(),
+                    ctrl.observe(time.monotonic(), {**global_limiter.snapshot(), "completed_stores": captured_count},
                                  len(active) >= ctrl.target and has_pending)
                     for future in done:
                         task = active.pop(future)
