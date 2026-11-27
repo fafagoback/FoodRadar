@@ -101,6 +101,21 @@ class DBTaskPool:
         return self.command("fail", worker=int(worker), store_uuid=store_uuid,
                             token=token, result={"reason": str(reason)[:512]})
 
+
+    def finalize_batch(self, worker, artifact, rows):
+        """Mark only artifact-backed stores complete, using fenced batch writes."""
+        if not artifact:
+            raise ValueError("Durable worker artifact is required")
+        total = 0
+        for offset in range(0, len(rows), 1000):
+            batch = rows[offset:offset + 1000]
+            outcome = self.command("finalize_batch", worker=int(worker),
+                                   artifact=artifact, rows=batch)
+            if outcome["completed"] != len(batch):
+                raise RuntimeError("Incomplete DB task batch finalization")
+            total += len(batch)
+        return total
+
     def status(self):
         return self.command("status")
 
