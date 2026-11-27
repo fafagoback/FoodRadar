@@ -21,7 +21,7 @@ jobs:
       - name: 打包 SQLite WASM 資產（僅程式，不含商品資料）
         run: |
           mkdir -p web/vendor
-          npx esbuild web/relational-v7-vfs-entry.js --bundle --format=esm --platform=browser --outfile=web/vendor/relational-vfs.mjs --minify
+          npx esbuild web/relational-v6-vfs-entry.js --bundle --format=esm --platform=browser --outfile=web/vendor/relational-vfs.mjs --minify
           cp node_modules/sql.js-httpvfs/dist/sqlite.worker.js web/vendor/sqlite.worker.js
           cp node_modules/sql.js-httpvfs/dist/sql-wasm.wasm web/vendor/sql-wasm.wasm
       - name: 安裝 Chrome
