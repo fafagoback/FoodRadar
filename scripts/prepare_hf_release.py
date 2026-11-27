@@ -27,13 +27,22 @@ def main():
     try:
         batch=state.meta["latest_batch"]
         dest=ROOT/"data"/batch
+        if os.environ.get("FOODRADAR_PERSIST_REPLAY_PROGRESS") == "1":
+            # Store verified database independently of website build/hosting.
+            from huggingface_hub import HfApi
+            from hf_retention import persist
+            t=perf_counter()
+            save_direct(state,dest/"raw-manifest-index.json")
+            persist(HfApi(token=os.environ.get("HF_TOKEN")))
+            mark("checkpoint_before_website_seconds",t)
         t=perf_counter();kinds=Counter()
         if state.weekly_batch==batch and state.weekly_quote_kinds is not None:
             kinds.update(state.weekly_quote_kinds)
         else:
             for quotes in state.quote_shops():kinds.update(q[5] for q in quotes)
-        if set(kinds)!={"NONE","SAME_SKU_BXGY","DIRECT_DISCOUNT"} or any(n<=0 for n in kinds.values()):
-            raise ValueError("Missing native price evidence kinds")
+        # A legitimate batch need not contain every promotion kind.
+        if not kinds or set(kinds)-{"NONE","SAME_SKU_BXGY","DIRECT_DISCOUNT"} or any(n<=0 for n in kinds.values()):
+            raise ValueError("Missing or invalid native price evidence")
         mark("native_kind_audit_seconds",t);t=perf_counter()
         audit=audit_deals(direct=state,reuse_weekly_evidence=True)
         mark("deal_audit_seconds",t);t=perf_counter()
@@ -56,7 +65,8 @@ def main():
             "bytes":manifest["bytes"],"revision":manifest["data_revision"]},ensure_ascii=False),flush=True)
         for forbidden in (ROOT/"data/raw-only-reconstructed.db",dest/"serving.db",dest/"packed-serving.db"):
             if forbidden.exists():raise ValueError("Forbidden full database produced: "+str(forbidden))
-        save_direct(state,dest/"raw-manifest-index.json")
+        if os.environ.get("FOODRADAR_PERSIST_REPLAY_PROGRESS") != "1":
+            save_direct(state,dest/"raw-manifest-index.json")
         mark("checkpoint_save_seconds",t)
         print("FOODRADAR_RELEASE_PHASE_TIMING="+json.dumps(marks),flush=True)
         summary=os.environ.get("GITHUB_STEP_SUMMARY")

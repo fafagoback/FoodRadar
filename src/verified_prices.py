@@ -157,9 +157,13 @@ def quote_from_converted_item(item):
     original, payable, quantity = (q.get("original_total_cents"),
                                    q.get("payable_total_cents"),
                                    q.get("received_quantity"))
-    if (type(original) is not int or type(payable) is not int
+    menu, buy, free = (q.get("menu_price_cents"), q.get("buy_quantity"), q.get("free_quantity"))
+    if (type(menu) is not int or menu <= 0
+            or type(buy) is not int or buy <= 0
+            or type(free) is not int or free < 0
+            or type(original) is not int or type(payable) is not int
             or type(quantity) is not int or original <= 0
-            or payable < 0 or payable > original or quantity <= 0
+            or payable <= 0 or payable > original or quantity <= 0
             or not re.fullmatch(r"[0-9a-f]{64}", str(q.get("source_hash") or ""))):
         return None
     return q

@@ -181,7 +181,13 @@ def persist(api):
     if meta.get("retention_days") != RETENTION_DAYS or not meta.get("retention_cutoff"):
         raise ValueError("Missing 60-day price retention proof")
     rev, files = snapshot(api)
-    check_prefix(meta, all_records(files, rev))
+    records = all_records(files, rev)
+    new_count = check_prefix(meta, records)
+    if STATE + "manifest.json" in files:
+        previous = json.loads(read(STATE + "manifest.json", rev))
+        old_count = check_prefix(previous, records)
+        if old_count > new_count:
+            raise ValueError("Refusing to replace newer durable checkpoint")
     parts = checkpoint_parts(meta)
     for path, sha in parts.items():
         if digest(CACHE / path) != sha:
