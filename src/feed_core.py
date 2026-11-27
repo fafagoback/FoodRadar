@@ -21,6 +21,7 @@ import argparse
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
+from menu_core import global_limiter, response_retry_after
 
 TW_TZ = timezone(timedelta(hours=8))
 
@@ -181,7 +182,7 @@ def scan_single_point(point: dict, max_pages: int = 10, raw_dir=None) -> tuple:
         page_success = False
         for attempt in range(1, 4):
             try:
-                time.sleep(random.uniform(0.1, 0.25))
+                global_limiter.wait()
                 resp = session.post("https://www.ubereats.com/api/getFeedV1", json=payload, headers=headers, timeout=12)
                 if raw_dir is not None:
                     # Persist the HTTP response body BEFORE decoding or filtering.
@@ -195,8 +196,8 @@ def scan_single_point(point: dict, max_pages: int = 10, raw_dir=None) -> tuple:
                     raw_file.write_bytes(resp.content)
                 
                 if resp.status_code == 429:
-                    sleep_s = 3.0 * attempt + random.uniform(1.0, 2.0)
-                    time.sleep(sleep_s)
+                    global_limiter.trigger_backoff(3.0 * attempt,
+                        "Feed HTTP 429", retry_after=response_retry_after(resp))
                     continue
                 elif resp.status_code != 200:
                     time.sleep(1.0 * attempt)
@@ -210,6 +211,7 @@ def scan_single_point(point: dict, max_pages: int = 10, raw_dir=None) -> tuple:
                 meta = data.get("meta", {})
                 if not isinstance(meta.get("hasMore"), bool):
                     raise ValueError("missing or invalid feed pagination metadata")
+                global_limiter.record_success()
                 has_more = meta.get("hasMore", False)
                 next_offset = meta.get("offset", offset)
 

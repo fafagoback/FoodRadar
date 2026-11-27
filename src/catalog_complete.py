@@ -11,7 +11,6 @@ import requests
 from menu_core import global_limiter, response_retry_after
 
 CATALOG_API = "https://www.ubereats.com/api/getCatalogPresentationV2"
-MAX_CATALOG_PAGES = 250
 DEEP_OFFSET_BOUNDARY = 1000
 
 
@@ -179,6 +178,8 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
     to a terminal page, and verify that all earlier parent UUIDs are retained.
     Never fabricate a category, response, or a completed status.
     """
+    if type(section_workers) is not int or section_workers < 1:
+        raise ValueError("section_workers must be positive")
     section_uuids = _section_ids(base_data)
     target_path = tuple(subsection_path or ())
     if target_path and (len(target_path)>7 or len(set(target_path))!=len(target_path)
@@ -226,7 +227,7 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         active_session = getattr(local_session, 'value', session)
         records, bodies, seen_offsets = [], [], set()
         offset, page, use_collection_type = 0, 0, False
-        while page < MAX_CATALOG_PAGES:
+        while True:
             # Never ask the upstream API for the known deep-offset boundary.
             # An unfinished partition is NOT complete until native children are
             # fetched to terminal pagination and audited against parent SKUs.
@@ -351,8 +352,6 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
                 raise ValueError(
                     f"Catalog {section_uuid}/{subsection_uuid} stalled: {offset} -> {nxt}")
             offset = nxt
-        raise ValueError(
-            f"Catalog {section_uuid}/{subsection_uuid} exceeded {MAX_CATALOG_PAGES} pages")
 
     # One additional native metadata read per store at most, shared by all
     # section threads. It cannot invent child IDs or replace the first body.
@@ -490,9 +489,9 @@ def capture_catalog(session, store_uuid, base_data, root, headers, capture_respo
         pairs = [p for p in pairs if p[0] in wanted]
     # Different native sections can overlap network wait, never bypass shared
     # request pacing, and each pagination chain remains strictly sequential.
-    if (session_factory is not None and section_workers > 1 and len(pairs) >= 8
+    if (session_factory is not None and section_workers > 1 and len(pairs) > 1
             and promote_store is None and defer_children is None and not target_path):
-        with ThreadPoolExecutor(max_workers=min(3, section_workers)) as executor:
+        with ThreadPoolExecutor(max_workers=min(section_workers, len(pairs))) as executor:
             partitions = list(executor.map(capture_section, pairs))
     else:
         partitions = []

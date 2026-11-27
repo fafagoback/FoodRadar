@@ -5,10 +5,12 @@ import json
 import os
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
+import re
+import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
+from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, valid_threads
 from crawl_queue import artifact_name
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip
@@ -37,6 +39,30 @@ def should_split_catalog(sections_count, elapsed_ms, native_children=0):
 def batch_name(state, index, wave):
     return f"fr-worker-{state['epoch']}-{index}-w{wave:02d}"
 
+def raw_response_category(path):
+    """Classify immutable responses without fetching anything again."""
+    if path.startswith("catalog/"):
+        if "-collection-" in path:
+            return "catalog_collection_probe"
+        return "catalog_page"
+    if path.startswith("stores/"):
+        if "-metadata-refresh-" in path:
+            return "store_metadata_refresh"
+        return "store_metadata"
+    return "other_raw"
+
+
+def count_raw_http_responses(paths):
+    """Count captured bodies; socket failures may lack a body."""
+    counts = Counter()
+    for path in paths:
+        counts[raw_response_category(path)] += 1
+        match = re.search(r"-attempt-(\d+)-status-\d+\.body$", path)
+        if match and int(match.group(1)) > 1:
+            counts["retry_response"] += 1
+    return counts
+
+
 def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                    capture=fetch_store_raw):
     started = time.monotonic()
@@ -59,7 +85,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     if not valid_threads(initial):
         raise ValueError("Invalid initial thread count")
     ctrl = AdaptiveThreads(initial)
-    ctrl.reset(time.monotonic(), global_limiter.snapshot())
+    ctrl.reset(time.monotonic(), {**global_limiter.snapshot(), "completed_stores": 0})
     transport = TransportPool()
     active, finished, uncommitted = {}, {}, {}
     reserved = deque()
@@ -68,6 +94,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     next_claim_at, next_status_at, last_flush_at = 0.0, 0.0, 0.0
     claim_seconds, idle_seconds, local_commit_seconds = 0.0, 0.0, 0.0
     last_task_finished = None
+    raw_http_counts = Counter()
+    raw_http_lock = threading.Lock()
 
     def claim(count):
         t = time.monotonic()
@@ -90,6 +118,8 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         result["crawl_elapsed_ms"] = max(1, round((time.monotonic()-t)*1000))
         checks = body_checksums(raw)
         result["crawl_api_requests"] = len(checks)
+        with raw_http_lock:
+            raw_http_counts.update(count_raw_http_responses(checks))
         doc = {"run_id":state["run_id"], "source_sha":state["source_sha"],
                "epoch":state["epoch"], "store_uuid":sid, "token":lease["token"],
                "worker":index, "store":result, "responses":checks}
@@ -106,17 +136,17 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
             next_probe=0.0
             empty_delay=0.6
             drained=False
-            with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
+            with ThreadPoolExecutor(max_workers=max(1, len(ids))) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
                 while True:
                     now=time.monotonic()
                     snap=global_limiter.snapshot()
-                    ctrl.observe(now, snap, len(active) >= ctrl.target, len(active))
+                    ctrl.observe(now, {**snap, "completed_stores": len(finished)}, len(active) >= ctrl.target, len(active))
                     if pending_exchange is not None and pending_exchange.done():
                         jobs,drained,elapsed=pending_exchange.result()
                         claim_seconds+=elapsed
                         pending_exchange=None
                         reserved.extend(jobs)
-                        if len(jobs)>MAX_THREADS or any(kind!="store" or key is not None for kind,sid,key,lease in jobs):
+                        if len(jobs)>12 or any(kind!="store" or key is not None for kind,sid,key,lease in jobs):
                             raise ValueError("Store-only worker received invalid work")
                         if jobs:
                             empty_delay=0.6
@@ -130,7 +160,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             active[pool.submit(one,kind,sid,key,lease)]=(kind,sid,key)
                     if drained and not active and not reserved and not uncommitted and not uncommitted_sections and pending_exchange is None:
                         break
-                    # Report the completed store and claim at most one next store.
+                    # Report completed stores and refill every available slot independently.
                     # Supabase RPC accepts 0..12 claims per request; replenish again
                     # if more than 12 worker slots remain free.
                     free=max(0,min(12,ctrl.target-len(active)-len(reserved)))
@@ -164,7 +194,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         done=set()
                     if idle_start is not None:
                         idle_seconds+=time.monotonic()-idle_start
-                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), len(active) >= ctrl.target, len(active))
+                    ctrl.observe(time.monotonic(), {**global_limiter.snapshot(), "completed_stores": len(finished)}, len(active) >= ctrl.target, len(active))
                     for future in done:
                         if future not in active:
                             continue
@@ -185,11 +215,11 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         else:
             # Claim no more than the available execution slots. Store bodies remain
             # local until a single final worker artifact upload.
-            with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
+            with ThreadPoolExecutor(max_workers=max(1, len(ids))) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
                 while True:
                     now = time.monotonic()
                     snap = global_limiter.snapshot()
-                    ctrl.observe(now, snap, len(active) >= ctrl.target, len(active))
+                    ctrl.observe(now, {**snap, "completed_stores": len(finished)}, len(active) >= ctrl.target, len(active))
                     if claim_future is not None and claim_future.done():
                         rows, elapsed = claim_future.result()
                         claim_seconds += elapsed
@@ -258,7 +288,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     done, _ = wait(waiting, timeout=.25, return_when=FIRST_COMPLETED)
                     if idle_start is not None:
                         idle_seconds += time.monotonic() - idle_start
-                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), len(active) >= ctrl.target, len(active))
+                    ctrl.observe(time.monotonic(), {**global_limiter.snapshot(), "completed_stores": len(finished)}, len(active) >= ctrl.target, len(active))
                     for future in done:
                         if future not in active:
                             continue
@@ -282,9 +312,13 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                 "wave": wave, "name": batch_name(state, index, wave), "records": finished,
                  "sections": section_finished}
     (base / "batch.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf8")
+    counts = dict(sorted(raw_http_counts.items()))
+    recorded = sum(v for k, v in counts.items() if k != "retry_response")
     summary = {"run_id": state["run_id"], "source_sha": state["source_sha"],
                "epoch": state["epoch"], "shard_index": index, "public_ip": public_ip(),
                "thread_learning": ctrl.report(), "api": global_limiter.snapshot(),
+               "captured_raw_http_responses": recorded,
+               "captured_raw_http_by_type": counts,
                "completed": len(finished), "sections_completed": sum(len(x) for x in section_finished.values()),
                 "wave": wave, "artifact_uploads": 1,
                "budget_exhausted": False,

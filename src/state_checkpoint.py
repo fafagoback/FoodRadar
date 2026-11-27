@@ -372,10 +372,31 @@ def retention_predecessor(root=ROOT, expected=None):
         h.update(source.encode("utf-8") if file=="src/pipeline.py" else (Path(root)/file).read_bytes())
     return h.hexdigest()
 
+# Only audited capture scheduling and HTTP provenance changed; physical DB
+# layout, archived Raw decoder and observation fields remain byte-identical.
+# Whole-contract SHA256 digests are pinned separately for FR and FRT.
+# Never accept arbitrary or unknown snapshot fingerprints.
+REVIEWED_CAPTURE_ONLY_DIGESTS = {
+    # FR: new source -> (prior captured source, prior retention predecessor)
+    "64a2c6abaccfb44cdd3d2a96c98c10685b3e399d5911fad91524b5bc8612b872": (
+        "41dc6ebff5673b264ee054449abaad3997951dd5729ba9db0f32b4f16e787537",
+        "e2249ee18c823af96455323065271ab3679a8b24fd7daecb86d0b805c00a350e",
+    ),
+    # FRT: exact same core plus separate dataset identity and location adapter
+    "e6e2e3c8d27b8a58cb5e11280d4037ab90d142950ad4d96a184de13502a72200": (
+        "f77b55027cd8e96a6786fe1f92bb046e5e59bd7742b697798bd6d491ddd1aafb",
+        "239c98c0b2d81f823ad471d1bb765df166d9a4328c952fdd3b4cab74b9e2cfd2",
+    ),
+}
+
 def compatible_direct_contract(meta,root=ROOT):
     fmt=meta.get("format")
     current=direct_contract_digest(root) if fmt=="foodradar-checkpoint-v4" else None
     if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==current:
+        return True
+    reviewed=REVIEWED_CAPTURE_ONLY_DIGESTS.get(current) if current else None
+    if reviewed and meta.get("contract_digest") in reviewed:
+        print("FOODRADAR_CHECKPOINT_EXACT_CAPTURE_ONLY_MIGRATION=PASS",flush=True)
         return True
     if fmt=="foodradar-checkpoint-v4":
         predecessor=retention_predecessor(root,current)
@@ -384,6 +405,10 @@ def compatible_direct_contract(meta,root=ROOT):
             return True
         if predecessor:
             current=predecessor
+        if reviewed:
+            # Walk the existing exact historical migration chain only when the
+            # current source is the audited forward capture-only successor.
+            current=reviewed[1]
         try:
             if current==_historical_digest(root,CODEC_UPGRADE,DIRECT_LAYOUT_CONTRACTS):
                 for old,files in [(r,DIRECT_LAYOUT_CONTRACTS) for r in CODEC_PREVIOUS_CURRENT_LAYOUTS]+[(r,PREVIOUS_LAYOUT_CONTRACTS) for r in CODEC_OLD_LAYOUTS]+[(r,DIRECT_CONTRACTS) for r in CODEC_OLD_CONTRACTS]:

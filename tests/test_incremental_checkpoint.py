@@ -112,8 +112,23 @@ class DirectCaptureMigrationTests(unittest.TestCase):
             CODEC_OLD_CONTRACTS, DIRECT_CONTRACTS, PREVIOUS_LAYOUT_CONTRACTS,
             DIRECT_LAYOUT_CONTRACTS, _historical_digest,direct_contract_digest)
         current=_historical_digest(ROOT,CODEC_UPGRADE,DIRECT_LAYOUT_CONTRACTS)
-        from state_checkpoint import retention_predecessor
-        self.assertEqual(retention_predecessor(ROOT) or direct_contract_digest(ROOT),current)
+        from state_checkpoint import retention_predecessor, REVIEWED_CAPTURE_ONLY_DIGESTS
+        actual = direct_contract_digest(ROOT)
+        if actual != current and actual in REVIEWED_CAPTURE_ONLY_DIGESTS:
+            prior_capture, prior_retention = REVIEWED_CAPTURE_ONLY_DIGESTS[actual]
+            self.assertEqual(prior_retention, current)
+            self.assertNotEqual(prior_capture, actual)
+            self.assertTrue(compatible_direct_contract({
+                "format": "foodradar-checkpoint-v4",
+                "contract_digest": prior_capture}, ROOT))
+            self.assertTrue(compatible_direct_contract({
+                "format": "foodradar-checkpoint-v4",
+                "contract_digest": prior_retention}, ROOT))
+            self.assertFalse(compatible_direct_contract({
+                "format": "foodradar-checkpoint-v4",
+                "contract_digest": "0"*64}, ROOT))
+        else:
+            self.assertEqual(retention_predecessor(ROOT) or actual,current)
         for old,files in [(r,DIRECT_LAYOUT_CONTRACTS) for r in CODEC_PREVIOUS_CURRENT_LAYOUTS]+[(r,PREVIOUS_LAYOUT_CONTRACTS) for r in CODEC_OLD_LAYOUTS]+[(r,DIRECT_CONTRACTS) for r in CODEC_OLD_CONTRACTS]:
             previous=_historical_digest(ROOT,old,files)
             self.assertTrue(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":previous},ROOT))

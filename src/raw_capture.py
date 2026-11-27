@@ -165,7 +165,12 @@ def fetch_store_raw(store: dict, root: Path, max_retries: int = 5, session_facto
                                 independent = requests.Session()
                                 independent.cookies.update(session.cookies)
                                 return independent
-                            options.update(session_factory=section_session, section_workers=3)
+                            # Store slots learn independently. Keep nested sections bounded.
+                            section_threads = int(os.getenv("FOODRADAR_SECTION_THREADS", "1"))
+                            if section_threads < 1:
+                                raise ValueError("FOODRADAR_SECTION_THREADS must be positive")
+                            if section_threads > 1:
+                                options.update(session_factory=section_session, section_workers=section_threads)
                         all_catalog = None
                         if catalog_runner is not None:
                             all_catalog = catalog_runner(store, root, relative, data, headers, attempt)

@@ -476,7 +476,7 @@ class SharedGitQueue:
 
     def _configure(self, state):
         count = state.get("lane_count")
-        if type(count) is not int or not 1 <= count <= 32 or count > len(state["tasks"]):
+        if type(count) is not int or count < 1 or count > len(state["tasks"]):
             raise ValueError("Invalid synchronization lane count")
         self.meta = state
         self.lanes = [GitQueue(*self.args, lane=i) for i in range(count)]

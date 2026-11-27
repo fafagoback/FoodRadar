@@ -25,6 +25,23 @@ class BatchCrawlTests(unittest.TestCase):
             self.assertEqual(q.reset_terminated_wave(), 1)
         self.assertEqual(state["pending"], ["a","b"])
         self.assertEqual(state["completed"], {"c":{}})
+    def test_raw_http_breakdown_counts_only_written_responses(self):
+        from batch_crawl import count_raw_http_responses
+        paths = [
+            "stores/a-attempt-01-status-200.body",
+            "stores/a-attempt-02-status-200.body",
+            "stores/a-attempt-01-metadata-refresh-01-status-200.body",
+            "catalog/a/store-attempt-01-section-000-x-sub-none-page-0000-offset-000000-attempt-01-status-200.body",
+            "catalog/a/store-attempt-01-section-000-x-sub-none-page-0001-offset-000060-attempt-02-status-200.body",
+            "catalog/a/store-attempt-01-section-001-y-sub-none-page-0000-offset-000000-collection-attempt-01-status-200.body",
+        ]
+        counts = count_raw_http_responses(paths)
+        self.assertEqual(counts["store_metadata"], 2)
+        self.assertEqual(counts["store_metadata_refresh"], 1)
+        self.assertEqual(counts["catalog_page"], 2)
+        self.assertEqual(counts["catalog_collection_probe"], 1)
+        self.assertEqual(counts["retry_response"], 2)
+
     def test_multiple_native_metadata_refreshes_keep_distinct_raw_bodies(self):
         from batch_crawl import section_refresh_name
         first = section_refresh_name(6, 1, 1, 200)

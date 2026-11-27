@@ -344,7 +344,7 @@ def capture_shard(config: dict, index: int, count: int, root: Path = ROOT,
                   discovery_file: Path | None = None):
     if not 1 <= count <= MAX_BATCHES or not 0 <= index < count:
         raise ValueError("Invalid matrix batch count or index")
-    if not 0 <= config["max_pages"] <= 100:
+    if type(config["max_pages"]) is not int or config["max_pages"] < 0:
         raise ValueError("Invalid max_pages")
     path = root / "data" / f"shard-{index}"
     if path.exists():
