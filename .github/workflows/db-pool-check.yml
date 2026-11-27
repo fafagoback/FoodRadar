@@ -31,3 +31,4 @@ jobs:
           python -m unittest discover -s tests -p test_compact_incremental.py -v
           python -m unittest discover -s tests -p test_db_stage_hf.py -v
           python -m unittest discover -s tests -p test_db_stage_plan.py -v
+          PYTHONPATH=src python -c 'from state_checkpoint import direct_contract_digest; print("FOODRADAR_CURRENT_DIRECT_DIGEST="+direct_contract_digest())'
