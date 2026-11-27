@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
     paths: ['.github/workflows/crawl.yml']
+  # Verified FR live SB rollover and 429-safe thread-learning acceptance.
   # 每日台灣時間 06:30、18:30（UTC 22:30、10:30）。
   schedule:
     - cron: '30 10,22 * * *'
