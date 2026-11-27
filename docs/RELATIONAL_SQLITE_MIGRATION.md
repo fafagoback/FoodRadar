@@ -73,5 +73,8 @@ A separate proxy or another read protocol would need a new review.
 A guarded two-phase HF publisher is available as scripts/publish_relational_db.py:
 It uploads only with --upload, verifies the remote byte length, and switches
 DB/current.json only after staging an immutable version. Do not pass --upload
-until browser and production volume tests are accepted. The browser adapter is
-NOT implemented, and this is NOT a replacement for FR/FRT production yet.
+until browser and production volume tests are accepted. A browser-side proof module is available at web/hf-sqlite-client.js with
+metadata, product, nearby-store and history SQL queries, and a mocked Node
+regression test. It is NOT wired into the main website and the WASM/worker
+assets are not bundled. Real HF/CORS and production latency tests remain open.
+This is NOT a replacement for FR/FRT production yet.
