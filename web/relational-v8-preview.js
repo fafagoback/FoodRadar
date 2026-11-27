@@ -113,6 +113,7 @@ async function connect(){
 async function search(){
   await connect();
   const start=performance.now();
+  message("正在查詢 SQLite…");
   const keyword=byId("keyword").value.trim();
   const city=byId("city").value.trim();
   const page=Math.max(1,integer(byId("page").value,1));
@@ -183,5 +184,14 @@ async function search(){
   message("直接查詢 HF SQLite，取得 "+rows.length+" 筆，查詢耗時 "+
           Math.round(performance.now()-start)+" ms");
 }
-byId("search").addEventListener("click",()=>search().catch(e=>message("查詢失敗："+e.message)));
-search().catch(e=>message("初始化失敗："+e.message));
+let searching=false;
+async function guardedSearch(){
+  if(searching)return;
+  searching=true;
+  byId("search").disabled=true;
+  try{await search();}
+  catch(e){message("查詢失敗："+e.message);}
+  finally{searching=false;byId("search").disabled=false;}
+}
+byId("search").addEventListener("click",guardedSearch);
+guardedSearch();
