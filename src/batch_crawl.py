@@ -8,7 +8,7 @@ import uuid
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from adaptive_threads import AdaptiveThreads
+from adaptive_threads import AdaptiveThreads, DEFAULT_THREADS, MAX_THREADS, valid_threads
 from crawl_queue import artifact_name
 from crawl_transport import TransportPool
 from distributed_crawl import ROOT, load_shared_discovery, public_ip
@@ -54,9 +54,11 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         raise ValueError("Static ownership is not allowed")
     wave = int(os.getenv("FR_CRAWL_WAVE", "0"))
     owner = f"{index}-{uuid.uuid4().hex}"
-    # One active whole-store lease per machine. In-store HTTP concurrency is
-    # independent; do not learn or publish a store-slot count greater than one.
-    ctrl = AdaptiveThreads(1)
+    # Every store slot is independent. Finished slots immediately take new stores.
+    initial = int(os.getenv("FOODRADAR_INITIAL_THREADS", str(DEFAULT_THREADS)))
+    if not valid_threads(initial):
+        raise ValueError("Invalid initial thread count")
+    ctrl = AdaptiveThreads(initial)
     ctrl.reset(time.monotonic(), global_limiter.snapshot())
     transport = TransportPool()
     active, finished, uncommitted = {}, {}, {}
@@ -66,7 +68,6 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
     next_claim_at, next_status_at, last_flush_at = 0.0, 0.0, 0.0
     claim_seconds, idle_seconds, local_commit_seconds = 0.0, 0.0, 0.0
     last_task_finished = None
-    last_saturated = False
 
     def claim(count):
         t = time.monotonic()
@@ -105,16 +106,17 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
             next_probe=0.0
             empty_delay=0.6
             drained=False
-            with ThreadPoolExecutor(max_workers=1) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
+            with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
                 while True:
                     now=time.monotonic()
                     snap=global_limiter.snapshot()
+                    ctrl.observe(now, snap, len(active) >= ctrl.target, len(active))
                     if pending_exchange is not None and pending_exchange.done():
                         jobs,drained,elapsed=pending_exchange.result()
                         claim_seconds+=elapsed
                         pending_exchange=None
                         reserved.extend(jobs)
-                        if len(jobs)>1 or any(kind!="store" or key is not None for kind,sid,key,lease in jobs):
+                        if len(jobs)>MAX_THREADS or any(kind!="store" or key is not None for kind,sid,key,lease in jobs):
                             raise ValueError("Store-only worker received invalid work")
                         if jobs:
                             empty_delay=0.6
@@ -123,13 +125,15 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             next_probe=now+empty_delay
                             empty_delay=min(2.5,empty_delay*1.4)
                     if snap["cooldown_remaining_seconds"]<=0:
-                        while reserved and not active:
+                        while reserved and len(active) < ctrl.target:
                             kind,sid,key,lease=reserved.popleft()
                             active[pool.submit(one,kind,sid,key,lease)]=(kind,sid,key)
                     if drained and not active and not reserved and not uncommitted and not uncommitted_sections and pending_exchange is None:
                         break
                     # Report the completed store and claim at most one next store.
-                    free=max(0,1-len(active)-len(reserved))
+                    # Supabase RPC accepts 0..12 claims per request; replenish again
+                    # if more than 12 worker slots remain free.
+                    free=max(0,min(12,ctrl.target-len(active)-len(reserved)))
                     if snap["cooldown_remaining_seconds"]>0:
                         free=0
                     done_count=len(uncommitted)+sum(map(len,uncommitted_sections.values()))
@@ -160,6 +164,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         done=set()
                     if idle_start is not None:
                         idle_seconds+=time.monotonic()-idle_start
+                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), len(active) >= ctrl.target, len(active))
                     for future in done:
                         if future not in active:
                             continue
@@ -180,10 +185,11 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
         else:
             # Claim no more than the available execution slots. Store bodies remain
             # local until a single final worker artifact upload.
-            with ThreadPoolExecutor(max_workers=1) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
+            with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool, ThreadPoolExecutor(max_workers=1) as coordinator:
                 while True:
                     now = time.monotonic()
                     snap = global_limiter.snapshot()
+                    ctrl.observe(now, snap, len(active) >= ctrl.target, len(active))
                     if claim_future is not None and claim_future.done():
                         rows, elapsed = claim_future.result()
                         claim_seconds += elapsed
@@ -196,7 +202,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         local_commit_seconds += elapsed
                         sync_future = None
                     if snap["cooldown_remaining_seconds"] <= 0:
-                        while reserved and not active:
+                        while reserved and len(active) < ctrl.target:
                             kind, sid, key, lease = reserved.popleft()
                             active[pool.submit(one, kind, sid, key, lease)] = (kind, sid, key)
                     if status_future is not None and status_future.done():
@@ -233,7 +239,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                         sync_future = coordinator.submit(sync)
                     if (snap["cooldown_remaining_seconds"] <= 0
                             and claim_future is None and now >= next_claim_at):
-                        free_slots = max(0, 1 - len(active) - len(reserved))
+                        free_slots = max(0, ctrl.target - len(active) - len(reserved))
                         if free_slots and not reserved and not uncommitted and not uncommitted_sections and sync_future is None:
                             claim_future = coordinator.submit(claim, free_slots)
                     if (not active and not reserved and not uncommitted and not uncommitted_sections and claim_future is None
@@ -241,8 +247,6 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                             and now >= next_status_at):
                         status_future = coordinator.submit(queue.read)
                         next_status_at = now + 2.0
-                    saturated = len(active) >= ctrl.target
-                    last_saturated = saturated
                     waiting = set(active)
                     for future in (claim_future, sync_future, status_future):
                         if future is not None:
@@ -254,6 +258,7 @@ def capture_worker(config, index, discovery_file, queue=None, root=ROOT,
                     done, _ = wait(waiting, timeout=.25, return_when=FIRST_COMPLETED)
                     if idle_start is not None:
                         idle_seconds += time.monotonic() - idle_start
+                    ctrl.observe(time.monotonic(), global_limiter.snapshot(), len(active) >= ctrl.target, len(active))
                     for future in done:
                         if future not in active:
                             continue
