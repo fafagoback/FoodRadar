@@ -56,8 +56,11 @@ async function readIndex(){
       throw Error("Incomplete product link inventory");
     loaded={shops,names,priceMap,meta};
     const ms=Math.round(performance.now()-started);
+    const bytes=Number(await worker.worker.bytesRead||0);
+    window.__FR_SQLITE_DIAGNOSTICS={initialLoadMs:ms,bytesRead:bytes,
+      stores:shops.length,links,totalDatabaseBytes:meta.size,batch:meta.batch};
     console.info("FR_SQLITE_INDEX_READY_MS",ms,"stores",shops.length,"links",links,
-      "bytes",Number(await worker.worker.bytesRead||0));
+      "bytes",bytes);
     el("release").textContent="資料批次："+meta.batch+"｜SQLite "+
       (meta.size/1048576).toFixed(1)+" MiB｜"+links.toLocaleString("zh-TW")+" 筆商品關聯";
     return loaded;
