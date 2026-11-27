@@ -14,6 +14,7 @@ from pathlib import Path
 
 from feed_core import scan_single_point
 from menu_core import normalize_store_uuid, canonical_store_uuid, global_limiter
+from release_policy import failure_budget_allows
 from raw_capture import fetch_store_raw, archive_and_upload
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +30,8 @@ def distance_km(lat, lon, target_lat, target_lon):
 
 
 def crawl(config, upload_raw=False):
-    if not 1 <= config["workers"] <= 5 or not 0 <= config["max_pages"] <= 100:
+    if (type(config["workers"]) is not int or config["workers"] < 1
+            or type(config["max_pages"]) is not int or config["max_pages"] < 0):
         raise ValueError("Invalid crawler worker or pagination configuration")
     batch = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d%H%M%S")
     output = ROOT / "data" / batch
@@ -76,7 +78,7 @@ def crawl(config, upload_raw=False):
         items = list(unique.values())
         stores = [None] * len(items)
         started = monotonic()
-        with ThreadPoolExecutor(max_workers=config["workers"]) as pool:
+        with ThreadPoolExecutor(max_workers=min(config["workers"], max(1, len(items)))) as pool:
             pending = {
                 pool.submit(fetch_store_raw, item, raw): index
                 for index, item in enumerate(items)
@@ -130,14 +132,8 @@ def crawl(config, upload_raw=False):
     # fully captured stores receive current observations. This is NOT a
     # complete capture and must never replace Raw/latest.json.
     partial_replayable = bool(
-        upload_raw and error and pages and len(stores) >= 50
-        and len(successes) >= 50
-        and 0 < len(failures) <= max(1, int(len(stores) * 0.05))
-        and all(
-            "native code 500" in str(s.get("error") or "")
-            or "previously seen native parent SKUs" in str(s.get("error") or "")
-            for s in failures
-        )
+        upload_raw and error and pages and successes and failures
+        and failure_budget_allows(len(failures), len(stores))
     )
     if upload_raw and any(raw.rglob("*.body")):
         archive_and_upload(raw, config, batch, stores, pages, complete,
