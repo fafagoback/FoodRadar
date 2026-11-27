@@ -3,7 +3,7 @@ run-name: 'FoodRadar 03｜儲存空間清理｜執行編號 #${{ github.run_numb
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/fr-retention.yml']
+    paths: ['.github/workflows/fr-retention.yml','scripts/prune_legacy_fr_workflows.py']
   workflow_call:
   schedule:
     - cron: '0 19 * * *'
@@ -38,6 +38,12 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p 'test_hf_retention.py' -v
           python3 -m unittest discover -s tests -p 'test_cleanup_sqlite_previews.py' -v
+      - name: 只清理已從 main 移除、完全停止的舊版 Workflows 與其執行紀錄
+        if: ${{ success() && inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/prune_legacy_fr_workflows.py
+
       - name: 清理歷史 Artifact 並產生中文報告
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,12 +60,6 @@ jobs:
           else
             python3 scripts/cleanup_sqlite_previews.py --apply
           fi
-
-      - name: 只清理已從 main 移除、完全停止的舊版 Workflows 與其執行紀錄
-        if: ${{ success() && inputs.dry_run != true }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/prune_legacy_fr_workflows.py
 
       - name: HF Raw 僅保留 60 天，清除歷史提交及舊檔案版本
         if: ${{ success() }}

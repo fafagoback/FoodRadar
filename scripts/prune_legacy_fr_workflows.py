@@ -73,8 +73,33 @@ def prune():
             # is deleted. That 404 is a successful retired-workflow outcome.
             api(f"/actions/workflows/{w['id']}/disable","PUT",may_404=True)
             disabled.append(w["name"])
+    # Deleted Workflow entries can disappear from /actions/workflows while
+    # their old Run records remain visible in the Actions sidebar.
+    # Sweep the entire immutable Run inventory as a separate second pass.
+    # Never delete a Run belonging to any of the three retained paths.
+    history=list(pages("/actions/runs","workflow_runs"))
+    retired=[run for run in history
+             if (run.get("path") or "").split("@",1)[0].startswith(".github/workflows/")
+             and (run.get("path") or "").split("@",1)[0] not in KEEP]
+    active_legacy_paths={
+        (run.get("path") or "").split("@",1)[0] for run in retired
+        if run.get("status")!="completed"}
+    deleted_history=[]
+    protected=[]
+    for run in retired:
+        path=(run.get("path") or "").split("@",1)[0]
+        if path in active_legacy_paths:
+            protected.append({"id":run["id"],"reason":"active workflow run"});continue
+        if api("/contents/"+path,may_404=True) is not None:
+            protected.append({"id":run["id"],"reason":"workflow file still exists on main"});continue
+        if run.get("status")!="completed":
+            protected.append({"id":run["id"],"reason":"not completed"});continue
+        api(f"/actions/runs/{run['id']}","DELETE",may_404=True)
+        deleted_history.append({"id":run["id"],"name":run["name"]})
+        print("FR_RETIRED_RUN_DELETED="+str(run["id"])+" "+run["name"],flush=True)
     report={"allowed":sorted(KEEP),"obsolete":obsolete,
-            "deleted_runs":len(deleted),"disabled_workflows":disabled,"skipped":skipped}
+            "deleted_runs":len(deleted)+len(deleted_history),"deleted_orphan_runs":len(deleted_history),
+            "disabled_workflows":disabled,"skipped":skipped,"protected_legacy_runs":protected}
     print("FR_LEGACY_WORKFLOW_PRUNE="+json.dumps(report,ensure_ascii=False),flush=True)
     return report
 
