@@ -1,0 +1,61 @@
+name: FR SQLite v5｜沿用 18MB 壓縮資料的關聯索引實測
+on:
+  push:
+    branches: [feature/shared-relational-sqlite]
+    paths:
+      - '.github/workflows/verify-relational-overlay-v5.yml'
+      - 'src/relational_overlay_v5.py'
+      - 'scripts/build_relational_overlay_v5.py'
+      - 'tests/test_relational_overlay_v5.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-and-benchmark:
+    name: 驗證不複製原始紀錄、SQL 關聯正確及實際容量（不爬取）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝已存在的 SQLite 壓縮套件
+        run: pip install 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1' 'msgpack>=1,<2'
+      - name: SQL 正規化關聯測試
+        run: |
+          python -m unittest discover -s tests -p test_relational_overlay_v5.py -v
+          python -m py_compile src/relational_overlay_v5.py scripts/build_relational_overlay_v5.py
+      - name: 從 HF 還原已驗證 FR checkpoint（不碰 Uber Eats）
+        run: python src/hf_retention.py restore
+      - name: 真實資料測量原版 + SQL 索引整體容量
+        run: |
+          python scripts/build_relational_overlay_v5.py --checkpoint data/state-checkpoint --output data/relational-overlay-v5.db --report data/relational-v5-audit.json
+          python - <<'PY'
+          import json,sqlite3
+          from pathlib import Path
+          path=Path('data/relational-overlay-v5.db')
+          audit=json.loads(Path('data/relational-v5-audit.json').read_text())
+          with sqlite3.connect(path) as db:
+              audit['dbstat_bytes']={k:int(v) for k,v in db.execute(
+                  "SELECT name,SUM(pgsize) FROM dbstat GROUP BY name ORDER BY SUM(pgsize) DESC")}
+              meta={k:json.loads(v) for k,v in db.execute("SELECT key,value FROM relational_meta")}
+              assert meta['format']=='foodradar-relational-overlay-v5'
+              assert db.execute('pragma integrity_check').fetchone()[0]=='ok'
+              assert not list(db.execute('pragma foreign_key_check'))
+          audit['ratio']=round(audit['candidate_bytes']/audit['original_bytes'],3)
+          Path('data/relational-v5-audit.json').write_text(json.dumps(audit,ensure_ascii=False,indent=2))
+          print('FR_RELATIONAL_OVERLAY_V4_BENCHMARK='+json.dumps(audit,ensure_ascii=False),flush=True)
+          with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('## FR v5 檔案容量\n\n原始 checkpoint：'+str(audit['original_bytes'])+
+                      ' bytes\n\n新增 SQL 關聯後：'+str(audit['candidate_bytes'])+' bytes\n\n')
+          PY
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: fr-sqlite-v5-capacity-report
+          path: data/relational-v5-audit.json
+          if-no-files-found: ignore
+          retention-days: 7
