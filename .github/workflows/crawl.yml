@@ -1,9 +1,6 @@
 name: FoodRadar 01｜資料爬取與更新
-run-name: 'FoodRadar 01｜資料爬取、DB及網站驗收｜執行編號 #${{ github.run_number }}'
+run-name: 'FoodRadar 01｜資料爬取與更新｜#${{ github.run_number }}${{ inputs.mode == ''verify'' && ''（離線測試）'' || '''' }}'
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/crawl.yml']
   workflow_dispatch:
     inputs:
       mode:
@@ -43,7 +40,7 @@ jobs:
 
   discover_once:
     name: 統一探索設定範圍，建立 15 台共用任務池
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_ONE_TIME_FULL_CRAWL')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
@@ -124,7 +121,7 @@ jobs:
     name: "爬蟲工作機 ${{ matrix.worker }}"
     needs: discover_once
     continue-on-error: true
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_ONE_TIME_FULL_CRAWL')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -508,7 +505,7 @@ jobs:
   final_gate:
     name: 最終驗收｜全部完成才標綠，不能跳過 DB 或網站
     needs: [discover_once,crawl_shard,plan_recovery,recover_shard,ingest,report,db_plan,db_workers,db_merge,publish,cleanup]
-    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_ONE_TIME_FULL_CRAWL'))) }}
+    if: ${{ always() && inputs.mode == 'crawl' }}
     runs-on: ubuntu-latest
     env:
       DISCOVERY: ${{ needs.discover_once.result }}

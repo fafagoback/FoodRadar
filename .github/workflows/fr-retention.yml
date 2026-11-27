@@ -1,9 +1,6 @@
-name: FoodRadar 03｜60天 HF 與 GitHub 儲存清理
-run-name: 'FoodRadar 03｜儲存空間清理｜執行編號 #${{ github.run_number }}'
+name: FoodRadar 03｜儲存空間清理
+run-name: 'FoodRadar 03｜儲存空間清理｜#${{ github.run_number }}${{ inputs.dry_run && ''（僅盤點）'' || '''' }}'
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/fr-retention.yml','scripts/prune_legacy_fr_workflows.py']
   workflow_call:
   schedule:
     - cron: '0 19 * * *'
@@ -32,24 +29,6 @@ jobs:
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
-      # One-time, message-gated removal of the 67 pre-existing historical Action runs.
-      - name: 一次性刪除使用者指定的 67 筆舊執行紀錄
-        if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'PURGE_FR_67_RUNS') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          ids=(46075780883 46075467679 46074998791 46074947416 46023983182 46009108499 45951424825 45951298296 45950995702 45950712111 45950631874 45950498413 45949021711 45948919900 45940962364 45939507529 45919121529 45918804678 45918759574 45886614634 45885831733 45754718356 45753910932 45731424907 45730602466 45730018343 45729863455 45691922520 45690690500 45562363812 45561359130 45560714688 45560088980 45559868669 45558320085 45556797717 45555645238 45555305489 45555138885 45555043464 45554500390 45553811846 45538593357 45538230458 45536586023 45536230104 45535606107 45535344539 45535176902 45532368301 45530843804 45528683174 45525937596 45523009252 45521049885 45519459639 45485087459 45483887975 45441190320 45439189768 45437153828 45436994369 45436163012 45434134244 45362564847 45361219784 45355401639)
-          [[ "${#ids[@]}" -eq 67 ]] || exit 1
-          removed=0
-          for id in "${ids[@]}"; do
-            [[ "$id" != "$GITHUB_RUN_ID" ]] || { echo "Refusing to delete current job"; exit 1; }
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$id" >/dev/null
-            removed=$((removed+1))
-            echo "FR_HISTORY_RUN_DELETED=$id"
-          done
-          echo "FR_HISTORY_RUNS_PURGED=$removed" >> "$GITHUB_STEP_SUMMARY"
       - name: 安裝 HF 清理所需套件
         run: python3 -m pip install -r requirements.txt 'huggingface_hub>=0.30,<2'
       - name: 驗證 60 天 Raw 與歷史提交清理

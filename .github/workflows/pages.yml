@@ -1,5 +1,5 @@
 name: FoodRadar 02｜網站部署
-run-name: 'FoodRadar 02｜既有資料重新發布（無爬蟲）｜執行編號 #${{ github.run_number }}'
+run-name: 'FoodRadar 02｜網站部署｜#${{ github.run_number }}'
 on:
   workflow_call:
   workflow_dispatch:

@@ -18,6 +18,17 @@ class PipelineWiringTests(unittest.TestCase):
     def test_no_unintended_automatic_crawl(self):
         self.assertEqual(list(self.crawl["on"]),["workflow_dispatch"])
         self.assertEqual(self.crawl["on"]["workflow_dispatch"]["inputs"]["mode"]["default"],"crawl")
+    def test_consistent_production_workflow_names(self):
+        for workflow, name in (
+            (self.crawl, "FoodRadar 01｜資料爬取與更新"),
+            (self.pages, "FoodRadar 02｜網站部署"),
+            (self.clean, "FoodRadar 03｜儲存空間清理"),
+        ):
+            self.assertEqual(workflow["name"], name)
+            self.assertTrue(workflow["run-name"].startswith(name + "｜#"))
+            self.assertNotIn("push", workflow["on"])
+        self.assertNotIn("PURGE_FR_67_RUNS", (ROOT/".github/workflows/fr-retention.yml").read_text(encoding="utf-8"))
+        self.assertNotIn("FR_ONE_TIME_FULL_CRAWL", (ROOT/".github/workflows/crawl.yml").read_text(encoding="utf-8"))
     def test_one_run_contains_15_crawl_and_15_db_and_17(self):
         jobs=self.crawl["jobs"]
         self.assertEqual(jobs["crawl_shard"]["strategy"]["max-parallel"],"15")
