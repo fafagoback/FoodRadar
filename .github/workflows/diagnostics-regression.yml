@@ -17,3 +17,4 @@ jobs:
       - run: python -m unittest discover -s tests -p 'test_parallel_worker_slots.py' -v
       - run: python -m unittest discover -s tests -p 'test_adaptive_threads.py' -v
       - run: python -m unittest discover -s tests -p 'test_sb_task_pool_transport.py' -v
+      - run: python -m unittest discover -s tests -v
