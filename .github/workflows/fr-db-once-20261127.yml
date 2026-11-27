@@ -34,7 +34,12 @@ jobs:
           count=$(gh api "$api/runs/$SOURCE_RUN/artifacts?per_page=100" --jq '[.artifacts[] | select(.name=="fr-db-source" and .expired==false and .size_in_bytes>0)] | length')
           [[ "$count" == 1 ]] || { echo "No unique durable FR DB source evidence" >&2; exit 1; }
           echo "FR_DB_VERIFIED_CRAWL=$SOURCE_RUN"
-          gh api -X PUT "$api/workflows/crawl.yml/disable"
+          crawl_state=$(gh api "$api/workflows/crawl.yml" --jq .state)
+          if [[ "$crawl_state" == active ]]; then
+            gh api -X PUT "$api/workflows/crawl.yml/disable"
+          else
+            echo "FR crawler already disabled: $crawl_state"
+          fi
           launcher=$(gh api "$api/runs/46023953788" --jq .status)
           if [[ "$launcher" != completed ]]; then
             gh api -X POST "$api/runs/46023953788/cancel" || true
