@@ -1,0 +1,38 @@
+name: FR 正規化 SQLite 離線驗證
+on:
+  push:
+    branches:
+      - feature/shared-relational-sqlite
+    paths:
+      - 'src/relational_catalog.py'
+      - 'scripts/build_relational_db.py'
+      - 'scripts/verify_relational_db.py'
+      - 'scripts/publish_relational_db.py'
+      - 'web/hf-sqlite-client.js'
+      - 'tests/test_relational_catalog.py'
+      - 'tests/test_hf_sqlite_client.mjs'
+      - '.github/workflows/verify-relational-candidate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    name: SQLite 共用商品與瀏覽器介面回歸測試
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: SQLite 商品去重、價格與完整性測試
+        run: python -m unittest discover -s tests -p 'test_relational_catalog.py' -v
+      - name: HF SQLite 網頁介面測試
+        run: node tests/test_hf_sqlite_client.mjs
+      - name: 驗證檔案語法
+        run: |
+          python -m py_compile src/relational_catalog.py scripts/build_relational_db.py scripts/verify_relational_db.py scripts/publish_relational_db.py scripts/probe_hf_sqlite.py
+          node --check web/hf-sqlite-client.js
