@@ -2,7 +2,7 @@ name: FR SQLite v7｜真實 Chrome 網頁查詢與截圖
 on:
   push:
     branches: [feature/shared-relational-sqlite]
-    paths: ['.github/workflows/verify-relational-browser.yml']
+    paths: ['.github/workflows/verify-relational-browser-v7.yml']
   workflow_dispatch:
 permissions:
   contents: read
