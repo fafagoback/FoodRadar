@@ -15,17 +15,17 @@ globalThis.fetch=async(url,opts)=>{
   }};
 };
 const queries=[];
-const worker={db:{query:async sql=>{
+const worker={db:{exec:async sql=>{
   queries.push(sql);
   if(sql.includes("WHERE key='batch'"))
-    return [{value:'"20261127071423"'}];
+    return [{columns:["value"],values:[['"20261127071423"']]}];
   if(sql.includes("FROM metadata"))
-    return [{key:"batch",value:'"20261127071423"'}];
+    return [{columns:["key","value"],values:[["batch",'"20261127071423"']]}];
   if(sql.includes("store_geo"))
-    return [{uuid:"A",latitude:25,longitude:121.5}];
+    return [{columns:["uuid","latitude","longitude"],values:[["A",25,121.5]]}];
   if(sql.includes("price_observations"))
-    return [{batch_id:"20261127071423"}];
-  return [{product_name:"套餐"}];
+    return [{columns:["batch_id"],values:[["20261127071423"]]}];
+  return [{columns:["product_name"],values:[["套餐"]]}];
 }}};
 const mod=await import("../web/hf-sqlite-client.js");
 const connected=await mod.connectHFSQLite({
