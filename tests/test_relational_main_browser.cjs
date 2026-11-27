@@ -12,7 +12,9 @@ const {chromium}=require("playwright");
     const root=(process.env.FR_TEST_BASE||"http://127.0.0.1:8765/").replace(/\/?$/,"/");
     await page.goto(root+"index.html",{waitUntil:"domcontentloaded",timeout:30000});
     const result=await page.evaluate(async()=>{
-      const client=await import("./static-catalog.js");
+      const selected=window.UBER_RADAR_CONFIG?.ENABLE_SQLITE?"./sqlite-catalog.js":"./static-catalog.js";
+      if(!window.UBER_RADAR_CONFIG?.ENABLE_SQLITE)throw Error("Website did not switch to SQL adapter");
+      const client=await import(selected+"?_t="+(window.__APP_LOAD_TIME__||"v2"));
       const meta=await client.metadata();
       const stores=await client.searchStoresPage({newOnly:false,page:1});
       const keyword=await client.searchProductsPage({kind:"global",keyword:"雞排",page:1});

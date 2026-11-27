@@ -72,6 +72,7 @@ jobs:
           PY
           )
           python scripts/build_sqlite_site_version.py --batch "$batch"
+      # SQL-specific homepage smoke test must not import the old static data client.
       - name: Chrome 先驗證全部首頁 API、查詢、歷史與 SQLite CORS
         run: |
           (cd web && nohup python3 -m http.server 8765 --bind 127.0.0.1 >/tmp/fr-sqlite-http.log 2>&1 &)
