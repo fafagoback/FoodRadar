@@ -340,7 +340,19 @@ _RETENTION_PRUNE = (
     ("            'contract_digest':direct_contract_digest()\n", "            'contract_digest':direct_contract_digest(),\n            **({'retention_days': 60, 'retention_cutoff': state.meta['price_history_cutoff']}\n               if config.get('hf_raw_retention_days') == 60 else {})\n"),
 )
 
-def retention_predecessor(root=ROOT):
+def retention_predecessor(root=ROOT, expected=None):
+    if not (Path(root)/"config.json").is_file():
+        return None
+    if expected is not None:
+        actual=hashlib.sha256()
+        for file in DIRECT_LAYOUT_CONTRACTS:
+            path=Path(root)/file
+            if not path.is_file():
+                return None
+            actual.update(file.encode()+b"\0")
+            actual.update(path.read_bytes())
+        if actual.hexdigest()!=expected:
+            return None
     source=(Path(root)/"src/pipeline.py").read_text(encoding="utf-8")
     for old,new in reversed(_RETENTION_PRUNE):
         if source.count(new)!=1:return None
@@ -366,7 +378,7 @@ def compatible_direct_contract(meta,root=ROOT):
     if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==current:
         return True
     if fmt=="foodradar-checkpoint-v4":
-        predecessor=retention_predecessor(root)
+        predecessor=retention_predecessor(root,current)
         if predecessor and meta.get("contract_digest")==predecessor:
             print("FOODRADAR_CHECKPOINT_RETENTION_MIGRATION=PASS",flush=True)
             return True

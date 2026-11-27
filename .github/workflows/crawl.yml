@@ -1,7 +1,7 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
-  # 第16台完整速度實測：驗收、爬取、HF、DB、網站發布；保留每日排程。
+  # 第16台完整驗收與 60 天保留；保留每日排程。
   push:
     branches: [main]
     paths: ['.github/workflows/crawl.yml']
