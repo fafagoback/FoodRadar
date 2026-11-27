@@ -67,7 +67,14 @@ def raw_records(config):
         data=file.read_bytes()
         return path,json.loads(data),hashlib.sha256(data).hexdigest()
     with ThreadPoolExecutor(max_workers=8) as ex:
-        return list(ex.map(read,paths))
+        records=list(ex.map(read,paths))
+    if config.get("hf_raw_retention_days")==60:
+        # Mirror the canonical incremental-replay manifest history.
+        # Retired Raw still contributes to checkpoint prefix provenance,
+        # never requires downloading expired HTTP bodies again.
+        from hf_retention import history_records
+        records=history_records(api,records)
+    return records
 
 
 def build(batch,source_run,source_count,folder,*,pool=None,apply=True):
