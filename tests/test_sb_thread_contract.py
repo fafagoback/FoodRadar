@@ -9,6 +9,15 @@ class SupabaseThreadContract(unittest.TestCase):
         self.assertIn('initial = int(os.environ["FOODRADAR_INITIAL_THREADS"])',src)
         self.assertIn('os.getenv("FR_QUEUE_BACKEND") == "sb"',src)
 
+    def test_no_legacy_git_queue_fallback(self):
+        import os,sys
+        from unittest.mock import patch
+        sys.path.insert(0,str(ROOT/"src"))
+        from dynamic_crawl import runtime_queue
+        with patch.dict(os.environ,{"FR_QUEUE_BACKEND":"git","GITHUB_RUN_ID":"test"}):
+            with self.assertRaisesRegex(RuntimeError,"FR_QUEUE_BACKEND=sb"):
+                runtime_queue()
+
     def test_native_categories_not_enqueued(self):
         src=(ROOT/"src"/"sb_task_pool.py").read_text()
         self.assertNotIn('self._rpc("split"',src)

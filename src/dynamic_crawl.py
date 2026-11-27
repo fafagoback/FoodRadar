@@ -28,12 +28,12 @@ HELPER = ROOT / ".github/actions/fr-dynamic-crawl/artifact.cjs"
 
 
 def runtime_queue():
-    if os.environ.get("FR_QUEUE_BACKEND") == "sb":
-        from sb_task_pool import SupabaseQueue
-        return SupabaseQueue(ROOT, os.environ["GITHUB_RUN_ID"],
-                             int(os.environ.get("GITHUB_RUN_ATTEMPT","1")))
-    return SharedGitQueue(ROOT, os.environ["GITHUB_RUN_ID"],
-                    int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")))
+    # Every production crawl must use the store-only Supabase task pool.
+    if os.environ.get("FR_QUEUE_BACKEND") != "sb":
+        raise RuntimeError("FR_QUEUE_BACKEND=sb is required for the production task pool")
+    from sb_task_pool import SupabaseQueue
+    return SupabaseQueue(ROOT, os.environ["GITHUB_RUN_ID"],
+                         int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")))
 
 
 def shared_identity(path):
