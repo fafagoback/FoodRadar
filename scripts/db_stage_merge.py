@@ -174,8 +174,8 @@ def main():
     parser.add_argument("--verify-only",action="store_true")
     args=parser.parse_args()
     plan=json.loads((ROOT/"data"/"db-stage-plan.json").read_text(encoding="utf-8"))
-    if plan["source_run_id"]!=args.source_run_id:
-        raise ValueError("Source run differs from stage 00")
+    if plan["source_run_id"]!=args.source_run_id or plan.get("batch_id")!=args.batch_id:
+        raise ValueError("Raw batch or source run differs from validated stage 00")
     result_folder=ROOT/"data"/"db-artifacts"
     build(args.batch_id,args.source_run_id,plan["stores"],
           result_folder,apply=not args.verify_only)
