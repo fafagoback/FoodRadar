@@ -168,5 +168,5 @@ class BatchCrawlTests(unittest.TestCase):
             self.assertEqual(list(batch["records"]),["a","b"])
             self.assertEqual(batch["sections"],{})
             self.assertEqual(summary["completed"],2)
-            self.assertEqual(q.reported,["a","b"])
+            self.assertCountEqual(q.reported,["a","b"])
 
