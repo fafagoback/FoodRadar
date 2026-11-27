@@ -130,11 +130,14 @@ def work(index,source_run,batch,plan,pool=None):
                 response=pool.claim(index,preferred)
                 claim=response.get("claimed")
                 if claim is None:
-                    if response.get("drained"):
+                    # No ready store means this machine must first upload its
+                    # artifact. Waiting for its own unfinalized leases deadlocks.
+                    if "ready" not in response:
+                        raise RuntimeError("DB pool did not report claim readiness")
+                    if int(response["ready"]) == 0:
                         break
-                    # Another worker still owns a task. Do not exit early:
-                    # its expired lease must remain available for takeover.
-                    time.sleep(3)
+                    # A task may be row-locked by a competing claim briefly.
+                    time.sleep(1)
                     continue
                 source=claim["source"]
                 preferred=source["artifact"]
