@@ -178,7 +178,7 @@ class BatchCrawlTests(unittest.TestCase):
         def capture(item, raw, session_factory=None):
             self.assertIn(item["store_uuid"], q.claimed)
             return {"store_uuid":item["store_uuid"]}
-        with tempfile.TemporaryDirectory() as tmp, patch("batch_crawl.shared_identity", return_value=({"run_id":"r","source_sha":"sha"}, "epoch", ["a","b"])), patch("batch_crawl.verify_queue"), patch("batch_crawl.load_shared_discovery", return_value=({"a":{"store_uuid":"a"},"b":{"store_uuid":"b"}},1,"epoch",None)), patch("batch_crawl.validate_task"), patch("batch_crawl.public_ip",return_value="local"), patch("batch_crawl.TransportPool"), patch("batch_crawl.global_limiter") as limiter:
+        with tempfile.TemporaryDirectory() as tmp, patch("batch_crawl.shared_identity", return_value=({"run_id":"r","source_sha":"sha"}, "epoch", ["a","b"])), patch("batch_crawl.verify_queue"), patch("batch_crawl.load_shared_discovery", return_value=({"a":{"store_uuid":"a"},"b":{"store_uuid":"b"}},1,"epoch",None)), patch("batch_crawl.validate_task"), patch("batch_crawl.public_ip",return_value="local"), patch("batch_crawl.TransportPool"), patch("batch_crawl.global_limiter") as limiter, patch.dict("os.environ", {"FOODRADAR_INITIAL_THREADS":"4"}):
             limiter.snapshot.return_value={"successes":0,"rate_limit_events":0,"cooldown_remaining_seconds":0,"interval_seconds":0.18}
             summary = capture_worker({},0,Path(tmp)/"discovery.json",queue=q,root=Path(tmp),capture=capture)
             batch = json.loads((Path(tmp)/"data/worker-batch-0/batch.json").read_text())
