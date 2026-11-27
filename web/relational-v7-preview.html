@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-TW"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>FR SQLite 遠端讀取驗證</title>
+<style>
+body{font-family:system-ui,"Noto Sans TC",sans-serif;margin:2rem auto;max-width:1000px;padding:0 1rem;color:#17223a;background:#f8fafc}
+h1{font-size:1.5rem}p{line-height:1.8}input{border:1px solid #bbb;border-radius:6px;padding:.65rem;max-width:100%}
+button{background:#047857;color:#fff;border:0;padding:.7rem 1rem;border-radius:6px;cursor:pointer}
+main{background:#fff;border:1px solid #ddd;border-radius:12px;padding:1.25rem}
+label{display:inline-flex;flex-direction:column;gap:.3rem;font-size:.85rem;margin:.4rem}
+table{border-collapse:collapse;width:100%;font-size:.88rem}th,td{padding:.7rem;border-bottom:1px solid #eee;text-align:left}
+#state{font-weight:600;margin:1rem 0}.table-scroll{overflow:auto}
+</style></head><body>
+<main><h1>FoodRadar｜HF SQLite 遠端讀取驗證</h1>
+<p>本頁僅供 FR 真實資料的瀏覽器 SQL 測試。商品、售價、店家資訊直接從 Hugging Face 上的 SQLite 讀取，無額外網站商品資料。</p>
+<p id="release">正在檢查 HF SQLite 版本…</p>
+<div>
+<label>商品關鍵字<input id="keyword" value="雞排" placeholder="例如：雞排"/></label>
+<label>縣市<input id="city" placeholder="例如：台北市"/></label>
+<label>緯度<input id="lat" inputmode="decimal" placeholder="25.0330"/></label>
+<label>經度<input id="lon" inputmode="decimal" placeholder="121.5654"/></label>
+<label>半徑（公里）<input id="radius" type="number" min=".1" value="5"/></label>
+<label>頁數<input id="page" type="number" min="1" value="1"/></label>
+<button id="search">查詢 SQLite</button>
+</div><div role="status" id="state">連線中…</div>
+<div class="table-scroll"><table><thead><tr><th>商品</th><th>店家</th><th>縣市</th><th>價格</th><th>降幅</th><th>距離</th></tr></thead>
+<tbody id="rows"></tbody></table></div>
+</main><script type="module" src="./relational-v7-preview.js"></script>
+</body></html>
