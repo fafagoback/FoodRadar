@@ -83,10 +83,6 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v4
-      - name: 清除已不存在的實驗 Workflow 歷史執行紀錄
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/prune_legacy_fr_workflows.py
       - name: 啟用無排程的 FR 01，觸發 verify 模式（不執行爬蟲）
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,3 +120,43 @@ jobs:
                 'status':found['conclusion'],'offline_success':len(verified),
                 'crawlers_started':len(crawlers)}),flush=True)
           PY
+
+      - name: 啟用正式 02 並重發目前 HF SQLite（不爬取）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/pages.yml/enable"
+          gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
+      - name: 確認 02 SQLite Chrome、HF 與正式網站部署完整成功
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,subprocess,time
+          repo=os.environ['GITHUB_REPOSITORY'];sha=os.environ['GITHUB_SHA']
+          found=None
+          for attempt in range(180):
+              data=json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/actions/workflows/pages.yml/runs?per_page=20']))
+              runs=[r for r in data['workflow_runs'] if r['head_sha']==sha and r['event']=='workflow_dispatch']
+              if len(runs)>1:raise RuntimeError('Ambiguous pages run for HEAD')
+              if runs:
+                  found=runs[0]
+                  if found['status']=='completed':break
+              time.sleep(5)
+          if not found or found['status']!='completed' or found['conclusion']!='success':
+              raise RuntimeError('FR 02 production site deployment failed: '+str(found))
+          jobs=json.loads(subprocess.check_output(['gh','api',f"repos/{repo}/actions/runs/{found['id']}/jobs?per_page=100"]))['jobs']
+          done=[j for j in jobs if j['conclusion']=='success'
+                and any(s['name']=='線上再驗收原完整網站與歷史紀錄' and s['conclusion']=='success' for s in j.get('steps',[]))]
+          if len(done)!=1:raise RuntimeError('FR 02 real browser acceptance was not proved')
+          print('FR_02_REAL_REPUBLISH_VERIFIED='+json.dumps({'run':found['id'],
+                'result':found['conclusion'],'real_browser_accepted':True}),flush=True)
+          PY
+      - name: 正式網站已有 02 新版部署後，刪除不存在的舊測試 Workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/prune_legacy_fr_workflows.py

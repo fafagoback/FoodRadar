@@ -69,7 +69,9 @@ def prune():
             deleted.append({"id":run["id"],"name":w["name"]})
             print("FR_LEGACY_RUN_DELETED="+str(run["id"])+" "+w["name"],flush=True)
         if w["state"]=="active":
-            api(f"/actions/workflows/{w['id']}/disable","PUT")
+            # The workflow endpoint may vanish immediately when its last Run
+            # is deleted. That 404 is a successful retired-workflow outcome.
+            api(f"/actions/workflows/{w['id']}/disable","PUT",may_404=True)
             disabled.append(w["name"])
     report={"allowed":sorted(KEEP),"obsolete":obsolete,
             "deleted_runs":len(deleted),"disabled_workflows":disabled,"skipped":skipped}
