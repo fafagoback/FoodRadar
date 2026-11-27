@@ -67,6 +67,21 @@ jobs:
           python -m unittest discover -s tests -p test_adaptive_threads.py -v
           python -m unittest discover -s tests -p test_save_crawl_settings.py -v
           python -m unittest discover -s tests -p test_parallel_worker_slots.py -v
+          python -m unittest discover -s tests -p test_thread_rollover.py -v
+          python -m unittest discover -s tests -p test_sb_thread_contract.py -v
+          python -m unittest discover -s tests -p test_v2_integration.py -v
+          python -m unittest discover -s tests -p test_verified_prices_v2.py -v
+          python -m unittest discover -s tests -p test_partial_raw_replay.py -v
+          python -m unittest discover -s tests -p test_compact_direct.py -v
+          python -m unittest discover -s tests -p test_compact_incremental.py -v
+          python -m unittest discover -s tests -p test_incremental_checkpoint.py -v
+          python -m unittest discover -s tests -p test_hf_retention.py -v
+          python -m unittest discover -s tests -p test_price_retention.py -v
+          python -m unittest discover -s tests -p test_static_catalog.py -v
+          python -m unittest discover -s tests -p test_static_projection_parity.py -v
+          python -m unittest discover -s tests -p test_release_policy.py -v
+          python -m unittest discover -s tests -p test_batch_crawl.py -v
+          node --check web/app.js
           value=$(python scripts/save_crawl_settings.py --read)
           echo "Supabase 現有執行緒設定：$value" >> "$GITHUB_STEP_SUMMARY"
   discover_once:
