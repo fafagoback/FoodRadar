@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 concurrency:
@@ -91,6 +92,40 @@ jobs:
         with:
           path: web
           name: fr-hf-sqlite-${{ github.run_attempt }}
+      - name: 等待 Pages Artifact 完成索引再部署
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: fr-hf-sqlite-${{ github.run_attempt }}
+        run: |
+          python - <<'PY'
+          import json,os,time
+          from urllib.request import Request,urlopen
+          base=f'https://api.github.com/repos/{os.environ["GITHUB_REPOSITORY"]}'
+          url=base+f'/actions/runs/{os.environ["GITHUB_RUN_ID"]}/artifacts?per_page=100'
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+                   'Accept':'application/vnd.github+json',
+                   'X-GitHub-Api-Version':'2022-11-28'}
+          for attempt in range(30):
+              try:
+                  with urlopen(Request(url,headers=headers),timeout=20) as res:
+                      items=json.load(res).get('artifacts',[])
+                  matches=[x for x in items if x['name']==os.environ['ARTIFACT']
+                           and not x.get('expired') and x.get('size_in_bytes',0)>0]
+                  if len(matches)==1:
+                      print('FR_SQLITE_PAGES_ARTIFACT_INDEXED='+json.dumps({
+                          'artifact_id':matches[0]['id'],
+                          'size':matches[0]['size_in_bytes'],
+                          'attempt':attempt+1}),flush=True)
+                      # REST index may precede internal Pages deployment index.
+                      time.sleep(15)
+                      break
+                  if len(matches)>1:raise ValueError('Ambiguous Pages artifact')
+                  print('GitHub 正在建立本次 Pages Artifact 索引',attempt+1,flush=True)
+              except Exception as error:
+                  print('Artifact 索引尚未可用',str(error)[:150],flush=True)
+              time.sleep(5)
+          else:raise SystemExit('No indexed Pages artifact; prevent stale deployment')
+          PY
       - name: 正式部署
         uses: actions/deploy-pages@v4
         id: deployment
