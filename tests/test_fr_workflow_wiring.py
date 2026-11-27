@@ -16,7 +16,7 @@ class PipelineWiringTests(unittest.TestCase):
         self.crawl=load(".github/workflows/crawl.yml")
         self.db=load(".github/workflows/db-distributed.yml")
         self.release=load(".github/workflows/sqlite-release.yml")
-        self.clean=load(".github/workflows/cleanup.yml")
+        self.clean=load(".github/workflows/fr-retention.yml")
     def test_crawler_has_no_automatic_trigger(self):
         triggers=self.crawl["on"]
         self.assertEqual(list(triggers),["workflow_dispatch"])

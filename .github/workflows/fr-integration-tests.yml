@@ -7,7 +7,7 @@ on:
       - '.github/workflows/crawl.yml'
       - '.github/workflows/db-distributed.yml'
       - '.github/workflows/sqlite-release.yml'
-      - '.github/workflows/cleanup.yml'
+      - '.github/workflows/fr-retention.yml'
       - 'src/db_task_pool.py'
       - 'src/state_checkpoint.py'
       - 'src/compact_direct.py'

@@ -1,9 +1,9 @@
-name: FoodRadar 03｜儲存空間清理
+name: FoodRadar 03｜60天 HF 與 GitHub 儲存清理
 run-name: 'FoodRadar 03｜儲存空間清理｜執行編號 #${{ github.run_number }}'
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/cleanup.yml']
+    paths: ['.github/workflows/fr-retention.yml']
   workflow_run:
     workflows: ["FR｜單一 SQLite 正式整合與瀏覽器驗收（無爬蟲）"]
     types: [completed]
