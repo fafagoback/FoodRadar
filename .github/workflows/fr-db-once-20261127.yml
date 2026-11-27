@@ -1,0 +1,101 @@
+name: FR｜同一批 Raw DB 與網站驗收（不重爬）
+run-name: FR｜#502 Raw 直接跑 15 台 DB → SQLite → 正式網站
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fr-db-once-20261127.yml'
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: fr-db-once-20261127
+  cancel-in-progress: false
+jobs:
+  verify-real-crawl-and-db:
+    name: 使用真正完成的 FR #502 原始資料，不重複呼叫 UE
+    if: ${{ contains(github.event.head_commit.message, 'FR_ONLY_DB_FROM_46023983182') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_RUN: '46023983182'
+      SOURCE_BATCH: '20261127233602'
+    steps:
+      - name: 驗證 Raw 並恢復停止爬蟲狀態
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GH_REPO/actions"
+          outcome=$(gh api "$api/runs/$SOURCE_RUN" --jq .conclusion)
+          [[ "$outcome" == success ]] || { echo "Verified crawler was not successful: $outcome" >&2; exit 1; }
+          count=$(gh api "$api/runs/$SOURCE_RUN/artifacts?per_page=100" --jq '[.artifacts[] | select(.name=="fr-db-source" and .expired==false and .size_in_bytes>0)] | length')
+          [[ "$count" == 1 ]] || { echo "No unique durable FR DB source evidence" >&2; exit 1; }
+          echo "FR_DB_VERIFIED_CRAWL=$SOURCE_RUN"
+          gh api -X PUT "$api/workflows/crawl.yml/disable"
+          launcher=$(gh api "$api/runs/46023953788" --jq .status)
+          if [[ "$launcher" != completed ]]; then
+            gh api -X POST "$api/runs/46023953788/cancel" || true
+          fi
+      - name: 只派工本批次 DB 15 台，驗證後才更新唯一 State
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GH_REPO/actions"
+          before=$(gh api "$api/workflows/db-distributed.yml/runs?per_page=40" --jq \
+            "[.workflow_runs[] | select(.event==\"workflow_run\" and .head_sha==\"0b7443a27bf02b1b05a08fdf2726615f4a06c834\")] | sort_by(.id) | last | .id // empty")
+          if [[ -n "$before" ]]; then
+            echo "FR_DB_AUTO_WORKFLOW_ALREADY_EXISTS=$before"
+            db_id="$before"
+          else
+            gh workflow run db-distributed.yml --ref main \
+              -f source_run_id="$SOURCE_RUN" -f batch_id="$SOURCE_BATCH" -f apply=true
+            db_id=""
+            for attempt in {1..60}; do
+              db_id=$(gh api "$api/workflows/db-distributed.yml/runs?per_page=100" --jq \
+                "[.workflow_runs[] | select(.event==\"workflow_dispatch\" and .head_sha==\"$GITHUB_SHA\")] | sort_by(.id) | last | .id // empty")
+              [[ -n "$db_id" ]] && break
+              sleep 3
+            done
+            [[ -n "$db_id" ]] || { echo 'DB was dispatched but no new run was found' >&2; exit 1; }
+          fi
+          echo "FR_DB_REAL_RUN=https://github.com/$GH_REPO/actions/runs/$db_id" | tee -a "$GITHUB_STEP_SUMMARY"
+          for attempt in {1..600}; do
+            line=$(gh api "$api/runs/$db_id" --jq '[.status,.conclusion] | join("|")')
+            IFS='|' read -r state conclusion <<< "$line"
+            echo "FR_DB_STATUS=$state:$conclusion"
+            if [[ "$state" == completed ]]; then
+              [[ "$conclusion" == success ]] || { echo "FR DB failed: $conclusion" >&2; exit 1; }
+              break
+            fi
+            sleep 20
+          done
+          [[ "$state" == completed ]] || { echo 'DB timed out' >&2; exit 1; }
+          echo "FR_DB_VERIFIED_SUCCESS=$db_id" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: 驗證 SQLite 正式網站及線上 Chrome 結果
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GH_REPO/actions"
+          site_id=""
+          for attempt in {1..50}; do
+            site_id=$(gh api "$api/workflows/sqlite-release.yml/runs?per_page=100" --jq \
+              "[.workflow_runs[] | select(.event==\"workflow_dispatch\" and .head_sha==\"$GITHUB_SHA\")] | sort_by(.id) | last | .id // empty")
+            [[ -n "$site_id" ]] && break
+            sleep 6
+          done
+          [[ -n "$site_id" ]] || { echo 'FR DB succeeded but site release did not launch' >&2; exit 1; }
+          echo "FR_SITE_REAL_RUN=https://github.com/$GH_REPO/actions/runs/$site_id" | tee -a "$GITHUB_STEP_SUMMARY"
+          for attempt in {1..600}; do
+            line=$(gh api "$api/runs/$site_id" --jq '[.status,.conclusion] | join("|")')
+            IFS='|' read -r state conclusion <<< "$line"
+            echo "FR_SITE_STATUS=$state:$conclusion"
+            if [[ "$state" == completed ]]; then
+              [[ "$conclusion" == success ]] || { echo "FR site release failed: $conclusion" >&2; exit 1; }
+              break
+            fi
+            sleep 20
+          done
+          [[ "$state" == completed ]] || { echo 'Site release timed out' >&2; exit 1; }
+          echo 'FR_REAL_RAW_DB_SITE_SUCCESS=true' | tee -a "$GITHUB_STEP_SUMMARY"
