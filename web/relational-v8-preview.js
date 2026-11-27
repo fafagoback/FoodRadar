@@ -116,7 +116,10 @@ async function search(){
   const keyword=byId("keyword").value.trim();
   const city=byId("city").value.trim();
   const page=Math.max(1,integer(byId("page").value,1));
+  const indexStart=performance.now();
   const termsFound=keyword?await searchNameIds(keyword):null;
+  console.info("FR_SQL_INDEX_MS",Math.round(performance.now()-indexStart),
+    "name_tokens",termsFound?.length||0);
   if(termsFound && !termsFound.length){
     byId("rows").replaceChildren();
     message("沒有符合條件的商品");return;
@@ -126,11 +129,10 @@ async function search(){
   if(termsFound){
     // Exact keyword verification follows the ngram prefilter, preventing
     // false matches when trigram terms appear in a different order.
-    await loadNames(termsFound);
-    const exact=termsFound.filter(i=>normalize(nameCache.get(i)).includes(normalize(keyword)));
-    if(exact.length>12000)throw new Error("搜尋範圍過廣，請增加關鍵字");
-    if(!exact.length){byId("rows").replaceChildren();message("沒有符合條件的商品");return;}
-    wh.push("rp.name_token IN ("+exact.join(",")+")");
+    // N-gram postings are a necessary filter; verify exact substring
+    // only on the small returned page, not every candidate name block.
+    if(termsFound.length>12000)throw new Error("搜尋範圍過廣，請增加關鍵字");
+    wh.push("rp.name_token IN ("+termsFound.join(",")+")");
   }
   const lat=Number(byId("lat").value),lon=Number(byId("lon").value);
   const radius=Number(byId("radius").value);
@@ -143,19 +145,31 @@ async function search(){
     wh.push("rs.lat BETWEEN "+(lat-dLat)+" AND "+(lat+dLat));
     wh.push("rs.lon BETWEEN "+(lon-dLon)+" AND "+(lon+dLon));
   }
-  const count=51;
+  const count=keyword.length>=4?201:51;
+  const join=termsFound
+    ?"FROM relational_products rp INDEXED BY relational_product_names "+
+     "JOIN relational_store_products sp INDEXED BY relational_product_shops ON sp.product_id=rp.id "+
+     "JOIN relational_stores rs ON rs.id=sp.store_id "
+    :"FROM relational_stores rs INDEXED BY relational_store_rating "+
+     "JOIN relational_store_products sp ON sp.store_id=rs.id "+
+     "JOIN relational_products rp ON rp.id=sp.product_id ";
   const sql="SELECT rp.name_token,rs.name store_name,rs.city,rs.lat,rs.lon,"+
     "rs.rating,p.original_cents,p.effective_cents,sp.deal,sp.promotion,"+
     "sp.discount_pct,hex(rs.uuid) store_uuid,hex(sp.sku) sku "+
-    "FROM relational_stores rs "+
-    "CROSS JOIN relational_store_products sp ON sp.store_id=rs.id "+
-    "JOIN relational_products rp ON rp.id=sp.product_id "+
+    join+
     "JOIN relational_prices p ON p.id=sp.price_id "+
     "WHERE "+wh.join(" AND ")+
     " ORDER BY rs.rating DESC,rs.id ASC,sp.sku ASC LIMIT "+count+
     " OFFSET "+((page-1)*50);
-  const rows=(await client.db.query(sql)).slice(0,50);
+  const sqlStart=performance.now();
+  let rows=await client.db.query(sql);
+  console.info("FR_SQL_ROWS_MS",Math.round(performance.now()-sqlStart),"rows",rows.length);
+  const namesStart=performance.now();
   await loadNames(rows.map(r=>Number(r.name_token)));
+  console.info("FR_SQL_NAME_MS",Math.round(performance.now()-namesStart));
+  if(keyword.length>=4)
+    rows=rows.filter(r=>normalize(nameCache.get(Number(r.name_token))).includes(normalize(keyword)));
+  rows=rows.slice(0,50);
   const target=byId("rows");target.replaceChildren();
   for(const row of rows){
     const tr=document.createElement("tr");
