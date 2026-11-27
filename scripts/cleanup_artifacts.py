@@ -10,7 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 CRAWL = ".github/workflows/crawl.yml"
-PAGES = ".github/workflows/sqlite-release.yml"
+PAGES = ".github/workflows/pages.yml"
 RAW = re.compile(r"(?:foodradar-shared-feed(?:-[0-9a-f]{16})?|foodradar-raw-shard-(?:[0-9a-f]{16}-)?\d+|fr-task-[0-9a-f]{16}-[0-9a-f-]{36}-[0-9a-f]{32}|fr-worker-[0-9a-f]{16}-\d+(?:-w\d{2})?|fr-(?:plan|section|page|small)-[0-9a-f]{16}-[0-9a-f-]+)")
 CRAWL_REPORTS = {"foodradar-data-validation", "foodradar-run-metrics"}
 PAGE_REPORTS = {"fr-single-db-audit"}
@@ -93,17 +93,19 @@ def step_ok(jobs, name):
 
 def active_deploy():
     # A queued/waiting run also blocks deletion of source/Pages artifacts.
-    for workflow in ("sqlite-release.yml","db-distributed.yml"):
+    for workflow in ("pages.yml",):
         for status in ("queued", "in_progress", "waiting", "pending", "requested"):
             data = api(f"/actions/workflows/{workflow}/runs?branch=main&status={status}&per_page=1")
-            if data is None or data.get("workflow_runs"):
+            if data is None or any(str(x["id"])!=os.environ.get("GITHUB_RUN_ID")
+                                   for x in data.get("workflow_runs", [])):
                 return True
     return False
 
 def active_crawl():
     for status in ("queued", "in_progress", "waiting", "pending", "requested"):
         data = api(f"/actions/workflows/crawl.yml/runs?branch=main&status={status}&per_page=1")
-        if data is None or data.get("workflow_runs"):
+        if data is None or any(str(x["id"])!=os.environ.get("GITHUB_RUN_ID")
+                               for x in data.get("workflow_runs", [])):
             return True
     return False
 
@@ -114,12 +116,12 @@ def plan(artifacts, runs, get_jobs, busy):
         by_run.setdefault(owner(a), []).append(a)
     sources = [r for rid, r in runs.items() if completed_main(r)
                and workflow(r) == CRAWL and r.get("conclusion") == "success"
-               and any(a["name"] == "foodradar-static-source" and a.get("size_in_bytes", 0) > 0
+               and any(a["name"] == "fr-db-source" and a.get("size_in_bytes", 0) > 0
                        for a in by_run.get(rid, []))]
-    pages = sorted((r for rid, r in runs.items() if completed_main(r) and workflow(r) == PAGES
+    pages = sorted((r for rid, r in runs.items() if completed_main(r) and workflow(r) in (PAGES, CRAWL)
                     and any(re.fullmatch(r"fr-hf-sqlite-\d+", a["name"])
                             and a.get("size_in_bytes", 0) > 0 for a in by_run.get(rid, []))),
-                   key=lambda r: r["run_number"], reverse=True)
+                   key=lambda r: r["created_at"], reverse=True)
     published = None
     cutoff = None
     if not busy:
@@ -152,7 +154,7 @@ def plan(artifacts, runs, get_jobs, busy):
                     kind = "舊網站來源包"
                 elif name in CRAWL_REPORTS:
                     kind = "舊報告包"
-        elif workflow(r) == PAGES and published and r["run_number"] < published["run_number"]:
+        elif workflow(r) == PAGES and published and r["created_at"] < published["created_at"]:
             if re.fullmatch(r"fr-hf-sqlite-\d+", name):
                 kind = "舊網站部署包"
             elif name in PAGE_REPORTS:

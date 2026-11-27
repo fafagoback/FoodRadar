@@ -1,11 +1,7 @@
-# FR 2026-11-27: final public Chrome acceptance after HF history squash.
-# This workflow reads existing 60-day HF state and never invokes Uber Eats.
-name: FR｜單一 SQLite 正式整合與瀏覽器驗收（無爬蟲）
-run-name: FR SQL｜共用商品、60天歷史、原首頁查詢及正式部署
+name: FoodRadar 02｜網站部署
+run-name: 'FoodRadar 02｜既有資料重新發布（無爬蟲）｜執行編號 #${{ github.run_number }}'
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/sqlite-release.yml']
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read

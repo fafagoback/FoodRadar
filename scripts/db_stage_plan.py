@@ -28,8 +28,13 @@ def github_get(path, token, repo):
 
 def source_artifacts(source_run, token, repo):
     run=github_get(f"actions/runs/{source_run}",token,repo)
-    if run.get("status")!="completed" or run.get("head_branch")!="main":
-        raise RuntimeError("Source crawl must be completed on main")
+    same_run=(os.environ.get("FR_DB_SAME_RUN")=="1"
+              and str(run.get("id"))==str(source_run)
+              and os.environ.get("GITHUB_RUN_ID")==str(source_run)
+              and os.environ.get("GITHUB_SHA")==run.get("head_sha")
+              and run.get("status")=="in_progress")
+    if run.get("head_branch")!="main" or not (run.get("status")=="completed" or same_run):
+        raise RuntimeError("Source crawl must be completed on main, or verified same-run stage 16")
     # The overall source run may fail AFTER crawling in its old DB publisher.
     # Its 15 worker artifacts must all be durable and individually successful.
     artifacts=[]
@@ -45,8 +50,8 @@ def source_artifacts(source_run, token, repo):
         page+=1
     if not artifacts:
         raise RuntimeError("No durable worker artifacts in this crawl")
-    if run.get("conclusion")!="success":
-        raise RuntimeError("Only a verified successful source run can seed the DB pool")
+    if run.get("conclusion")!="success" and not same_run:
+        raise RuntimeError("Only a successful crawl or verified same-run stage 16 can seed DB")
     # A runner with zero assigned shops still uploads a valid batch.json-only
     # Artifact (normally ~900 bytes). Size is not an integrity signal.
     # Full batch manifest, response hashes and shop roster are checked by
@@ -69,7 +74,8 @@ def assert_batch_provenance(run,batch_id):
         raise ValueError("Source must be the original crawler workflow")
     when=datetime.strptime(batch_id,"%Y%m%d%H%M%S").replace(tzinfo=TAIPEI)
     began=datetime.fromisoformat(run["created_at"].replace("Z","+00:00"))
-    finished=datetime.fromisoformat(run["updated_at"].replace("Z","+00:00"))
+    finished=(datetime.now(timezone.utc) if run.get("status")=="in_progress" else
+              datetime.fromisoformat(run["updated_at"].replace("Z","+00:00")))
     if not began<=when<=finished:
         raise ValueError(
             f"Raw batch {batch_id} is OUTSIDE source Action time window. "
@@ -80,10 +86,19 @@ def assert_batch_provenance(run,batch_id):
 def plan(source_run_id, batch_id, pool, token, repo):
     run,artifacts=source_artifacts(source_run_id,token,repo)
     assert_batch_provenance(run,batch_id)
+    receipt=None
+    if run.get("status")=="in_progress":
+        from db_stage_source import validate_receipt
+        receipt=validate_receipt(json.loads((ROOT/"data/fr-db-source.json").read_text(encoding="utf-8")),
+                                 source_run_id,run["head_sha"])
+        if receipt["batch_id"]!=batch_id:
+            raise RuntimeError("Same-run Raw receipt is not the requested batch")
     # New run only; never clear live leases from another run.
     pool.purge()
     result=pool.seed_from_crawl(source_run_id,run.get("run_attempt",1))
     count=int(result["source_stores"])
+    if receipt is not None and receipt["stores"]!=count:
+        raise RuntimeError("Same-run stage 16 receipt store roster mismatch")
     if count<=0 or int(result["inserted"])!=count:
         raise RuntimeError("Source crawl task roster did not seed in full")
     state=pool.status()

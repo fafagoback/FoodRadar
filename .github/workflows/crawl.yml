@@ -1,90 +1,46 @@
 name: FoodRadar 01｜資料爬取與更新
-run-name: 'FoodRadar 01｜資料爬取與更新｜執行編號 #${{ github.run_number }}'
+run-name: 'FoodRadar 01｜資料爬取、DB及網站驗收｜執行編號 #${{ github.run_number }}'
 on:
-  # 2026-11-27：UE 爬取維持停止。沒有排程、沒有 push 自動爬取。
-  # 若未來恢復，必須明確手動啟動；資料仍交給 DB 工作池處理。
   workflow_dispatch:
     inputs:
       mode:
-        description: 'crawl=新抓取；republish=重發 Pages；full-rebuild=重建；reuse-artifacts=只重做第16台及部署'
-        required: true
+        description: 'crawl=完整爬取→DB→網站→清理；verify=只跑離線測試，不爬 UE'
         type: choice
-        options:
-          - crawl
-          - republish
-          - full-rebuild
-          - reuse-artifacts
-          - reuse-hf-raw
+        required: true
+        options: [crawl, verify]
         default: crawl
-      discovery_scope:
-        description: 'single=原測試座標；taiwan=22縣市368行政區完整座標計畫'
-        required: true
-        type: choice
-        options: [single, taiwan]
-        default: single
-      replay_run_id:
-        description: 'reuse-artifacts：已完成爬取但彙整失敗的 Run ID'
-        required: false
-        type: string
-      replay_hf_batch:
-        description: 'reuse-hf-raw：已封存但未發布的14碼原始批次'
-        required: false
-        type: string
-      confirm_reset:
-        description: 'full-rebuild 必須輸入 REBUILD_V2，其餘模式留白'
-        required: false
-        type: string
-env:
-  FR_DISCOVERY_SCOPE: ${{ inputs.discovery_scope || 'single' }}
-  FR_QUEUE_BACKEND: sb
 permissions:
   contents: read
+  actions: write
+  id-token: write
+  pages: write
 concurrency:
-  group: foodradar-crawl-pipeline-v2
-  # A checkpoint-only republish must preserve the currently running crawl.
-  cancel-in-progress: ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CHECKPOINT_MIGRATION')) }}
+  group: foodradar-crawl-pipeline-v3
+  cancel-in-progress: false
+env:
+  FR_DISCOVERY_SCOPE: single
+  FR_QUEUE_BACKEND: sb
 jobs:
-  verify_thread_settings:
-    name: 驗證 Supabase 執行緒設定（不爬取）
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_SETTINGS_TEST') }}
+  offline_verify:
+    name: 離線驗證｜15 台、16/17、SQLite及三步驟接線（不爬取）
+    if: ${{ inputs.mode == 'verify' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      # Includes bounded-memory nationwide static catalog and geo-index regressions.
-      - name: 驗證學習與設定持久化
-        run: |
-          python -m unittest discover -s tests -p test_adaptive_threads.py -v
-          python -m unittest discover -s tests -p test_save_crawl_settings.py -v
-          python -m unittest discover -s tests -p test_parallel_worker_slots.py -v
-          python -m unittest discover -s tests -p test_thread_rollover.py -v
-          python -m unittest discover -s tests -p test_sb_thread_contract.py -v
-          python -m unittest discover -s tests -p test_v2_integration.py -v
-          python -m unittest discover -s tests -p test_verified_prices_v2.py -v
-          python -m unittest discover -s tests -p test_partial_raw_replay.py -v
-          python -m unittest discover -s tests -p test_compact_direct.py -v
-          python -m unittest discover -s tests -p test_compact_incremental.py -v
-          python -m unittest discover -s tests -p test_incremental_checkpoint.py -v
-          python -m unittest discover -s tests -p test_hf_retention.py -v
-          python -m unittest discover -s tests -p test_price_retention.py -v
-          python -m unittest discover -s tests -p test_static_catalog.py -v
-          python -m unittest discover -s tests -p test_static_projection_parity.py -v
-          python -m unittest discover -s tests -p test_release_policy.py -v
-          python -m unittest discover -s tests -p test_batch_crawl.py -v
-          node --check web/app.js
-          value=$(python scripts/save_crawl_settings.py --read)
-          echo "Supabase 現有執行緒設定：$value" >> "$GITHUB_STEP_SUMMARY"
+      - run: pip install -r requirements.txt PyYAML==6.0.2
+      - run: |
+          python -m unittest discover -s tests -p 'test_fr_workflow_wiring.py' -v
+          python -m unittest discover -s tests -p 'test_db_stage_plan.py' -v
+          python -m unittest discover -s tests -p 'test_db_stage_source.py' -v
+          python -m unittest discover -s tests -p 'test_db_stage_integration.py' -v
+          python -m unittest discover -s tests -p 'test_relational_overlay_v9.py' -v
+
   discover_once:
     name: 統一探索設定範圍，建立 15 台共用任務池
-    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
@@ -165,7 +121,7 @@ jobs:
     name: "爬蟲工作機 ${{ matrix.worker }}"
     needs: discover_once
     continue-on-error: true
-    if: "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')))) }}"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -297,22 +253,18 @@ jobs:
         run: python src/batch_crawl.py finalize --index ${{ matrix.shard }} --artifact-id "$BATCH_ARTIFACT_ID"
 
   ingest:
-    name: 第十六台｜彙整驗證與發布靜態資料
+    name: 16｜核對15台來源、串流保存 HF Raw
     needs: [discover_once, crawl_shard, plan_recovery, recover_shard]
-    if: "${{ !cancelled() && ((needs.discover_once.result == 'success' && (needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success'))) || (needs.crawl_shard.result == 'skipped' && needs.discover_once.result == 'skipped' && (github.event_name == 'workflow_dispatch' && inputs.mode != 'crawl')) || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'FR_REPLAY_ARTIFACTS=') || contains(github.event.head_commit.message, 'FR_REPLAY_HF_BATCH=') || contains(github.event.head_commit.message, 'FR_REPUBLISH')))) }}"
+    if: ${{ always() && needs.plan_recovery.result == 'success' && (needs.plan_recovery.outputs.missing_count == '0' || needs.recover_shard.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    outputs:
+      batch_id: ${{ steps.receipt.outputs.batch_id }}
+      source_run_id: ${{ steps.receipt.outputs.source_run_id }}
     permissions:
       id-token: write
       contents: write
       actions: read
-    environment:
-      name: github-pages
-    concurrency:
-      group: foodradar-database-publisher
-      cancel-in-progress: false
-    env:
-      FR_RAW_ONLY: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')) }}
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
@@ -338,7 +290,6 @@ jobs:
           fi
 
       - name: 串流驗證工作機 ZIP 並直接合併上傳 HF Raw
-        if: "${{ needs.discover_once.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'reuse-artifacts') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_REPLAY_ARTIFACTS=')) }}"
         env:
           GH_TOKEN: ${{ github.token }}
           HF_TOKEN: "${{ secrets.HF_TOKEN }}"
@@ -368,132 +319,35 @@ jobs:
           fi
           df -h
 
-      - name: 保存已驗證 HF Raw 的來源批次供 DB 工作池使用
-        if: ${{ env.FR_RAW_ONLY == 'true' && success() }}
+      - name: 核對同一 Run 已驗證來源、SHA 與批次
+        id: receipt
+        env:
+          SOURCE_RUN: ${{ github.run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: python scripts/db_stage_source.py --path data/fr-db-source.json --source-run "$SOURCE_RUN" --source-sha "$SOURCE_SHA" --output "$GITHUB_OUTPUT"
+      - name: 在同一 Run 保存來源憑證（供 DB 第 00 台）
         uses: actions/upload-artifact@v4
         with:
           name: fr-db-source
           path: data/fr-db-source.json
           retention-days: 3
           if-no-files-found: error
-      - name: 重用已封存 HF 原始批次（不重新爬取或彙整）
-        if: "${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'reuse-hf-raw') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_REPLAY_HF_BATCH=')) }}"
-        env:
-          HF_TOKEN: "${{ secrets.HF_TOKEN }}"
-          REPLAY_HF_BATCH: ${{ inputs.replay_hf_batch }}
-          SOURCE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-        run: |
-          set -euo pipefail
-          batch="$REPLAY_HF_BATCH"
-          if [[ -z "$batch" && "$SOURCE_COMMIT_MESSAGE" =~ FR_REPLAY_HF_BATCH=([0-9]{14}) ]]; then
-            batch="${BASH_REMATCH[1]}"
-          fi
-          python scripts/recover_archived_raw.py "$batch"
-
-      - name: 恢復經驗證的 SQLite 加速快取（不影響 HF Raw）
-        if: ${{ env.FR_RAW_ONLY != 'true' && inputs.mode != 'full-rebuild' }}
-        uses: actions/cache/restore@v4
-        with:
-          path: data/state-checkpoint/
-          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            foodradar-state-v1-
-      - name: 恢復網站區塊增量建置快取（與 DB 分開）
-        if: ${{ env.FR_RAW_ONLY != 'true' && inputs.mode != 'full-rebuild' }}
-        uses: actions/cache/restore@v4
-        with:
-          path: data/static-build-cache/
-          key: foodradar-static-build-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            foodradar-static-build-v1-
-      - name: 恢復 HF 唯一持久精簡資料庫（60 天價格）
-        if: ${{ env.FR_RAW_ONLY != 'true' }}
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
-          FR_REBUILD: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
-        shell: bash
-        run: |
-          if [[ "$FR_REBUILD" == 1 ]]; then
-            python src/hf_retention.py restore --rebuild
-          else
-            python src/hf_retention.py restore
-          fi
-      - name: 直接更新精簡資料庫、完整稽核並建置網站資料
-        if: ${{ env.FR_RAW_ONLY != 'true' }}
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          FR_RAW_DECODE_WORKERS: '3'
-          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
-          FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
-        run: python scripts/prepare_hf_release.py
-      - name: 保存 HF 唯一持久精簡資料庫（60 天價格，取代上一版）
-        if: ${{ env.FR_RAW_ONLY != 'true' }}
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
-        run: python src/hf_retention.py persist
-      - name: 保存經完整資料與網站雜湊驗收的精簡資料庫
-        if: ${{ success() && env.FR_RAW_ONLY != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: data/state-checkpoint/
-          key: foodradar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: 保存網站區塊增量建置快取
-        if: ${{ success() && env.FR_RAW_ONLY != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: data/static-build-cache/
-          key: foodradar-static-build-v1-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: 整理已驗證資料供 Pages Artifact 使用（不提交 Git、不上傳 HF 靜態副本）
-        if: ${{ env.FR_RAW_ONLY != 'true' }}
-        run: |
-          BATCH=$(cat data/latest.txt)
-          mkdir -p pages-static-source
-          cp -a "data/$BATCH/static-public/." pages-static-source/
-          test -s pages-static-source/current.json
-          echo "FOODRADAR_ARTIFACT_SOURCE_STAGED=$BATCH"
-      - name: 保存已驗證靜態資料為 Pages 來源 Artifact
-        if: ${{ env.FR_RAW_ONLY != 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: foodradar-static-source
-          path: pages-static-source/
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-      - name: 保存驗證報告
-        if: ${{ !cancelled() && env.FR_RAW_ONLY != 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: foodradar-data-validation
-          path: |
-            data/**/report.json
-            data/**/store-identity-report.json
-            data/**/direct-db-report.json
-            data/**/quarantine-report.json
-            packed-report.json
-            data/**/static-public/current.json
-            data/**/shard-reconciliation.json
-          if-no-files-found: ignore
-          retention-days: 5
-      - name: 保存本次實際執行指標
-        if: ${{ !cancelled() }}
+      - name: 保存爬取實際執行指標
+        if: always()
         run: python scripts/action_summary.py capture
       - name: 上傳本次統計指標
-        if: ${{ !cancelled() }}
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: foodradar-run-metrics
           path: action-reports/metrics/
-          if-no-files-found: warn
           retention-days: 5
+          if-no-files-found: warn
 
   report:
     name: 彙整本次繁體中文爬蟲報告
     needs: [discover_once, crawl_shard, plan_recovery, recover_shard, ingest]
-    if: ${{ !cancelled() }}
+    if: ${{ always() && needs.ingest.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -515,35 +369,188 @@ jobs:
           INGEST_RESULT: ${{ needs.ingest.result }}
         run: python scripts/action_summary.py crawl
 
-  request-deployment:
-    name: 資料與稽核全部成功後才啟動網站部署
-    needs: [ingest, report]
-    if: ${{ !cancelled() && needs.ingest.result == 'success' && needs.report.result == 'success' }}
+  db_plan:
+    name: 00｜驗證 HF Raw，建立專屬 DB 共享工作池
+    needs: [ingest,report]
+    if: ${{ always() && needs.ingest.result == 'success' && needs.report.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    outputs:
+      source_run_id: ${{ steps.inputs.outputs.source_run_id }}
+      batch_id: ${{ steps.inputs.outputs.batch_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FR_DB_SAME_RUN: '1'
+      SOURCE_RUN: ${{ github.run_id }}
+      BATCH: ${{ needs.ingest.outputs.batch_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fr-db-source
+          path: data
+      - name: 核對第 16 台提交的來源憑證
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: python scripts/db_stage_source.py --path data/fr-db-source.json --source-run "$SOURCE_RUN" --source-sha "$SOURCE_SHA" --output "$GITHUB_OUTPUT"
+      - name: 固定同一次原始資料來源
+        id: inputs
+        run: |
+          test -n "$SOURCE_RUN" && test -n "$BATCH"
+          echo "source_run_id=$SOURCE_RUN" >> "$GITHUB_OUTPUT"
+          echo "batch_id=$BATCH" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 核對既存 HF Raw，絕不呼叫 UE
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/db_stage_hf.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
+      - name: 清除已結束的舊 DB 任務、從爬蟲名冊逐筆派工
+        run: python scripts/db_stage_plan.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fr-db-plan
+          path: data/db-stage-plan.json
+          retention-days: 3
+          if-no-files-found: error
+  db_workers:
+    name: DB 工作機 ${{ matrix.index }}
+    needs: [db_plan]
+    # workflow_dispatch skips resolve_source; do not inherit its skip into worker matrix.
+    if: ${{ always() && needs.db_plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        index: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+    env:
+      INDEX: ${{ matrix.index }}
+      SOURCE_RUN: ${{ needs.db_plan.outputs.source_run_id }}
+      BATCH: ${{ needs.db_plan.outputs.batch_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: fr-db-plan
+          path: data
+      - name: 已完成一店就補領下一店，不分固定工作包
+        id: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "name=$(printf 'db-worker-%s-%02d' "$GITHUB_RUN_ID" "$INDEX")" >> "$GITHUB_OUTPUT"
+          echo "folder=$(printf 'data/db-worker-%02d' "$INDEX")" >> "$GITHUB_OUTPUT"
+          python scripts/db_stage_worker.py worker --index "$INDEX" --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
+          nohup python scripts/db_stage_worker.py heartbeat --index "$INDEX" --done-file "$RUNNER_TEMP/fr-db-finalized" > "$RUNNER_TEMP/fr-db-heartbeat.log" 2>&1 < /dev/null &
+      - name: 各台結果先完整上傳 GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.worker.outputs.name }}
+          path: ${{ steps.worker.outputs.folder }}
+          retention-days: 3
+          if-no-files-found: error
+      - name: 上傳後逐店確認 DB 任務租約完成
+        run: python scripts/db_stage_worker.py finalize --index "$INDEX"
+      - name: 停止上傳期間租約心跳
+        if: always()
+        run: touch "$RUNNER_TEMP/fr-db-finalized"
+  db_merge:
+    name: 17｜核對15台資料、更新60天 State（同一個 Run）
+    needs: [db_plan,db_workers]
+    # Never claim success if the whole 15-worker stage was skipped or failed.
+    if: ${{ always() && needs.db_plan.result == 'success' && needs.db_workers.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     permissions:
       contents: read
       actions: write
+      id-token: write
+    env:
+      SOURCE_RUN: ${{ needs.db_plan.outputs.source_run_id }}
+      BATCH: ${{ needs.db_plan.outputs.batch_id }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - name: 核對來源版本並通知新版 DB／SQLite 流程
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          FR_RAW_ONLY: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_CRAWL_SPEED_TEST')) }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: fr-db-plan
+          path: data
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: db-worker-${{ github.run_id }}-*
+          path: data/db-artifacts
+          merge-multiple: false
+      - name: 獨立驗收完整名冊、結果雜湊、5%容錯
+        run: python scripts/db_stage_merge.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH" --verify-only
+      - name: 更新唯一增量 State（失敗就不發布網站）
+        run: |
+          python src/hf_retention.py restore
+          python scripts/db_stage_merge.py --source-run-id "$SOURCE_RUN" --batch-id "$BATCH"
+
+  publish:
+    name: 02｜SQLite 真實 Chrome 驗收與正式網站部署
+    needs: [db_merge]
+    if: ${{ always() && needs.db_merge.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    secrets: inherit
+
+  cleanup:
+    name: 03｜60天 HF 和 GitHub 清理
+    needs: [publish]
+    if: ${{ always() && needs.publish.result == 'success' }}
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/fr-retention.yml
+    secrets: inherit
+
+  final_gate:
+    name: 最終驗收｜全部完成才標綠，不能跳過 DB 或網站
+    needs: [discover_once,crawl_shard,plan_recovery,recover_shard,ingest,report,db_plan,db_workers,db_merge,publish,cleanup]
+    if: ${{ always() && inputs.mode == 'crawl' }}
+    runs-on: ubuntu-latest
+    env:
+      DISCOVERY: ${{ needs.discover_once.result }}
+      PLAN_RECOVERY: ${{ needs.plan_recovery.result }}
+      INGEST: ${{ needs.ingest.result }}
+      REPORT: ${{ needs.report.result }}
+      DB_PLAN: ${{ needs.db_plan.result }}
+      DB_WORKERS: ${{ needs.db_workers.result }}
+      DB_MERGE: ${{ needs.db_merge.result }}
+      PUBLISH: ${{ needs.publish.result }}
+      CLEANUP: ${{ needs.cleanup.result }}
+      RECOVERY: ${{ needs.recover_shard.result }}
+    steps:
+      - name: 嚴格核對每一步成功，失敗或被跳過立即標紅
+        shell: bash
         run: |
           set -euo pipefail
-          head=$(gh api "repos/$GH_REPO/branches/main" --jq .commit.sha)
-          if [[ "$head" != "$GITHUB_SHA" ]]; then
-            echo '有更新版本排隊，舊版資料不部署。' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+          for name in DISCOVERY PLAN_RECOVERY INGEST REPORT DB_PLAN DB_WORKERS DB_MERGE PUBLISH CLEANUP; do
+            if [[ "${!name}" != success ]]; then
+              echo "::error::$name 未成功（${!name}），禁止顯示整套成功"
+              exit 1
+            fi
+          done
+          if [[ "$RECOVERY" != success && "$RECOVERY" != skipped ]]; then
+            echo "::error::故障接手異常：$RECOVERY"
+            exit 1
           fi
-          if [[ "$FR_RAW_ONLY" == "true" ]]; then
-            echo '已保存 HF Raw 與 fr-db-source 來源憑證；待 01 整體成功後，自動啟動 15 台 DB 工作機及 SQLite 發布。' >> "$GITHUB_STEP_SUMMARY"
-          else
-            gh workflow run sqlite-release.yml --ref main
-            echo '舊資料重發走 SQLite 正式發布驗收，不再恢復第三份網站商品檔案。' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-# Regression fixture: verify all successful IDs without assuming order.
-
-# Manual full single-point crawl requested 2026-11-26.
+          echo '## FR 01 完整成功：15 台爬蟲 → 第16台 HF Raw → 15 台 DB → 第17台 → SQLite → 網站 → 清理' >> "$GITHUB_STEP_SUMMARY"

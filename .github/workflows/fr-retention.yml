@@ -1,12 +1,7 @@
 name: FoodRadar 03｜60天 HF 與 GitHub 儲存清理
 run-name: 'FoodRadar 03｜儲存空間清理｜執行編號 #${{ github.run_number }}'
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/fr-retention.yml']
-  workflow_run:
-    workflows: ["FR｜單一 SQLite 正式整合與瀏覽器驗收（無爬蟲）"]
-    types: [completed]
+  workflow_call:
   schedule:
     - cron: '0 19 * * *'
   workflow_dispatch:
@@ -25,7 +20,7 @@ concurrency:
 jobs:
   cleanup:
     name: 盤點並清理已無用途的歷史資料包
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')) }}
+    if: ${{ github.ref == 'refs/heads/main' }}
     concurrency:
       group: foodradar-database-publisher
       cancel-in-progress: false
