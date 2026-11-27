@@ -14,6 +14,43 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: Audit prior compact DB contract compatibility
+        run: |
+          python - <<'PY'
+          import hashlib, json, shutil, subprocess, tempfile
+          from pathlib import Path
+          from state_checkpoint import DIRECT_LAYOUT_CONTRACTS, direct_contract_digest, retention_predecessor
+          root=Path.cwd()
+          cfg=json.loads((root/"config.json").read_text())
+          is_frt="Foodradar-TW" in cfg.get("hf_repo_id","")
+          old_source=None
+          with tempfile.TemporaryDirectory() as temp:
+              workspace=Path(temp)
+              if is_frt:
+                  old_source=workspace/"fr-source"
+                  subprocess.run(["git","init","-q",str(old_source)],check=True)
+                  subprocess.run(["git","-C",str(old_source),"fetch","-q","--depth=1",
+                                  "https://github.com/fafagoback/FoodRadar.git","5a1c712de149f7a830dd0d2c6bcec37e2dd5b70d"],check=True)
+              for name in DIRECT_LAYOUT_CONTRACTS:
+                  output=workspace/name
+                  output.parent.mkdir(parents=True,exist_ok=True)
+                  source=(root/name).read_bytes()
+                  if name in ("src/raw_capture.py","src/catalog_complete.py"):
+                      if is_frt:
+                          source=subprocess.check_output(["git","-C",str(old_source),"show",f"FETCH_HEAD:{name}"])
+                          if name=="src/raw_capture.py":
+                              source=source.replace(b"hub-google/FoodRadar",cfg["hf_repo_id"].encode())
+                      else:
+                          source=subprocess.check_output(["git","show",f"5a1c712de149f7a830dd0d2c6bcec37e2dd5b70d:{name}"])
+                  output.write_bytes(source)
+              shutil.copy2(root/"config.json",workspace/"config.json")
+              print("FOODRADAR_CAPTURE_CONTRACT_AUDIT="+json.dumps({
+                  "current":direct_contract_digest(root),
+                  "prior_capture":direct_contract_digest(workspace),
+                  "prior_retention":retention_predecessor(workspace),
+                  "repo":cfg["hf_repo_id"]
+              }),flush=True)
+          PY
       - run: python -m unittest discover -s tests -p 'test_batch_crawl.py' -v
       - run: python -m unittest discover -s tests -p 'test_catalog_complete.py' -v
       - run: python -m unittest discover -s tests -p 'test_parallel_worker_slots.py' -v
