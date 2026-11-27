@@ -1,6 +1,9 @@
 name: FoodRadar 03｜儲存空間清理
 run-name: 'FoodRadar 03｜儲存空間清理｜執行編號 #${{ github.run_number }}'
 on:
+  workflow_run:
+    workflows: ["FoodRadar 02｜網站部署"]
+    types: [completed]
   schedule:
     - cron: '0 19 * * *'
   workflow_dispatch:
@@ -18,14 +21,35 @@ concurrency:
 jobs:
   cleanup:
     name: 盤點並清理已無用途的歷史資料包
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')) }}
+    concurrency:
+      group: foodradar-database-publisher
+      cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
+      - name: 安裝 HF 清理所需套件
+        run: python3 -m pip install 'huggingface_hub>=0.30,<2'
+      - name: 驗證 60 天 Raw 與歷史提交清理
+        run: python3 -m unittest discover -s tests -p 'test_hf_retention.py' -v
       - name: 清理歷史 Artifact 並產生中文報告
         env:
           GH_TOKEN: ${{ github.token }}
           FR_CLEANUP_DRY_RUN: ${{ inputs.dry_run || false }}
         run: python3 -u scripts/cleanup_artifacts.py
+
+      - name: HF Raw 僅保留 60 天，清除歷史提交及舊檔案版本
+        if: ${{ !cancelled() }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          FR_CLEANUP_DRY_RUN: ${{ inputs.dry_run || false }}
+        shell: bash
+        run: |
+          if [[ "$FR_CLEANUP_DRY_RUN" == true ]]; then
+            python3 src/hf_retention.py cleanup --dry-run
+          else
+            python3 src/hf_retention.py cleanup
+          fi

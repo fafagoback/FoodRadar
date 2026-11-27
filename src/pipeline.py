@@ -43,6 +43,8 @@ def assert_useful_price_batch(documents, batch):
 
 def raw_manifest_should_replay(meta: dict, manifest_path: str, folder: str) -> bool:
     """Incomplete raw is archived for audit but must not enter price history."""
+    if meta.get("_frt_retired") is True:
+        return meta["replay"]
     batch = str(meta.get("batch_id") or "")
     if not (len(batch) == 14 and batch.isdigit()):
         raise ValueError(f"Invalid immutable Raw batch ID: {manifest_path}")
@@ -107,7 +109,7 @@ def restore_history(config, rebuild_all=False):
     files = api.list_repo_files(repo_id=config['hf_repo_id'], repo_type='dataset')
     manifests = sorted(p for p in files
                        if p.startswith(f'{folder}/') and p.endswith('/manifest.json'))
-    if not manifests:
+    if not manifests and config.get("hf_raw_retention_days") != 60:
         raise RuntimeError(f'No immutable snapshots under {folder}/Raw; refusing DB update')
 
     def fetch_manifest(path):
@@ -118,6 +120,9 @@ def restore_history(config, rebuild_all=False):
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         records = list(executor.map(fetch_manifest, manifests))
+    if config.get("hf_raw_retention_days") == 60:
+        from hf_retention import history_records
+        records = history_records(api, records)
     index_seconds = round(perf_counter() - started, 2)
     print('FOODRADAR_MANIFEST_INDEX=' + json.dumps({
         'count': len(records), 'seconds': index_seconds}), flush=True)
@@ -125,6 +130,9 @@ def restore_history(config, rebuild_all=False):
     previous = ROOT/'data/latest.txt'
     previous.parent.mkdir(parents=True, exist_ok=True)
     restored=None if rebuild_all else restore_direct(records,config)
+    retired_count = sum(row[1].get("_frt_retired") is True for row in records)
+    if retired_count and (not restored or restored[2] < retired_count):
+        raise RuntimeError("Expired Raw requires a valid durable checkpoint; refusing incomplete rebuild")
     if restored:
         state,batch,prefix_count=restored
         checkpoint=(batch,prefix_count)
@@ -249,6 +257,9 @@ def restore_history(config, rebuild_all=False):
                                if raw_manifest_should_replay(m,p,folder)]) != batch_count-processed:
             raise ValueError('Checkpoint verified batch count mismatches Raw history')
         t=perf_counter()
+        if config.get('hf_raw_retention_days') == 60:
+            from price_retention import prune_price_history
+            prune_price_history(state)
         audit=state.refresh_weekly(batch)
         price_seconds=perf_counter()-t
         print('HF_RAW_FINAL_VERIFIED_WEEKLY='+json.dumps({
@@ -297,7 +308,9 @@ def restore_history(config, rebuild_all=False):
             'repo_id':config['hf_repo_id'],'folder':folder,'batch_id':batch,
             'manifest_count':len(records),'verified_batches':len(replayed),
             'manifest_digest':manifest_digest(records),
-            'contract_digest':direct_contract_digest()
+            'contract_digest':direct_contract_digest(),
+            **({'retention_days': 60, 'retention_cutoff': state.meta['price_history_cutoff']}
+               if config.get('hf_raw_retention_days') == 60 else {})
         }
         (destination/'raw-manifest-index.json').write_text(
             json.dumps(raw_index,ensure_ascii=False,indent=2),encoding='utf-8')

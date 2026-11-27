@@ -1922,7 +1922,15 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
       uniqueHistory.set(timestamp, observation);
     }
   }
-  history = [...uniqueHistory.values()]
+  // Prevent stale current-menu fallback from displaying expired history.
+  const historyCutoff = Date.now() - 60 * 86400000;
+  history = [...uniqueHistory.values()].filter(h => {
+    const value = String(h.crawled_time || '');
+    const at = /^\d{14}$/.test(value)
+      ? Date.parse(value.slice(0,4)+'-'+value.slice(4,6)+'-'+value.slice(6,8)+'T'+value.slice(8,10)+':'+value.slice(10,12)+':'+value.slice(12,14)+'+08:00')
+      : Date.parse(value);
+    return Number.isFinite(at) && at >= historyCutoff;
+  })
     .sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
 
   const tbody = document.getElementById('modal-history-tbody');

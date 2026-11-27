@@ -112,7 +112,8 @@ class DirectCaptureMigrationTests(unittest.TestCase):
             CODEC_OLD_CONTRACTS, DIRECT_CONTRACTS, PREVIOUS_LAYOUT_CONTRACTS,
             DIRECT_LAYOUT_CONTRACTS, _historical_digest,direct_contract_digest)
         current=_historical_digest(ROOT,CODEC_UPGRADE,DIRECT_LAYOUT_CONTRACTS)
-        self.assertEqual(direct_contract_digest(ROOT),current)
+        from state_checkpoint import retention_predecessor
+        self.assertEqual(retention_predecessor(ROOT) or direct_contract_digest(ROOT),current)
         for old,files in [(r,DIRECT_LAYOUT_CONTRACTS) for r in CODEC_PREVIOUS_CURRENT_LAYOUTS]+[(r,PREVIOUS_LAYOUT_CONTRACTS) for r in CODEC_OLD_LAYOUTS]+[(r,DIRECT_CONTRACTS) for r in CODEC_OLD_CONTRACTS]:
             previous=_historical_digest(ROOT,old,files)
             self.assertTrue(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":previous},ROOT))

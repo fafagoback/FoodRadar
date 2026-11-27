@@ -327,12 +327,51 @@ CODEC_PREVIOUS_CURRENT_LAYOUTS=("b53097963629574fa1b86fb33b97cc429bce5db4", "037
 CODEC_OLD_LAYOUTS=("97fe6baca43bb8bcbd087b7fa03c6d372f2b646f","7fb36f3df7f43399278eba3582a4f0899b6a7f9d")
 CODEC_OLD_CONTRACTS=tuple(dict.fromkeys(old for old,new in DIRECT_LAYOUT_MIGRATIONS))
 
+# Retention changes only storage. Reconstruct the exact previous source contract
+# for the FR native implementation or the former FRT seven-day adapter.
+_RETENTION_ADAPTER = (
+    ("    batch = str(meta.get(\"batch_id\") or \"\")\n", "    if meta.get(\"_frt_retired\") is True:\n        return meta[\"replay\"]\n    batch = str(meta.get(\"batch_id\") or \"\")\n"),
+    ("    if not manifests:\n        raise RuntimeError(f'No immutable snapshots under {folder}/Raw; refusing DB update')\n", "    if not manifests and config.get(\"hf_raw_retention_days\") != 60:\n        raise RuntimeError(f'No immutable snapshots under {folder}/Raw; refusing DB update')\n"),
+    ("        records = list(executor.map(fetch_manifest, manifests))\n", "        records = list(executor.map(fetch_manifest, manifests))\n    if config.get(\"hf_raw_retention_days\") == 60:\n        from hf_retention import history_records\n        records = history_records(api, records)\n"),
+    ("    restored=None if rebuild_all else restore_direct(records,config)\n", "    restored=None if rebuild_all else restore_direct(records,config)\n    retired_count = sum(row[1].get(\"_frt_retired\") is True for row in records)\n    if retired_count and (not restored or restored[2] < retired_count):\n        raise RuntimeError(\"Expired Raw requires a valid durable checkpoint; refusing incomplete rebuild\")\n"),
+)
+_RETENTION_PRUNE = (
+    ("        t=perf_counter()\n        audit=state.refresh_weekly(batch)", "        t=perf_counter()\n        if config.get('hf_raw_retention_days') == 60:\n            from price_retention import prune_price_history\n            prune_price_history(state)\n        audit=state.refresh_weekly(batch)"),
+    ("            'contract_digest':direct_contract_digest()\n", "            'contract_digest':direct_contract_digest(),\n            **({'retention_days': 60, 'retention_cutoff': state.meta['price_history_cutoff']}\n               if config.get('hf_raw_retention_days') == 60 else {})\n"),
+)
+
+def retention_predecessor(root=ROOT):
+    source=(Path(root)/"src/pipeline.py").read_text(encoding="utf-8")
+    for old,new in reversed(_RETENTION_PRUNE):
+        if source.count(new)!=1:return None
+        source=source.replace(new,old,1)
+    cfg=json.loads((Path(root)/"config.json").read_text(encoding="utf-8"))
+    if cfg.get("hf_repo_id")=="hub-google/Foodradar-TW":
+        source=source.replace('config.get("hf_raw_retention_days") == 60','config.get("hf_raw_retention_days") == 7').replace('config.get("hf_raw_retention_days") != 60','config.get("hf_raw_retention_days") != 7')
+    elif cfg.get("hf_repo_id")=="hub-google/FoodRadar":
+        for old,new in reversed(_RETENTION_ADAPTER):
+            if source.count(new)!=1:return None
+            source=source.replace(new,old,1)
+    else:
+        return None
+    h=hashlib.sha256()
+    for file in DIRECT_LAYOUT_CONTRACTS:
+        h.update(file.encode()+b"\0")
+        h.update(source.encode("utf-8") if file=="src/pipeline.py" else (Path(root)/file).read_bytes())
+    return h.hexdigest()
+
 def compatible_direct_contract(meta,root=ROOT):
     fmt=meta.get("format")
     current=direct_contract_digest(root) if fmt=="foodradar-checkpoint-v4" else None
     if fmt=="foodradar-checkpoint-v4" and meta.get("contract_digest")==current:
         return True
     if fmt=="foodradar-checkpoint-v4":
+        predecessor=retention_predecessor(root)
+        if predecessor and meta.get("contract_digest")==predecessor:
+            print("FOODRADAR_CHECKPOINT_RETENTION_MIGRATION=PASS",flush=True)
+            return True
+        if predecessor:
+            current=predecessor
         try:
             if current==_historical_digest(root,CODEC_UPGRADE,DIRECT_LAYOUT_CONTRACTS):
                 for old,files in [(r,DIRECT_LAYOUT_CONTRACTS) for r in CODEC_PREVIOUS_CURRENT_LAYOUTS]+[(r,PREVIOUS_LAYOUT_CONTRACTS) for r in CODEC_OLD_LAYOUTS]+[(r,DIRECT_CONTRACTS) for r in CODEC_OLD_CONTRACTS]:

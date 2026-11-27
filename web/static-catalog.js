@@ -591,8 +591,7 @@ export function normalizePriceHistoryEvents(events) {
     }
   }
   return [...byTime.values()]
-    .sort((a, b) => String(a.event_time).localeCompare(String(b.event_time)))
-    .slice(-50);
+    .sort((a, b) => String(a.event_time).localeCompare(String(b.event_time)));
 }
 
 // Resolve the actual current comparison; change-event history omits unchanged crawls.

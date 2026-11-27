@@ -383,6 +383,18 @@ jobs:
           key: foodradar-static-build-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             foodradar-static-build-v1-
+      - name: 恢復 HF 唯一持久精簡資料庫（60 天價格）
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
+          FR_REBUILD: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
+        shell: bash
+        run: |
+          if [[ "$FR_REBUILD" == 1 ]]; then
+            python src/hf_retention.py restore --rebuild
+          else
+            python src/hf_retention.py restore
+          fi
       - name: 直接更新精簡資料庫、完整稽核並建置網站資料
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -390,6 +402,11 @@ jobs:
           HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
           FOODRADAR_REBUILD_VALID_PRICE_HISTORY: ${{ inputs.mode == 'full-rebuild' && '1' || '0' }}
         run: python scripts/prepare_hf_release.py
+      - name: 保存 HF 唯一持久精簡資料庫（60 天價格，取代上一版）
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
+        run: python src/hf_retention.py persist
       - name: 保存經完整資料與網站雜湊驗收的精簡資料庫
         if: ${{ success() }}
         uses: actions/cache/save@v4
