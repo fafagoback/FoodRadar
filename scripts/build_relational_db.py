@@ -55,7 +55,7 @@ def main():
     state,meta=load_checkpoint(Path(args.checkpoint))
     try:
         result=build(state.shops(),args.output,meta["batch_id"])
-        if result["stores"]!=meta["stores"] or result["store_products"]!=meta["products"]:
+        if (result["stores"]!=meta["stores"] or result["store_products"]!=meta["products"]\n            or result["observations"]+result.get("expired_observations_ignored",0)!=meta["observations"]):
             Path(args.output).unlink(missing_ok=True)
             raise RuntimeError("Source inventory differs from relational candidate")
         result["sha256"]=digest(args.output)
