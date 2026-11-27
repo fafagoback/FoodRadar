@@ -1,4 +1,4 @@
-name: FR SQLite v8｜真實 Chrome 網頁查詢與截圖
+name: FR SQLite v8｜索引式 Chrome 真實查詢與截圖
 on:
   push:
     branches: [feature/shared-relational-sqlite]
