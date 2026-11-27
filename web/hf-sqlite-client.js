@@ -31,14 +31,21 @@ export async function connectHFSQLite({manifestUrl,createDbWorker,workerUrl,wasm
   const worker=await createDbWorker([{from:"inline",config:{
     serverMode:"full",url:url.href,requestChunkSize
   }}],String(workerUrl),String(wasmUrl));
-  const rows=await worker.db.query("SELECT value FROM metadata WHERE key='batch'");
+  const boot=await worker.db.exec("SELECT value FROM metadata WHERE key='batch'");
+  const rows=(boot?.[0]?.values||[]).map(v=>({value:v[0]}));
   need(rows.length===1 && JSON.parse(rows[0].value)===meta.batch,"Wrong DB version");
   state.worker=worker;state.manifest=meta;
   return {manifest:meta,url:url.href};
 }
 function db(){need(state.worker,"Not connected to HF SQLite");return state.worker.db;}
+async function query(sql){
+  const sets=await db().exec(sql);
+  need(Array.isArray(sets),"SQLite HTTP VFS returned invalid results");
+  return sets.flatMap(set=>(set.values||[]).map(row=>
+    Object.fromEntries((set.columns||[]).map((key,i)=>[key,row[i]]))));
+}
 export async function sqlMetadata(){
-  const rows=await db().query("SELECT key,value FROM metadata");
+  const rows=await query("SELECT key,value FROM metadata");
   return Object.fromEntries(rows.map(({key,value})=>[key,JSON.parse(value)]));
 }
 export async function sqlProducts({keyword="",city="",page=1,pageSize=50}={}){
@@ -55,7 +62,7 @@ export async function sqlProducts({keyword="",city="",page=1,pageSize=50}={}){
     "JOIN price_terms pt ON pt.id=sp.price_term_id WHERE "+
     where.join(" AND ")+" ORDER BY s.rating DESC,p.product_name LIMIT "+
     (size+1)+" OFFSET "+offset;
-  const rows=await db().query(sql);
+  const rows=await query(sql);
   return {rows:rows.slice(0,size),hasNext:rows.length>size};
 }
 export async function sqlNearbyStores({latitude,longitude,radiusKm=5,limit=50}={}){
@@ -68,7 +75,7 @@ export async function sqlNearbyStores({latitude,longitude,radiusKm=5,limit=50}={
     "AND g.min_lat BETWEEN "+(lat-dy)+" AND "+(lat+dy)+
     " AND g.min_lon BETWEEN "+(lon-dx)+" AND "+(lon+dx)+
     " LIMIT "+Math.min(5000,Math.max(1,Math.trunc(num(limit)))*10);
-  const rows=await db().query(sql);
+  const rows=await query(sql);
   const distance=(y,x)=>{
     const r=Math.PI/180,a=Math.sin((y-lat)*r/2)**2+
       Math.cos(lat*r)*Math.cos(y*r)*Math.sin((x-lon)*r/2)**2;
@@ -86,6 +93,6 @@ export async function sqlHistory(storeUuid,sku){
     "JOIN price_terms t ON q.price_term_id=t.id "+
     "WHERE s.uuid='"+esc(storeUuid)+"' AND q.sku='"+esc(sku)+
     "' ORDER BY q.observed_at DESC LIMIT 300";
-  return db().query(sql);
+  return query(sql);
 }
 export function currentHFManifest(){return state.manifest;}
