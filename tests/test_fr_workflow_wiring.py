@@ -40,6 +40,15 @@ class PipelineWiringTests(unittest.TestCase):
         self.assertIn("db_stage_merge.py",cmds)
         self.assertIn("sqlite-release.yml",cmds)
         self.assertNotIn("pages.yml",cmds)
+    def test_manual_db_dispatch_reaches_all_workers_and_merge(self):
+        workers=self.db["jobs"]["workers"]
+        merger=self.db["jobs"]["merge"]
+        self.assertIn("always()",workers["if"])
+        self.assertIn("needs.plan.result == 'success'",workers["if"])
+        self.assertIn("always()",merger["if"])
+        self.assertIn("needs.workers.result == 'success'",merger["if"])
+        self.assertIn("needs.plan.result == 'success'",merger["if"])
+
     def test_raw_only_pipeline_does_not_build_old_pages_copy(self):
         crawl=(ROOT/".github/workflows/crawl.yml").read_text(encoding="utf-8")
         self.assertIn("FR_RAW_ONLY",crawl)

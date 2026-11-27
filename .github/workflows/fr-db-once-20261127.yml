@@ -1,3 +1,4 @@
+# Same-source follow-up verifies 15 workers cannot be skipped after plan success.
 # Recheck after handling valid ~900-byte empty worker artifacts; no UE re-crawl.
 name: FR｜同一批 Raw DB 與網站驗收（不重爬）
 run-name: FR｜#502 Raw 直接跑 15 台 DB → SQLite → 正式網站

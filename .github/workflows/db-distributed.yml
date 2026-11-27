@@ -107,6 +107,8 @@ jobs:
   workers:
     name: DB 工作機 ${{ matrix.index }}
     needs: [plan]
+    # workflow_dispatch skips resolve_source; do not inherit its skip into worker matrix.
+    if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -152,6 +154,8 @@ jobs:
   merge:
     name: 17｜核對全部店家、5%門檻、保存60天DB並啟動SQLite驗收
     needs: [plan,workers]
+    # Never claim success if the whole 15-worker stage was skipped or failed.
+    if: ${{ always() && needs.plan.result == 'success' && needs.workers.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
