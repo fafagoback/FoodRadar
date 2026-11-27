@@ -78,12 +78,10 @@ class CatalogCompleteness(unittest.TestCase):
         ):
             self.assertFalse(is_recoverable_catalog_failure(error), error)
 
-    def test_section_concurrency_is_configurable_and_bounded(self):
-        from catalog_complete import MAX_SECTION_THREADS
-        self.assertEqual(MAX_SECTION_THREADS, 8)
-        with self.assertRaises(ValueError):
-            capture_catalog(Session(), "store", {"aisles": {}},
-                            Path("."), {}, lambda *args: None, section_workers=9)
+    def test_section_concurrency_is_workload_bounded_not_hard_capped(self):
+        empty = capture_catalog(Session(), "store", {"aisles": {}},
+                                Path("."), {}, lambda *args: None, section_workers=128)
+        self.assertTrue(empty["catalog_complete"])
         with self.assertRaises(ValueError):
             capture_catalog(Session(), "store", {"aisles": {}},
                             Path("."), {}, lambda *args: None, section_workers=0)
