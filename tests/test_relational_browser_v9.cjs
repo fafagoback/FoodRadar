@@ -8,7 +8,7 @@ const {chromium}=require("playwright");
   page.on("pageerror",e=>errors.push(String(e)));
   page.on("requestfailed",r=>errors.push(r.url()+": "+r.failure()?.errorText));
   try{
-    await page.goto("http://127.0.0.1:8765/relational-v9-preview.html",
+    await page.goto((process.env.FR_TEST_BASE || "http://127.0.0.1:8765/").replace(/\/?$/,"/")+"relational-v9-preview.html",
       {waitUntil:"domcontentloaded",timeout:30000});
     await page.waitForFunction(()=>{
       const text=document.getElementById("state")?.textContent||"";
