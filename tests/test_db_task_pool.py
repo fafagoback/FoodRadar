@@ -30,12 +30,18 @@ class FakeSession:
 
 class PoolTests(unittest.TestCase):
     def test_seed_uses_verified_crawl_source(self):
-        session=FakeSession([Reply({"source_stores":50741,"inserted":50741})])
+        session=FakeSession([
+            Reply({"source_stores":1741,"page_rows":1000,"inserted":1000,
+                   "next_id":1000,"done":False}),
+            Reply({"source_stores":None,"page_rows":741,"inserted":741,
+                   "next_id":1741,"done":True})])
         pool=DBTaskPool(session)
         pool._token_value="signed"
         pool._token_valid_until=float("inf")
         result=pool.seed_from_crawl("45886126553")
-        self.assertEqual(result["inserted"],50741)
+        self.assertEqual(result["inserted"],1741)
+        self.assertEqual(result["pages"],2)
+        self.assertEqual(session.calls[1][1]["json"]["args"]["after_id"],1000)
         req=session.calls[0][1]
         self.assertEqual(req["json"]["op"],"seed_from_crawl")
         self.assertEqual(req["json"]["args"]["source_attempt"],1)
