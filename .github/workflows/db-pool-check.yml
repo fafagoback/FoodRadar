@@ -19,5 +19,5 @@ jobs:
       - run: pip install 'requests>=2.31,<3'
       - name: Python 語法與任務池測試
         run: |
-          python -m compileall -q src/db_task_pool.py tests/test_db_task_pool.py
+          python -m compileall -q src/db_task_pool.py scripts/db_stage_plan.py scripts/db_stage_worker.py scripts/db_stage_merge.py tests/test_db_task_pool.py
           python -m unittest discover -s tests -p test_db_task_pool.py -v
