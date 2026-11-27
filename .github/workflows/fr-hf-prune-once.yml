@@ -5,6 +5,7 @@ on:
     paths: ['.github/workflows/fr-hf-prune-once.yml']
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: foodradar-pages-deployment
   cancel-in-progress: false
@@ -18,6 +19,7 @@ jobs:
       cancel-in-progress: false
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
