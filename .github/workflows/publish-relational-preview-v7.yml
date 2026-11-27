@@ -2,7 +2,7 @@ name: FR SQLite v7｜發布 HF 測試版 DB（不爬取）
 on:
   push:
     branches: [feature/shared-relational-sqlite]
-    paths: ['.github/workflows/publish-relational-preview.yml']
+    paths: ['.github/workflows/publish-relational-preview-v7.yml']
   workflow_dispatch:
 permissions:
   contents: read
