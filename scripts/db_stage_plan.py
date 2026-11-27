@@ -45,6 +45,8 @@ def source_artifacts(source_run, token, repo):
         page+=1
     if not artifacts:
         raise RuntimeError("No durable worker artifacts in this crawl")
+    if run.get("conclusion")!="success":
+        raise RuntimeError("Only a verified successful source run can seed the DB pool")
     for a in artifacts:
         if a.get("size_in_bytes",0)<1000:
             raise RuntimeError("Unexpectedly small source artifact")
