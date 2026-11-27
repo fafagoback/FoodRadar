@@ -14,6 +14,9 @@ import sys
 import threading
 import time
 from pathlib import Path
+from datetime import datetime,timedelta,timezone
+
+TAIPEI=timezone(timedelta(hours=8))
 
 import zstandard as zstd
 
@@ -47,6 +50,12 @@ def decode_task(folder, claim, batch):
     store=task["store"]
     if not store.get("success"):
         return None,"crawl_failed"
+    captured=datetime.fromisoformat(str(store["captured_at"]).replace("Z","+00:00"))
+    if captured.tzinfo is None:
+        raise RuntimeError("Raw capture timestamp has no timezone")
+    recorded_batch=datetime.strptime(batch,"%Y%m%d%H%M%S").replace(tzinfo=TAIPEI)
+    if captured.replace(microsecond=0)>recorded_batch:
+        raise RuntimeError("Cannot assign crawler HTTP responses to an earlier Raw batch")
     if store.get("catalog_complete") is False:
         return None,"catalog_incomplete"
     recheck=store.get("promo_recheck") or {}
