@@ -21,27 +21,19 @@ class AdaptiveThreadTests(unittest.TestCase):
         self.assertFalse(valid_threads(0))
         self.assertFalse(valid_threads(True))
 
-    def test_exponential_then_bisect_by_completed_store_throughput(self):
+    def test_exponential_then_bisect_by_429_only(self):
         c=AdaptiveThreads(4)
-        now=0; stores=0
-        c.reset(now,snap(completed_stores=0))
-        def sample(count):
-            nonlocal now,stores
-            c.observe(now,snap(completed_stores=stores),True,c.target)
-            now += 12
-            stores += count
-            c.observe(now,snap(completed_stores=stores),True,c.target)
-        for amount,expected in ((12,8),(24,16),(48,32)):
-            sample(amount)
+        c.reset(0,snap())
+        successes=0
+        for expected in (8,16,32,64,128):
+            successes += 1
+            c.observe(successes,snap(successes),True,c.target)
             self.assertEqual(c.target,expected)
-        sample(40)  # More HTTP threads but fewer completed stores/s.
-        self.assertEqual((c.lower,c.upper,c.target),(16,32,24))
-        sample(50)
-        self.assertEqual((c.lower,c.upper,c.target),(24,32,28))
-        sample(52)
-        self.assertEqual((c.lower,c.upper,c.target),(28,32,30))
-        self.assertTrue(any(e["reason"]=="throughput_not_improved" for e in c.events))
-        self.assertEqual(c.report()["throughput_unit"],"stores_per_second")
+        c.observe(10,snap(successes,1,30),True,128)
+        self.assertEqual((c.lower,c.upper,c.target),(64,128,96))
+        c.observe(41,snap(successes,1),False,0)
+        c.observe(42,snap(successes+1,1),True,96)
+        self.assertEqual((c.best,c.target),(96,112))
 
     def test_upstream_429_bisects_without_fake_64_cap(self):
         c=AdaptiveThreads(128)

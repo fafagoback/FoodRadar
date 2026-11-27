@@ -1,9 +1,6 @@
-"""Measure whole-store throughput and learn parallel store slots without a fixed cap.
-
-Each slot works on one complete store. A finished slot is immediately reused;
-no other store has to finish first. The learning objective is completed stores
-per measured busy second, not successful HTTP requests. An observed 429 or a
-non-improving throughput probe brackets the search and triggers integer bisection.
+"""Learn parallel store slots from observed request successes and upstream 429.
+No fixed thread ceiling, time window, store count or throughput gate.
+Only real work supplies evidence; cooldown and in-flight work are respected.
 """
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -88,7 +85,8 @@ class AdaptiveThreads:
         cooling = snapshot["cooldown_remaining_seconds"] > 0
         if throttled:
             if not self.settling:
-                self._reject(self.target, "upstream_429")
+                tested = min(self.target, max(1, active_count)) if active_count is not None else self.target
+                self._reject(tested, "upstream_429")
                 self.settling = True
             self.reset(now, snapshot)
             return
@@ -101,36 +99,25 @@ class AdaptiveThreads:
             self.saturated = saturated
             return
 
-        if self.saturated:
-            self.busy_seconds += max(0.0, now - self.last_tick)
-            self.busy_successes += max(0, completed(snapshot) - completed(self.baseline))
+        # A successful HTTP response during an observed full allocation is
+        # evidence for this tested count. No fixed sample/time or throughput gate.
+        # A partially allocated target is not credited just because it was set.
+        successes = max(0, snapshot.get("successes", 0) - self.baseline.get("successes", 0))
+        was_saturated = self.saturated
         self.last_tick = now
         self.baseline = dict(snapshot)
         self.saturated = saturated
-        # The sample size follows the tested worker count: each busy slot
-        # needs a chance to complete at least one whole store.
-        if not saturated or self.busy_seconds <= 0 or self.busy_successes < self.target:
+        if not (was_saturated or saturated) or not successes:
             return
-
         tested = self.target
-        rate = self.busy_successes / self.busy_seconds
-        self.samples.append({"threads": tested, "completed_stores": self.busy_successes,
-                             "seconds": round(self.busy_seconds, 3),
-                             "stores_per_second": round(rate, 6),
-                             "saturated_seconds": round(self.busy_seconds, 3),
-                             "limiter_interval": snapshot["interval_seconds"]})
-        # Do not increase merely because the API answered successfully.
-        # A tie or slowdown means extra slots did not finish stores faster.
-        if self.lower and tested > self.lower and rate <= self.best_rate:
-            self._reject(tested, "throughput_not_improved")
-        else:
-            if self.upper == tested:
-                self.upper = None
-            self.lower = max(self.lower, tested)
-            self.best = self.lower
-            self.best_rate = rate
-            self._choose()
-            self._log(tested, "passed", "higher_completed_store_throughput")
+        if self.best == tested and self.upper is not None and self.upper - self.lower <= 1:
+            return
+        self.samples.append({"threads": tested, "successful_requests": successes,
+                             "rate_limit_events": 0})
+        self.lower = max(self.lower, tested)
+        self.best = self.lower
+        self._choose()
+        self._log(tested, "passed", "observed_work_without_429")
         self.reset(now, snapshot)
 
     def resume(self, prior, now, snapshot):
@@ -146,13 +133,13 @@ class AdaptiveThreads:
             raise ValueError("Invalid saved thread learning")
         self.target, self.lower, self.upper, self.best = target, lower, upper, best
         # Earlier saves measured API successes/s rather than completed stores/s.
-        self.best_rate = rate if prior.get("throughput_unit") == "stores_per_second" else 0.0
+        self.best_rate = 0.0
         self.settling = False
         self.reset(now, snapshot)
 
     def report(self, now=None):
         return {"initial_threads": self.initial, "optimal_threads": self.best,
-                "throughput_unit": "stores_per_second",
+                "throughput_unit": "429_free_parallel_slots",
                 "samples": self.samples, "events": self.events, "target": self.target,
                 "lower": self.lower, "upper": self.upper, "best_rate": self.best_rate}
 

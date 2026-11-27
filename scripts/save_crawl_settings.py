@@ -1,15 +1,21 @@
 """Publish the common starting value after all worker reports are validated."""
-import base64
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from adaptive_threads import maximum_best, valid_threads
+from sb_task_pool import SupabaseQueue
 
-def gh(*args):
-    return subprocess.check_output(["gh", "api", *args], text=True)
+def settings_queue():
+    return SupabaseQueue(os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"],
+                         os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
+
+def read_setting(queue):
+    value = queue._rpc("threads_read")["optimal_threads"]
+    if not valid_threads(value):
+        raise ValueError("invalid Supabase thread setting")
+    return value
 
 def main():
     files = sorted(Path("data/parts").glob("foodradar-raw-shard-*/shard.json"))
@@ -31,19 +37,20 @@ def main():
     if best is None:
         print("樣本不足，保留原始設定")
         return
-    endpoint = f"repos/{os.environ['GITHUB_REPOSITORY']}/contents/crawl-settings.json"
-    old = json.loads(gh(endpoint + "?ref=crawler-state"))
-    prev = json.loads(base64.b64decode(old["content"]))["optimal_threads"]
-    if not valid_threads(prev):
-        raise ValueError("invalid stored optimal_threads")
+    queue = settings_queue()
+    prev = read_setting(queue)
     if best == prev:
-        print(f"最佳執行緒仍為 {best}，不寫入 Repo")
+        print(f"Supabase 最佳執行緒仍為 {best}")
         return
-    content = base64.b64encode((json.dumps({"optimal_threads": best}, indent=2) + "\n").encode()).decode()
-    gh("--method", "PUT", endpoint, "-f", "branch=crawler-state",
-       "-f", "sha=" + old["sha"], "-f", "message=更新爬蟲最佳執行緒數",
-       "-f", "content=" + content)
-    print(f"最佳執行緒：{prev} → {best}")
+    saved = queue._rpc("threads_write", optimal_threads=best)["optimal_threads"]
+    if saved != best or read_setting(queue) != best:
+        raise RuntimeError("Supabase thread setting verification failed")
+    print(f"Supabase 最佳執行緒：{prev} → {best}")
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--read"]:
+        print(read_setting(settings_queue()))
+    elif not sys.argv[1:]:
+        main()
+    else:
+        raise SystemExit("usage: save_crawl_settings.py [--read]")
