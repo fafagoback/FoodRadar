@@ -1,0 +1,21 @@
+name: Offline static-memory regression
+on:
+  push:
+    branches: [fix/frt-static-memory]
+    paths: ['scripts/**', 'tests/**', '.github/workflows/offline-static-check.yml']
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: |
+          python -m compileall -q scripts
+          python -m unittest discover -s tests -p test_static_catalog.py -v
+          python -m unittest discover -s tests -p test_static_projection_parity.py -v
+          python -m unittest discover -s tests -p test_compact_direct.py -v

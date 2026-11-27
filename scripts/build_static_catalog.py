@@ -12,6 +12,8 @@ import json
 import re
 import sqlite3
 import threading
+import tempfile
+import msgpack
 from time import perf_counter
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
@@ -59,6 +61,74 @@ def write_blob(directory, compressor, data):
     if not path.exists():
         path.write_bytes(compressed)
     return digest
+
+
+class BucketSpool:
+    """Append exact records to disk; materialize only one hash bucket at a time."""
+    def __init__(self, directory, name):
+        self.root = Path(directory) / name
+        self.root.mkdir()
+        self.handles = {}
+
+    def add(self, key, value):
+        if key not in self.handles:
+            self.handles[key] = (self.root / str(key)).open("wb")
+        self.handles[key].write(msgpack.packb(value, use_bin_type=True))
+
+    def keys(self):
+        return sorted(self.handles)
+
+    def records(self, key):
+        self.handles[key].flush()
+        with (self.root / str(key)).open("rb") as stream:
+            yield from msgpack.Unpacker(stream, raw=False, strict_map_key=False)
+
+    def close(self):
+        for stream in self.handles.values():
+            stream.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+class CatalogSpool:
+    """Stream the existing JSON-array wire format without holding all rows."""
+    def __init__(self, path):
+        self.path = Path(path)
+        self.stream = self.path.open("wb")
+        self.stream.write(b"[")
+        self.count = 0
+
+    def add(self, row):
+        if self.count:
+            self.stream.write(b",")
+        self.stream.write(_json(row))
+        self.count += 1
+
+    def emit(self, directory):
+        self.stream.write(b"]")
+        self.stream.close()
+        target = self.path.with_suffix(".zst")
+        with self.path.open("rb") as source, target.open("wb") as out:
+            zstd.ZstdCompressor(level=10, write_content_size=True).copy_stream(
+                source, out, size=self.path.stat().st_size)
+        with target.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+        destination = directory / (digest + ".zst")
+        if destination.exists():
+            target.unlink()
+        else:
+            target.replace(destination)
+        return digest
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.stream.close()
 
 
 def _price_event(at, price, unit, promo, quantity, unit_only=False):
@@ -153,7 +223,10 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
         with ThreadPoolExecutor(max_workers=4) as executor:return list(executor.map(emit,values))
     def mark(name,begin):
         marks[name]=round(perf_counter()-begin,3)
-    with (sqlite3.connect(packed_db) if direct is None else nullcontext(None)) as packed, (sqlite3.connect(serving_db) if direct is None else nullcontext(None)) as source:
+    with (sqlite3.connect(packed_db) if direct is None else nullcontext(None)) as packed, (sqlite3.connect(serving_db) if direct is None else nullcontext(None)) as source, \
+            tempfile.TemporaryDirectory(prefix="fr-static-", dir=output) as tmp, \
+            BucketSpool(tmp, "postings") as postings, BucketSpool(tmp, "history") as history, \
+            CatalogSpool(Path(tmp) / "catalog.json") as minis:
         if direct is None:
             packed.row_factory = sqlite3.Row
             source.row_factory = sqlite3.Row
@@ -181,9 +254,11 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
 
         store_rows = projection.store_rows() if direct is not None else [dict(s) for s in packed.execute("SELECT * FROM store_directory ORDER BY store_uuid")]
         count_by_store = Counter()
-        minis = []
         cards = []
-        postings = defaultdict(lambda: defaultdict(list))
+        product_hashes = []
+        card_count = 0
+        summary_counts = Counter()
+        max_savings = 0.0
         history_keys = set()
         card_rows=(projection.rows() if direct is not None else packed.execute("""SELECT store_uuid,product_uuid,card,search_text,city,
                  category,discount_pct,savings,unit_price,rating,new_item,promo,
@@ -194,43 +269,62 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
             sid, pid = str(row["store_uuid"]), str(row["product_uuid"])
             if card.get("store_uuid") != sid or card.get("product_uuid") != pid:
                 raise ValueError("Packed card UUID mismatch")
-            index = len(cards)
+            index = card_count
+            card_count += 1
             cards.append(card)
+            if len(cards) == CHUNK_ROWS:
+                product_hashes.append(emit(cards))
+                cards.clear()
             count_by_store[sid] += 1
             history_keys.add((sid, pid))
             searchable = normalize(row["search_text"])
             category = str(row["category"] or "")
             city = str(row["city"] or "")
             promo_type = str(card.get("promo_type") or "")
-            minis.append([
+            mini = [
                 sid, pid, city, category,
                 float(row["discount_pct"] or 0), float(row["savings"] or 0),
                 float(row["unit_price"] or 0), float(row["rating"] or 0),
                 int(row["new_item"] or 0), int(row["promo"] or 0),
                 int(row["price_drop"] or 0), int(row["platform_promo"] or 0),
                 row["latitude"], row["longitude"], searchable, promo_type, str(card.get("product_name") or "")
-            ])
+            ]
+            minis.add(mini)
+            summary_counts["newProducts"] += mini[8]
+            summary_counts["promotions"] += mini[9]
+            if mini[10]:
+                max_savings = max(max_savings, mini[5])
+                summary_counts["deals"] += int(mini[4] >= 30)
+            grouped = defaultdict(list)
             for term in terms(searchable):
-                postings[bucket(term)][term].append(index)
-        if not cards or not store_rows:
+                grouped[bucket(term)].append(term)
+            for bid, values in grouped.items():
+                postings.add(bid, (index, sorted(values)))
+        if not card_count or not store_rows:
             raise ValueError("Refusing to publish empty product or store catalog")
         for store in store_rows:
             store["menu_item_count"] = count_by_store[store["store_uuid"]]
 
         mark("card_and_search_index_seconds",started)
         t=perf_counter()
-        product_hashes = emit_many(cards[i:i+CHUNK_ROWS] for i in range(0,len(cards),CHUNK_ROWS))
+        if cards:
+            product_hashes.append(emit(cards))
+            cards.clear()
         mark("product_chunks_seconds",t);t=perf_counter()
-        search_ids=sorted(postings)
-        search_hashes=dict(zip(map(str,search_ids),emit_many(postings[bid] for bid in search_ids)))
+        search_hashes = {}
+        for bid in postings.keys():
+            grouped = defaultdict(list)
+            for index, values in postings.records(bid):
+                for term in values:
+                    grouped[term].append(index)
+            search_hashes[str(bid)] = emit(grouped)
         mark("search_compression_seconds",t);t=perf_counter()
         store_hash=emit(store_rows)
-        catalog_hash=emit(minis)
+        catalog_hash=minis.emit(blobs)
         mark("store_and_catalog_seconds",t);t=perf_counter()
 
         # Canonical native quotes preserve the exact payable-price series.
         # The old generic events are redundant for all browser price graphs.
-        history = defaultdict(dict)
         has_quotes = direct is not None or source.execute("""SELECT 1 FROM sqlite_master
              WHERE type IN ('table','view') AND name='product_price_observations'""").fetchone()
         if has_quotes:
@@ -248,8 +342,7 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
                     continue
                 at,unit,raw,promo,qty=quote
                 bid=bucket(sid,HISTORY_BUCKETS)
-                history[bid].setdefault(sid+"\x1f"+pid,[]).append(
-                    _price_event(at,raw,unit,promo,qty))
+                history.add(bid, (sid+"\x1f"+pid, _price_event(at,raw,unit,promo,qty)))
         else:
             # Historical offline fixtures without V2 price observations still
             # test backwards compatibility with the original event archive.
@@ -260,10 +353,10 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
                 if key not in history_keys:
                     continue
                 bid=bucket(key[0],HISTORY_BUCKETS)
-                history[bid].setdefault(key[0]+"\x1f"+key[1],[]).append({
+                history.add(bid, (key[0]+"\x1f"+key[1], {
                     "event_time":row["event_time"],"event_type":row["event_type"],
                     "old_state":row["old_state"],"new_state":row["new_state"],
-                })
+                }))
             for row in source.execute("""SELECT store_uuid,product_uuid,menu_quote_history
                    FROM products WHERE menu_quote_history != '[]'"""):
                 key=(row["store_uuid"],row["product_uuid"])
@@ -280,26 +373,29 @@ def build(packed_db, serving_db, output, *, direct=None, projection=None, cache_
                     raw,promo,qty=(quote[2:5]+[None]*3)[:3]
                     evidence=(len(quote)>=5 and isinstance(raw,(int,float))
                               and raw>0 and bool(str(promo or "").strip()))
-                    history[bid].setdefault(compound,[]).append(
-                        _price_event(at,raw,unit,promo,qty,unit_only=not evidence))
+                    history.add(bid, (compound, _price_event(at,raw,unit,promo,qty,unit_only=not evidence)))
         mark("history_projection_seconds",t);t=perf_counter()
-        history_ids=sorted(history)
-        history_hashes=dict(zip(map(str,history_ids),emit_many(history[bid] for bid in history_ids)))
+        history_hashes = {}
+        for bid in history.keys():
+            grouped = defaultdict(list)
+            for compound, event in history.records(bid):
+                grouped[compound].append(event)
+            history_hashes[str(bid)] = emit(grouped)
         mark("history_compression_seconds",t)
         new_stores = sum(1 for s in store_rows if s["status"] == "active" and
                          str(s.get("first_seen") or "") >= cutoff and
                          str(s.get("first_seen") or "")[:10] > baseline)
         summary = {
             "stores": new_stores,
-            "newProducts": sum(row[8] for row in minis),
-            "promotions": sum(row[9] for row in minis),
-            "maxSavings": max((row[5] for row in minis if row[10]), default=0),
-            "deals": sum(1 for row in minis if row[10] and row[4] >= 30),
+            "newProducts": summary_counts["newProducts"],
+            "promotions": summary_counts["promotions"],
+            "maxSavings": max_savings,
+            "deals": summary_counts["deals"],
         }
         manifest = {
             "schema": SCHEMA, "batch": latest_batch, "data_revision": meta["data_revision"],
             "metadata": meta, "summary": summary,
-            "counts": {"stores": len(store_rows), "products": len(cards)},
+            "counts": {"stores": len(store_rows), "products": card_count},
             "chunk_rows": CHUNK_ROWS, "search_buckets": BUCKETS,
             "history_buckets": HISTORY_BUCKETS,
             "files": {"stores": store_hash, "catalog": catalog_hash,
@@ -333,10 +429,13 @@ def verify(directory):
               *hashes["search"].values(), *hashes["history"].values()]
     dctx = zstd.ZstdDecompressor()
     for digest in set(values):
-        data = (folder / "blobs" / (digest + ".zst")).read_bytes()
-        if hashlib.sha256(data).hexdigest() != digest:
-            raise ValueError("Static blob SHA256 mismatch: " + digest)
-        dctx.decompress(data)
+        path = folder / "blobs" / (digest + ".zst")
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
+                raise ValueError("Static blob SHA256 mismatch: " + digest)
+        with path.open("rb") as stream, dctx.stream_reader(stream) as decoded:
+            while decoded.read(1024 * 1024):
+                pass
     if not manifest["counts"]["products"] or not manifest["counts"]["stores"]:
         raise ValueError("No serving records")
     return manifest

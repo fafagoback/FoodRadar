@@ -273,6 +273,13 @@ def prepare(web_dir, source_dir, commit=None):
         manifest = _paged_manifest(manifest, data)
     manifest = augment_geo_index(manifest, data)
     print("FOODRADAR_FINAL_PAGES_DATA_BYTES=" + str(manifest["bytes"]), flush=True)
+    # Include all geo shards, not just the pre-geo source size.
+    refs = referenced_blobs(manifest)
+    actual = sum((target / (h + ".zst")).stat().st_size for h in refs)
+    if actual != manifest["bytes"]:
+        raise ValueError("Final Pages data bytes differ from manifest")
+    if actual > 750 * 1024 * 1024:
+        raise ValueError(f"Final Pages data exceeds configured deployment budget after geo: {actual}")
     (data/"manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),encoding="utf-8")
     commit = (commit or os.getenv("GITHUB_SHA") or "").strip()
     if not commit:
