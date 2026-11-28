@@ -16,7 +16,10 @@ class PipelineWiringTests(unittest.TestCase):
         names=sorted(p.name for p in (ROOT/".github/workflows").glob("*.yml"))
         self.assertEqual([n for n in names if n != "fr-integration-tests.yml"],["crawl.yml","fr-retention.yml","pages.yml"])
     def test_no_unintended_automatic_crawl(self):
-        self.assertEqual(list(self.crawl["on"]),["workflow_dispatch"])
+        self.assertEqual(self.crawl["on"]["push"]["paths"],[".github/workflows/crawl.yml"])
+        source=(ROOT/".github/workflows/crawl.yml").read_text(encoding="utf-8")
+        self.assertIn("FR_RECOVER_DB_504",source)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl'",source)
         self.assertEqual(self.crawl["on"]["workflow_dispatch"]["inputs"]["mode"]["default"],"crawl")
     def test_consistent_production_workflow_names(self):
         for workflow, name in (
@@ -26,7 +29,8 @@ class PipelineWiringTests(unittest.TestCase):
         ):
             self.assertEqual(workflow["name"], name)
             self.assertTrue(workflow["run-name"].startswith(name + "｜#"))
-            self.assertNotIn("push", workflow["on"])
+            if workflow is not self.crawl:
+                self.assertNotIn("push", workflow["on"])
         self.assertNotIn("PURGE_FR_67_RUNS", (ROOT/".github/workflows/fr-retention.yml").read_text(encoding="utf-8"))
         self.assertNotIn("FR_ONE_TIME_FULL_CRAWL", (ROOT/".github/workflows/crawl.yml").read_text(encoding="utf-8"))
     def test_one_run_contains_15_crawl_and_15_db_and_17(self):
@@ -36,6 +40,10 @@ class PipelineWiringTests(unittest.TestCase):
                          [str(i) for i in range(1,16)])
         self.assertEqual(jobs["db_workers"]["strategy"]["max-parallel"],"15")
         self.assertEqual(jobs["db_plan"]["needs"],["ingest","report"])
+        self.assertEqual(jobs["db_workers"]["env"]["GH_TOKEN"],"${{ github.token }}")
+        self.assertIn("FR_DB_REPLAY_SOURCE",jobs["db_plan"]["env"])
+        self.assertIn("FR_REPLAY_ONLY",jobs["final_gate"]["env"])
+        self.assertIn("replay",self.crawl["on"]["workflow_dispatch"]["inputs"]["mode"]["options"])
         self.assertEqual(jobs["db_merge"]["needs"],["db_plan","db_workers"])
         self.assertIn("always()",jobs["db_merge"]["if"])
         self.assertIn("needs.db_workers.result == 'success'",jobs["db_merge"]["if"])
@@ -43,8 +51,8 @@ class PipelineWiringTests(unittest.TestCase):
     def test_same_run_receipt_verified_before_pool(self):
         jobs=self.crawl["jobs"]
         self.assertIn("FR_DB_SAME_RUN",jobs["db_plan"]["env"])
-        self.assertEqual(jobs["db_plan"]["env"]["SOURCE_RUN"],"${{ github.run_id }}")
-        self.assertEqual(jobs["db_plan"]["env"]["BATCH"],"${{ needs.ingest.outputs.batch_id }}")
+        self.assertIn("github.run_id",jobs["db_plan"]["env"]["SOURCE_RUN"])
+        self.assertIn("needs.ingest.outputs.batch_id",jobs["db_plan"]["env"]["BATCH"])
         text="\n".join(s.get("run","") for s in jobs["db_plan"]["steps"])
         self.assertIn("db_stage_source.py",text)
         self.assertIn("db_stage_hf.py",text)

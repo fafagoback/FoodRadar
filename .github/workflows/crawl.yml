@@ -1,14 +1,25 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜#${{ github.run_number }}${{ inputs.mode == ''verify'' && ''（離線測試）'' || '''' }}'
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/crawl.yml']
   workflow_dispatch:
     inputs:
       mode:
-        description: 'crawl=完整爬取→DB→網站→清理；verify=只跑離線測試，不爬 UE'
+        description: 'crawl=全流程；replay=使用已驗證 HF Raw 重跑 DB/網站/清理；verify=離線驗證'
         type: choice
         required: true
-        options: [crawl, verify]
+        options: [crawl, replay, verify]
         default: crawl
+      source_run_id:
+        description: 'replay 來源爬蟲 Run ID（不再呼叫 UE）'
+        required: false
+        type: string
+      batch_id:
+        description: 'replay 原始 HF 14 碼批次'
+        required: false
+        type: string
 permissions:
   contents: read
   actions: write
@@ -349,7 +360,7 @@ jobs:
   db_plan:
     name: 00｜驗證 HF Raw，建立專屬 DB 共享工作池
     needs: [ingest,report]
-    if: ${{ always() && needs.ingest.result == 'success' && needs.report.result == 'success' }}
+    if: ${{ always() && ((needs.ingest.result == 'success' && needs.report.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'replay') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_RECOVER_DB_504'))) }}
     runs-on: ubuntu-latest
     outputs:
       source_run_id: ${{ steps.inputs.outputs.source_run_id }}
@@ -357,15 +368,18 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       FR_DB_SAME_RUN: '1'
-      SOURCE_RUN: ${{ github.run_id }}
-      BATCH: ${{ needs.ingest.outputs.batch_id }}
+      FR_DB_REPLAY_SOURCE: ${{ (github.event_name == 'push' && '46076775133') || (inputs.mode == 'replay' && inputs.source_run_id) || '' }}
+      SOURCE_RUN: ${{ (github.event_name == 'push' && '46076775133') || (inputs.mode == 'replay' && inputs.source_run_id) || github.run_id }}
+      BATCH: ${{ (github.event_name == 'push' && '20261128063900') || (inputs.mode == 'replay' && inputs.batch_id) || needs.ingest.outputs.batch_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}
         with:
           name: fr-db-source
           path: data
       - name: 核對第 16 台提交的來源憑證
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl' }}
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: python scripts/db_stage_source.py --path data/fr-db-source.json --source-run "$SOURCE_RUN" --source-sha "$SOURCE_SHA" --output "$GITHUB_OUTPUT"
@@ -404,6 +418,7 @@ jobs:
       matrix:
         index: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
     env:
+      GH_TOKEN: ${{ github.token }}
       INDEX: ${{ matrix.index }}
       SOURCE_RUN: ${{ needs.db_plan.outputs.source_run_id }}
       BATCH: ${{ needs.db_plan.outputs.batch_id }}
@@ -505,7 +520,7 @@ jobs:
   final_gate:
     name: 最終驗收｜全部完成才標綠，不能跳過 DB 或網站
     needs: [discover_once,crawl_shard,plan_recovery,recover_shard,ingest,report,db_plan,db_workers,db_merge,publish,cleanup]
-    if: ${{ always() && inputs.mode == 'crawl' }}
+    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.mode != 'verify') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_RECOVER_DB_504'))) }}
     runs-on: ubuntu-latest
     env:
       DISCOVERY: ${{ needs.discover_once.result }}
@@ -518,19 +533,29 @@ jobs:
       PUBLISH: ${{ needs.publish.result }}
       CLEANUP: ${{ needs.cleanup.result }}
       RECOVERY: ${{ needs.recover_shard.result }}
+      FR_REPLAY_ONLY: ${{ (github.event_name == 'push' || inputs.mode == 'replay') && '1' || '0' }}
     steps:
       - name: 嚴格核對每一步成功，失敗或被跳過立即標紅
         shell: bash
         run: |
           set -euo pipefail
-          for name in DISCOVERY PLAN_RECOVERY INGEST REPORT DB_PLAN DB_WORKERS DB_MERGE PUBLISH CLEANUP; do
+          if [[ "$FR_REPLAY_ONLY" == 1 ]]; then
+            required=(DB_PLAN DB_WORKERS DB_MERGE PUBLISH CLEANUP)
+          else
+            required=(DISCOVERY PLAN_RECOVERY INGEST REPORT DB_PLAN DB_WORKERS DB_MERGE PUBLISH CLEANUP)
+          fi
+          for name in "${required[@]}"; do
             if [[ "${!name}" != success ]]; then
               echo "::error::$name 未成功（${!name}），禁止顯示整套成功"
               exit 1
             fi
           done
-          if [[ "$RECOVERY" != success && "$RECOVERY" != skipped ]]; then
+          if [[ "$FR_REPLAY_ONLY" != 1 && "$RECOVERY" != success && "$RECOVERY" != skipped ]]; then
             echo "::error::故障接手異常：$RECOVERY"
             exit 1
           fi
-          echo '## FR 01 完整成功：15 台爬蟲 → 第16台 HF Raw → 15 台 DB → 第17台 → SQLite → 網站 → 清理' >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$FR_REPLAY_ONLY" == 1 ]]; then
+            echo '## FR 01 HF Raw 接續完成：舊爬蟲來源 → 15 台 DB → 第17台 → SQLite → 網站 → 清理（未重爬 UE）' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '## FR 01 完整成功：15 台爬蟲 → 第16台 HF Raw → 15 台 DB → 第17台 → SQLite → 網站 → 清理' >> "$GITHUB_STEP_SUMMARY"
+          fi

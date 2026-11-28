@@ -51,7 +51,24 @@ def source_artifacts(source_run, token, repo):
     if not artifacts:
         raise RuntimeError("No durable worker artifacts in this crawl")
     if run.get("conclusion")!="success" and not same_run:
-        raise RuntimeError("Only a successful crawl or verified same-run stage 16 can seed DB")
+        # A prior crawl can fail solely in its DB stage. Reuse it only if
+        # the 15 crawler jobs, stage 16, and the original receipt/report
+        # succeeded. This never treats its overall failure as full success.
+        if os.environ.get("FR_DB_REPLAY_SOURCE") != str(source_run) or run.get("status")!="completed":
+            raise RuntimeError("Only a successful crawl or verified same-run stage 16 can seed DB")
+        payload=github_get(f"actions/runs/{source_run}/jobs?per_page=100",token,repo)
+        jobs=payload.get("jobs",[])
+        if int(payload.get("total_count",0))>len(jobs):
+            raise RuntimeError("Cannot audit all source workflow jobs")
+        crawlers=[j for j in jobs if str(j.get("name","")).startswith("爬蟲工作機 ")]
+        def accepted(prefix):
+            return any(str(j.get("name","")).startswith(prefix) and j.get("conclusion")=="success" for j in jobs)
+        if (len(crawlers)!=15 or any(j.get("conclusion")!="success" for j in crawlers)
+                or not accepted("16｜") or not accepted("彙整本次繁體中文爬蟲報告")
+                or not accepted("00｜")):
+            raise RuntimeError("Failed source run has no verified 15-crawler/16/00 provenance")
+        print("FR_VERIFIED_FAILED_RUN_REPLAY="+json.dumps({"source_run":source_run,
+            "source_sha":run.get("head_sha"),"crawlers":len(crawlers)}),flush=True)
     # A runner with zero assigned shops still uploads a valid batch.json-only
     # Artifact (normally ~900 bytes). Size is not an integrity signal.
     # Full batch manifest, response hashes and shop roster are checked by

@@ -64,6 +64,23 @@ class SourceBatchTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"Source crawl"):
             source_artifacts("556","token","fafagoback/FoodRadar")
 
+    @patch.dict(os.environ, {"FR_DB_REPLAY_SOURCE":"46076775133"})
+    @patch("db_stage_plan.github_get")
+    def test_failed_run_replay_requires_15_successful_crawlers_and_stage16(self,get):
+        run={"status":"completed","conclusion":"failure","head_branch":"main","head_sha":"a"*40}
+        artifact={"artifacts":[{"name":"fr-worker-abc-01","size_in_bytes":924,"expired":False}]}
+        jobs=[{"name":f"爬蟲工作機 {i:02d}","conclusion":"success"} for i in range(1,16)]
+        jobs += [{"name":"16｜核對15台來源、串流保存 HF Raw","conclusion":"success"},
+                 {"name":"彙整本次繁體中文爬蟲報告","conclusion":"success"},
+                 {"name":"00｜驗證 HF Raw，建立專屬 DB 共享工作池","conclusion":"success"}]
+        get.side_effect=[run,artifact,{"total_count":len(jobs),"jobs":jobs}]
+        _,names=source_artifacts("46076775133","token","fafagoback/FoodRadar")
+        self.assertEqual(len(names),1)
+        jobs[0]["conclusion"]="failure"
+        get.side_effect=[run,artifact,{"total_count":len(jobs),"jobs":jobs}]
+        with self.assertRaisesRegex(RuntimeError,"provenance"):
+            source_artifacts("46076775133","token","fafagoback/FoodRadar")
+
     def test_unrelated_workflow_rejected(self):
         self.run["path"]=".github/workflows/db-stage.yml"
         with self.assertRaisesRegex(ValueError,"crawler workflow"):
