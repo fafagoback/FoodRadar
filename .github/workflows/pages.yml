@@ -43,7 +43,7 @@ jobs:
       - name: 正規化商品與價格，保留所有店家原生紀錄
         run: |
           python scripts/build_relational_overlay_v9.py --checkpoint data/state-checkpoint --output data/relational-release.db --report data/relational-build.json
-      - name: 去除重複商品欄位、無用索引並壓縮供瀏覽器使用
+      - name: 裁減商品重複資料、壓縮字典與價格歷史、校驗 SQL 關聯
         run: |
           python scripts/slim_relational_sqlite.py --database data/relational-release.db
           python scripts/publish_relational_overlay_v9.py --file data/relational-release.db
