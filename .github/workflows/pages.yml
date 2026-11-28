@@ -41,6 +41,18 @@ jobs:
           python -m unittest discover -s tests -p 'test_hf_retention.py' -v
       - name: 從 HF 恢復已驗證資料庫（完全不發 UE 請求）
         run: python src/hf_retention.py restore
+      - name: 驗證後續批次能接續舊 HF State，不會發生契約失配而重爬
+        run: |
+          python - <<'PY'
+          import json,sys
+          from pathlib import Path
+          sys.path.insert(0,'src')
+          from state_checkpoint import direct_contract_digest,compatible_direct_contract
+          meta=json.loads(Path('data/state-checkpoint/manifest.json').read_text())
+          print('FR_FUTURE_STATE_CONTRACT='+json.dumps({'recorded':meta.get('contract_digest'),'current':direct_contract_digest(),'compatible':compatible_direct_contract(meta)},sort_keys=True),flush=True)
+          if not compatible_direct_contract(meta):
+              raise SystemExit('Existing HF State does not match future stage-17 contract')
+          PY
       - name: 正規化商品與價格，保留所有店家原生紀錄
         run: |
           python scripts/build_relational_overlay_v9.py --checkpoint data/state-checkpoint --output data/relational-release.db --report data/relational-build.json
