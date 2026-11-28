@@ -34,7 +34,7 @@ jobs:
           python-version: '3.11'
       - name: 安裝現有資料庫程式
         run: pip install -r requirements.txt 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1' 'msgpack>=1,<2'
-      - name: 驗證未來批次的跨店共用、容量控制與60天歷史
+      - name: 驗證未來每批的共用商品、60天失效資料清除與 State 接續
         run: |
           python -m unittest discover -s tests -p 'test_compact_repack.py' -v
           python -m unittest discover -s tests -p 'test_storage_checkpoint_migration.py' -v
