@@ -160,6 +160,14 @@ def build(batch,source_run,source_count,folder,*,pool=None,apply=True):
         state.meta.update(raw_source=f"{folder_name}/",
                           raw_snapshot_count=str(completed_prefix))
         state.flush()
+        # Recompress and share repeated product definitions before deciding to
+        # split a nearly-full DB. Otherwise a transient >20 MB checkpoint
+        # unnecessarily duplicates the entire global dictionary in two shards.
+        if any(p.path.stat().st_size>=MAX_BYTES for p in state.parts):
+            from compact_repack import optimize_part
+            for p in state.parts:
+                if p.path.stat().st_size>=MAX_BYTES:
+                    optimize_part(p)
         if any(p.path.stat().st_size>=MAX_BYTES for p in state.parts):
             state=state.rebuild_partitions(CACHE)
         index={"repo_id":config["hf_repo_id"],"folder":folder_name,
@@ -178,6 +186,14 @@ def build(batch,source_run,source_count,folder,*,pool=None,apply=True):
         # not a one-time website DB recompression. Repeated product definitions
         # become shared cross-shop templates; price history remains bit-exact.
         save_direct(state,path,optimize=True)
+        print("FOODRADAR_CANONICAL_STORAGE_POLICY="+json.dumps({
+            "format":"compact-v4-normalized","batch":batch,
+            "stores":len(state.lookup),
+            "shared_product_definitions":sum(len(p.templates.pool) for p in state.parts),
+            "state_bytes":sum(p.path.stat().st_size for p in state.parts),
+            "parts":[p.path.stat().st_size for p in state.parts],
+            "history_retention_days":60
+        },ensure_ascii=False),flush=True)
         # Persist independently of the website builder: failure after this
         # point must not reprocess the verified batch.
         from huggingface_hub import HfApi
