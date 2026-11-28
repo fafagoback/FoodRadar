@@ -37,6 +37,7 @@ jobs:
       - name: 驗證未來批次的跨店共用、容量控制與60天歷史
         run: |
           python -m unittest discover -s tests -p 'test_compact_repack.py' -v
+          python -m unittest discover -s tests -p 'test_storage_checkpoint_migration.py' -v
           python -m unittest discover -s tests -p 'test_relational_overlay_v9.py' -v
           python -m unittest discover -s tests -p 'test_hf_retention.py' -v
       - name: 從 HF 恢復已驗證資料庫（完全不發 UE 請求）
