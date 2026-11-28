@@ -22,7 +22,7 @@ def slim(path):
         row=db.execute("SELECT payload FROM dictionary WHERE key=?",(KEY,)).fetchone()
         trained=msgpack.unpackb(zstd.ZstdDecompressor().decompress(row[0]),raw=False) if row else None
         codec=PayloadCodec(trained)
-        encoder=zstd.ZstdCompressor(level=12,write_content_size=True)
+        encoder=zstd.ZstdCompressor(level=16,write_content_size=True)
         converted=0
         for table in ("shop_state","price_history"):
             for sid,blob in db.execute("SELECT store,payload FROM "+table):
@@ -34,8 +34,12 @@ def slim(path):
                     raise ValueError("Browser codec changed source semantics")
                 db.execute("UPDATE "+table+" SET payload=? WHERE store=?",(candidate,sid))
                 converted+=1
-        db.execute("DROP INDEX IF EXISTS relational_product_shops")
-        db.execute("DROP INDEX IF EXISTS relational_product_names")
+        # All search, geo and promotion indices used by the website are
+        # already represented by the single compressed frontend index.
+        # Do not keep duplicate SQLite B-trees for the same facts.
+        for index in ("relational_product_shops","relational_product_names",
+                      "relational_deals","relational_store_rating"):
+            db.execute("DROP INDEX IF EXISTS "+index)
         db.commit()
         db.execute("VACUUM")
         if db.execute("PRAGMA integrity_check").fetchone()[0]!="ok":
@@ -46,8 +50,17 @@ def slim(path):
         counts=json.loads(db.execute("SELECT value FROM relational_meta WHERE key='counts'").fetchone()[0])
         if product_count!=counts["links"]:
             raise ValueError("SQL product links changed")
+        duplicate=db.execute("""SELECT COUNT(*) FROM (
+            SELECT store_id,ordinal,COUNT(*) n FROM relational_store_products
+            GROUP BY store_id,ordinal HAVING n>1)""").fetchone()[0]
+        if duplicate:
+            raise ValueError("Duplicate store ordinal after compaction")
+        try:
+            pages=dict(db.execute("SELECT name,SUM(pgsize) FROM dbstat GROUP BY name"))
+        except sqlite3.DatabaseError:
+            pages={}
     result={"converted_payloads":converted,"bytes":file.stat().st_size,
-            "product_links":product_count}
+            "product_links":product_count,"sqlite_page_breakdown":pages}
     print("FR_SINGLE_DB_COMPACTION="+json.dumps(result),flush=True)
     return result
 

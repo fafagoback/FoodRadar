@@ -45,7 +45,6 @@ CREATE TABLE relational_products(
   description_token INTEGER,
   CHECK(name_token>=-1)
 );
-CREATE INDEX relational_product_names ON relational_products(name_token);
 CREATE TABLE relational_prices(
   id INTEGER PRIMARY KEY,
   original_cents INTEGER NOT NULL,
@@ -54,22 +53,17 @@ CREATE TABLE relational_prices(
   promotion TEXT NOT NULL,
   UNIQUE(original_cents,effective_cents,quantity,promotion)
 );
+-- The shared product and price definitions are relational; an integer
+-- position links each store to its canonical SKU in compressed shop_state.
+-- Storing the same 16-byte SKU and search flags here duplicates that source.
 CREATE TABLE relational_store_products(
   store_id INTEGER NOT NULL REFERENCES relational_stores(id),
-  sku BLOB NOT NULL,
+  ordinal INTEGER NOT NULL CHECK(ordinal>=0),
   product_id INTEGER NOT NULL REFERENCES relational_products(id),
   price_id INTEGER NOT NULL REFERENCES relational_prices(id),
-  active INTEGER NOT NULL,
-  deal INTEGER NOT NULL,
-  promotion INTEGER NOT NULL,
-  discount_pct REAL,
-  PRIMARY KEY(store_id,sku)
+  PRIMARY KEY(store_id,ordinal)
 ) WITHOUT ROWID;
-CREATE INDEX relational_product_shops ON relational_store_products(product_id,store_id);
-CREATE INDEX relational_deals ON relational_store_products(discount_pct DESC,store_id) WHERE deal=1;
-CREATE INDEX relational_store_rating ON relational_stores(rating DESC,id ASC);
 CREATE TABLE relational_frontend_index(key TEXT PRIMARY KEY,payload BLOB NOT NULL) WITHOUT ROWID;
-CREATE VIRTUAL TABLE relational_geo USING rtree(id,min_lat,max_lat,min_lon,max_lon);
 
 """
 
@@ -140,8 +134,6 @@ def build(collection, target, *, source_bytes=None):
                         lat=float(store["latitude"]);lon=float(store["longitude"])
                         if not (-90<=lat<=90 and -180<=lon<=180):
                             raise ValueError("Bad store coordinates")
-                        db.execute("INSERT INTO relational_geo VALUES(?,?,?,?,?)",
-                                   (store_id,lat,lat,lon,lon))
                     quick_store=[store_id,store.get("name"),store.get("city"),
                         store.get("locality"),store.get("latitude"),
                         store.get("longitude"),store.get("rating"),
@@ -180,15 +172,13 @@ def build(collection, target, *, source_bytes=None):
                                 VALUES(?,?,?,?)""",price)
                             price_id=db.execute("SELECT last_insert_rowid()").fetchone()[0]
                             prices[price]=price_id
+                        # The ordinal is the exact store-local SKU position
+                        # in the preserved, immutable shop_state payload.
+                        # Current availability, discount, and promotion flags
+                        # already live in the compressed frontend index.
                         db.execute("""INSERT INTO relational_store_products
-                            (store_id,sku,product_id,price_id,active,deal,promotion,discount_pct)
-                            VALUES(?,?,?,?,?,?,?,?)""",(
-                              store_id,binary_uuid(sku),pid,price_id,
-                              int(item.get("status")=="active"),
-                              int(bool(item.get("seven_day_is_price_deal"))),
-                              int(bool(item.get("promo_type") not in (None,"","NONE","無"))),
-                              item.get("seven_day_discount_pct") or 0,
-                        ))
+                            (store_id,ordinal,product_id,price_id)
+                            VALUES(?,?,?,?)""",(store_id,ordinal,pid,price_id))
                         native=item.get("price_evidence_status")=="VERIFIED_MENU"
                         stock=json.loads(item.get("catalog_web") or "{}")
                         if not isinstance(stock,dict):stock={}

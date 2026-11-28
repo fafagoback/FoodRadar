@@ -3,6 +3,9 @@ run-name: 'FoodRadar 02｜網站部署｜#${{ github.run_number }}'
 on:
   workflow_call:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/pages.yml']
 permissions:
   contents: read
   actions: read
@@ -14,6 +17,7 @@ concurrency:
 jobs:
   release:
     name: 單一資料庫及完整網站驗收成功後才上線
+    if: ${{ github.event_name != 'push' || contains(github.event.head_commit.message, 'FR_SQLITE_COMPACT_ONCE') }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     environment:
@@ -39,7 +43,7 @@ jobs:
       - name: 正規化商品與價格，保留所有店家原生紀錄
         run: |
           python scripts/build_relational_overlay_v9.py --checkpoint data/state-checkpoint --output data/relational-release.db --report data/relational-build.json
-      - name: 去掉重複 SQL 索引並將編碼轉為瀏覽器可讀
+      - name: 去除重複商品欄位、無用索引並壓縮供瀏覽器使用
         run: |
           python scripts/slim_relational_sqlite.py --database data/relational-release.db
           python scripts/publish_relational_overlay_v9.py --file data/relational-release.db

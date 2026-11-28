@@ -62,6 +62,20 @@ class TestOverlay(unittest.TestCase):
             self.assertEqual(len(rows),2)
             self.assertEqual([x[1] for x in rows],["A","B"])
             self.assertEqual(db.execute("SELECT count(*) FROM relational_store_products").fetchone()[0],5)
+            # A has 1/2/3, B has 2/3. Both reference the SAME
+            # product definitions while retaining local SKU ordinals.
+            rows=list(db.execute("""SELECT s.uuid,l.ordinal,p.name_token,l.price_id
+              FROM relational_store_products l
+              JOIN relational_stores s ON s.id=l.store_id
+              JOIN relational_products p ON p.id=l.product_id
+              ORDER BY s.uuid,l.ordinal"""))
+            self.assertEqual(len(rows),5)
+            self.assertEqual([r[1] for r in rows],[0,1,2,0,1])
+            self.assertEqual([r[2] for r in rows],[0,1,2,1,2])
+            self.assertFalse(db.execute("""SELECT COUNT(*) FROM sqlite_master
+                WHERE type='table' AND name='relational_geo'""").fetchone()[0])
+            columns={r[1] for r in db.execute("PRAGMA table_info(relational_store_products)")}
+            self.assertEqual(columns,{"store_id","ordinal","product_id","price_id"})
             self.assertEqual(db.execute("SELECT payload FROM shop_state").fetchone()[0],b"original-unchanged")
             self.assertEqual(db.execute("SELECT payload FROM price_history").fetchone()[0],b"history-unchanged")
             self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0],"ok")
