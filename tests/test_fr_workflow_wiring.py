@@ -16,9 +16,10 @@ class PipelineWiringTests(unittest.TestCase):
         names=sorted(p.name for p in (ROOT/".github/workflows").glob("*.yml"))
         self.assertEqual([n for n in names if n != "fr-integration-tests.yml"],["crawl.yml","fr-retention.yml","pages.yml"])
     def test_no_unintended_automatic_crawl(self):
-        self.assertEqual(self.crawl["on"]["push"]["paths"],[".github/workflows/crawl.yml"])
+        self.assertEqual(list(self.crawl["on"]),["workflow_dispatch"])
+        self.assertEqual(self.crawl["on"]["workflow_dispatch"]["inputs"]["mode"]["default"],"crawl")
         source=(ROOT/".github/workflows/crawl.yml").read_text(encoding="utf-8")
-        self.assertIn("FR_RECOVER_DB_504",source)
+        self.assertNotIn("FR_RECOVER_DB_504",source)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.mode == 'crawl'",source)
         self.assertEqual(self.crawl["on"]["workflow_dispatch"]["inputs"]["mode"]["default"],"crawl")
     def test_consistent_production_workflow_names(self):
@@ -29,8 +30,7 @@ class PipelineWiringTests(unittest.TestCase):
         ):
             self.assertEqual(workflow["name"], name)
             self.assertTrue(workflow["run-name"].startswith(name + "｜#"))
-            if workflow is not self.crawl:
-                self.assertNotIn("push", workflow["on"])
+            self.assertNotIn("push", workflow["on"])
         self.assertNotIn("PURGE_FR_67_RUNS", (ROOT/".github/workflows/fr-retention.yml").read_text(encoding="utf-8"))
         self.assertNotIn("FR_ONE_TIME_FULL_CRAWL", (ROOT/".github/workflows/crawl.yml").read_text(encoding="utf-8"))
     def test_one_run_contains_15_crawl_and_15_db_and_17(self):

@@ -1,9 +1,6 @@
 name: FoodRadar 01｜資料爬取與更新
 run-name: 'FoodRadar 01｜資料爬取與更新｜#${{ github.run_number }}${{ inputs.mode == ''verify'' && ''（離線測試）'' || '''' }}'
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/crawl.yml']
   workflow_dispatch:
     inputs:
       mode:
@@ -360,7 +357,7 @@ jobs:
   db_plan:
     name: 00｜驗證 HF Raw，建立專屬 DB 共享工作池
     needs: [ingest,report]
-    if: ${{ always() && ((needs.ingest.result == 'success' && needs.report.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'replay') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_RECOVER_DB_504'))) }}
+    if: ${{ always() && ((needs.ingest.result == 'success' && needs.report.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'replay')) }}
     runs-on: ubuntu-latest
     outputs:
       source_run_id: ${{ steps.inputs.outputs.source_run_id }}
@@ -368,9 +365,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       FR_DB_SAME_RUN: '1'
-      FR_DB_REPLAY_SOURCE: ${{ (github.event_name == 'push' && '46076775133') || (inputs.mode == 'replay' && inputs.source_run_id) || '' }}
-      SOURCE_RUN: ${{ (github.event_name == 'push' && '46076775133') || (inputs.mode == 'replay' && inputs.source_run_id) || github.run_id }}
-      BATCH: ${{ (github.event_name == 'push' && '20261128063900') || (inputs.mode == 'replay' && inputs.batch_id) || needs.ingest.outputs.batch_id }}
+      FR_DB_REPLAY_SOURCE: ${{ inputs.mode == 'replay' && inputs.source_run_id || '' }}
+      SOURCE_RUN: ${{ inputs.mode == 'replay' && inputs.source_run_id || github.run_id }}
+      BATCH: ${{ inputs.mode == 'replay' && inputs.batch_id || needs.ingest.outputs.batch_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -520,7 +517,7 @@ jobs:
   final_gate:
     name: 最終驗收｜全部完成才標綠，不能跳過 DB 或網站
     needs: [discover_once,crawl_shard,plan_recovery,recover_shard,ingest,report,db_plan,db_workers,db_merge,publish,cleanup]
-    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.mode != 'verify') || (github.event_name == 'push' && contains(github.event.head_commit.message, 'FR_RECOVER_DB_504'))) }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.mode != 'verify' }}
     runs-on: ubuntu-latest
     env:
       DISCOVERY: ${{ needs.discover_once.result }}
@@ -533,7 +530,7 @@ jobs:
       PUBLISH: ${{ needs.publish.result }}
       CLEANUP: ${{ needs.cleanup.result }}
       RECOVERY: ${{ needs.recover_shard.result }}
-      FR_REPLAY_ONLY: ${{ (github.event_name == 'push' || inputs.mode == 'replay') && '1' || '0' }}
+      FR_REPLAY_ONLY: ${{ inputs.mode == 'replay' && '1' || '0' }}
     steps:
       - name: 嚴格核對每一步成功，失敗或被跳過立即標紅
         shell: bash
