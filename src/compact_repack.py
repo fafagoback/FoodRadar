@@ -179,7 +179,8 @@ def benchmark(path, repeats=3):
             "pair_p95_us": statistics.median(pair_p95) * 1e6}
 
 
-def select(path, directory, *, measure=benchmark, candidates=(512, 1024), include_templates=True):
+def select(path, directory, *, measure=benchmark, candidates=(512, 1024),
+           include_templates=True, mode_specs=None):
     """Return the best passing file or None. Source remains untouched."""
     path, directory = Path(path), Path(directory)
     expected = digest(path)
@@ -194,6 +195,10 @@ def select(path, directory, *, measure=benchmark, candidates=(512, 1024), includ
     if include_templates:
         modes += [(n,True,2,0) for n in candidates]+[(512,True,8,0),(1024,True,8,0)]
     modes += [(512,False,2,65536),(1024,False,2,65536),(512,False,2,131072),(1024,True,8,65536)]
+    if mode_specs is not None:
+        # Production update path uses a bounded, deterministic search.
+        # Exhaustive dictionary-training experiments stay opt-in for benchmarks.
+        modes=list(mode_specs)
     for size,share,min_shops,train in modes:
         target = directory / f"candidate-{size}-{int(share)}-{min_shops}-{train}.db"
         started = time.perf_counter()
@@ -242,7 +247,13 @@ def optimize_part(part):
         if prior.get("version") == 3 and path.stat().st_size <= prior["bytes"] * 1.10:
             return {"skipped": "within_last_verified_size", "bytes": path.stat().st_size}
     with tempfile.TemporaryDirectory(prefix="fr-compact-", dir=path.parent) as folder:
-        winner, report = select(path, folder)
+        # Fast recurring cross-store normalization. Fresh runs never inherit
+        # the runner-local physical marker, so this runs after every batch.
+        # A candidate is installed only if logically byte-exact, smaller and
+        # no slower in the measured read paths.
+        winner, report = select(path, folder,
+            measure=lambda p: benchmark(p,repeats=2),
+            mode_specs=((1024, True, 2, 0), (1024, False, 2, 0)))
         if winner is not None:
             part.conn.close()
             try:

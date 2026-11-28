@@ -34,6 +34,49 @@ class RepackTests(unittest.TestCase):
         with sqlite3.connect(candidate) as db:
             self.assertEqual(db.execute("PRAGMA page_size").fetchone()[0],512)
 
+    def test_recurring_cross_shop_normalization_is_lossless(self):
+        # Three shops reference the same 100 goods and independent prices.
+        # A fresh checkpoint can encode shared content in a single template
+        # pool; a later run can reuse the same pool without recrawling.
+        from compact_templates import Templates
+        from compact_direct import CompactStore
+        ids=[bytes([i])*16 for i in (1,2,3)]
+        names=[f"共同商品{i}" for i in range(100)]
+        with sqlite3.connect(self.source) as db:
+            db.execute("DELETE FROM shop_state")
+            db.execute("DELETE FROM price_history")
+            dicts={"__store_columns":["name"],
+                   "__product_columns":["product_name","category","description","product_uuid"],
+                   "product_name":names,"category":["日用品"],
+                   "description":["共同規格"]}
+            for k,v in dicts.items():
+                db.execute("INSERT INTO dictionary VALUES(?,?)",(k,_pack(v)))
+            for j,key in enumerate(ids):
+                rows=[[i,0,0,bytes([j+1,i+1])] for i in range(100)]
+                db.execute("INSERT INTO shop_state VALUES(?,?)",
+                           (key,_pack([[j],rows])))
+                db.execute("INSERT INTO price_history VALUES(?,?)",
+                           (key,_pack([[i,[[[10000+j*100,0,1,0,1,10000+j*100,10000+j*100],
+                                             b'\\x03']]] for i in range(100)])))
+        source_sha=digest(self.source)
+        candidate=self.root/"normalized.db"
+        info=build(self.source,candidate,1024,levels=(12,),share=True)
+        self.assertGreater(info["shared_groups"],0)
+        self.assertEqual(digest(candidate),source_sha)
+        with sqlite3.connect(candidate) as db:
+            data={k:_unpack(v) for k,v in db.execute("SELECT key,payload FROM dictionary")}
+            codec=Templates(data)
+            self.assertEqual(len(codec.pool),100)
+            raw=zstd.ZstdDecompressor()
+            for key in ids:
+                payload=db.execute("SELECT payload FROM shop_state WHERE store=?",(key,)).fetchone()[0]
+                header,rows=__import__("msgpack").unpackb(raw.decompress(payload),raw=False)
+                self.assertEqual(len(rows),100)
+                self.assertEqual(len(rows[0]),3) # shared-content reference + local uuid
+                self.assertEqual(codec.rows(rows)[0][:3],[0,0,0])
+        # Physical sizes can vary on tiny fixtures; only canonical identities
+        # and exact price evidence are required for this proof.
+
     def test_selection_does_not_touch_source_and_rejects_slower_candidate(self):
         original=self.source.read_bytes()
         def measure(path):
@@ -42,6 +85,11 @@ class RepackTests(unittest.TestCase):
         self.assertIsNone(chosen)
         self.assertTrue(all(not x["read_gate_pass"] for x in report["candidates"]))
         self.assertEqual(self.source.read_bytes(),original)
+
+    def test_production_stage_17_never_bypasses_persistent_normalization(self):
+        stage=(Path(__file__).resolve().parents[1]/"scripts"/"db_stage_merge.py").read_text()
+        self.assertIn("save_direct(state,path,optimize=True)",stage)
+        self.assertNotIn("save_direct(state,path,optimize=False)",stage)
 
     def test_recompressed_payload_not_needlessly_rewritten(self):
         a=_pack([True,1,"abc"]*100)

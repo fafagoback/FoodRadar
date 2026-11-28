@@ -173,7 +173,11 @@ def build(batch,source_run,source_count,folder,*,pool=None,apply=True):
         out.mkdir(parents=True,exist_ok=True)
         path=out/"raw-manifest-index.json"
         path.write_text(json.dumps(index,ensure_ascii=False),encoding="utf-8")
-        save_direct(state,path,optimize=False)
+        # Always normalize the canonical checkpoint BEFORE HF persistence.
+        # This is the long-term storage policy for every new crawl batch,
+        # not a one-time website DB recompression. Repeated product definitions
+        # become shared cross-shop templates; price history remains bit-exact.
+        save_direct(state,path,optimize=True)
         # Persist independently of the website builder: failure after this
         # point must not reprocess the verified batch.
         from huggingface_hub import HfApi
