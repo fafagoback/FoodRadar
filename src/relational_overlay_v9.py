@@ -259,11 +259,12 @@ def build(collection, target, *, source_bytes=None):
                 db.execute("ANALYZE")
                 db.commit()
                 # Change the output only; HF source checkpoint stays byte-exact.
-                # 4 KiB pages sharply reduce remote HTTP Range round trips.
+                # 2 KiB pages reduce B-tree slack and duplicate payload
+                # overhead while preserving practical remote HTTP Range reads.
                 db.execute("PRAGMA journal_mode=DELETE")
-                db.execute("PRAGMA page_size=4096")
+                db.execute("PRAGMA page_size=2048")
                 db.execute("VACUUM")
-                if db.execute("PRAGMA page_size").fetchone()[0]!=4096:
+                if db.execute("PRAGMA page_size").fetchone()[0]!=2048:
                     raise ValueError("Serving DB page size conversion failed")
             finally:
                 db.close()

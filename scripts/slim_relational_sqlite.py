@@ -22,18 +22,26 @@ def slim(path):
         row=db.execute("SELECT payload FROM dictionary WHERE key=?",(KEY,)).fetchone()
         trained=msgpack.unpackb(zstd.ZstdDecompressor().decompress(row[0]),raw=False) if row else None
         codec=PayloadCodec(trained)
-        encoder=zstd.ZstdCompressor(level=16,write_content_size=True)
+        encoder=zstd.ZstdCompressor(level=19,write_content_size=True)
+        decoder=zstd.ZstdDecompressor()
         converted=0
-        for table in ("shop_state","price_history"):
-            for sid,blob in db.execute("SELECT store,payload FROM "+table):
-                if not blob.startswith(MAGIC):
-                    continue
-                raw=codec.raw(blob)
+        byte_savings=0
+        # Store, price-history and token dictionary are the actual canonical
+        # data. Recompress only when smaller; compare the EXACT decoded bytes.
+        # The browser reads standard Zstd frames directly (no dictionary).
+        for table,key in (("shop_state","store"),("price_history","store"),
+                          ("dictionary","key")):
+            for sid,blob in db.execute("SELECT "+key+",payload FROM "+table):
+                if not isinstance(blob,bytes):
+                    raise ValueError("Invalid source compressed payload")
+                raw=codec.raw(blob) if blob.startswith(MAGIC) else decoder.decompress(blob)
                 candidate=encoder.compress(raw)
-                if zstd.ZstdDecompressor().decompress(candidate)!=raw:
+                if decoder.decompress(candidate)!=raw:
                     raise ValueError("Browser codec changed source semantics")
-                db.execute("UPDATE "+table+" SET payload=? WHERE store=?",(candidate,sid))
-                converted+=1
+                if blob.startswith(MAGIC) or len(candidate)<len(blob):
+                    db.execute("UPDATE "+table+" SET payload=? WHERE "+key+"=?",(candidate,sid))
+                    converted+=1
+                    byte_savings+=len(blob)-len(candidate)
         # All search, geo and promotion indices used by the website are
         # already represented by the single compressed frontend index.
         # Do not keep duplicate SQLite B-trees for the same facts.
@@ -59,8 +67,9 @@ def slim(path):
             pages=dict(db.execute("SELECT name,SUM(pgsize) FROM dbstat GROUP BY name"))
         except sqlite3.DatabaseError:
             pages={}
-    result={"converted_payloads":converted,"bytes":file.stat().st_size,
-            "product_links":product_count,"sqlite_page_breakdown":pages}
+    result={"converted_payloads":converted,"saved_payload_bytes":byte_savings,
+            "bytes":file.stat().st_size,"product_links":product_count,
+            "sqlite_page_breakdown":pages}
     print("FR_SINGLE_DB_COMPACTION="+json.dumps(result),flush=True)
     return result
 
