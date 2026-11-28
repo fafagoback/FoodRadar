@@ -6,6 +6,7 @@ still referenced by a retained native price observation. The original Raw
 evidence is independently retained under the project's 60-day Raw policy.
 """
 from datetime import datetime
+from compact_checkpoint import binary_uuid
 import json
 
 
@@ -39,9 +40,9 @@ def prune_expired_entities(state):
             # Both materialized records must be deleted atomically.
             with part.conn:
                 part.conn.execute("DELETE FROM price_history WHERE store=?",
-                                  (__import__("compact_checkpoint").binary_uuid(sid),))
+                                  (binary_uuid(sid),))
                 part.conn.execute("DELETE FROM shop_state WHERE store=?",
-                                  (__import__("compact_checkpoint").binary_uuid(sid),))
+                                  (binary_uuid(sid),))
             part.ids.remove(sid)
             del state.lookup[sid]
             removed_stores+=1
