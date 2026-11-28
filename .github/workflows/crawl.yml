@@ -390,6 +390,11 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: 每批 DB 前驗證跨店共用與未來 State 相容性
+        run: |
+          python -m unittest discover -s tests -p 'test_compact_repack.py' -v
+          python -m unittest discover -s tests -p 'test_storage_checkpoint_migration.py' -v
+          python -m unittest discover -s tests -p 'test_price_retention.py' -v
       - name: 核對既存 HF Raw，絕不呼叫 UE
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
