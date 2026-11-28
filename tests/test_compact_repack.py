@@ -72,7 +72,7 @@ class RepackTests(unittest.TestCase):
                 payload=db.execute("SELECT payload FROM shop_state WHERE store=?",(key,)).fetchone()[0]
                 header,rows=__import__("msgpack").unpackb(raw.decompress(payload),raw=False)
                 self.assertEqual(len(rows),100)
-                self.assertEqual(len(rows[0]),3) # shared-content reference + local uuid
+                self.assertEqual(len(rows[0]),2) # shared-content reference + local uuid
                 self.assertEqual(codec.rows(rows)[0][:3],[0,0,0])
         # Physical sizes can vary on tiny fixtures; only canonical identities
         # and exact price evidence are required for this proof.

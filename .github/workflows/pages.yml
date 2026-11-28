@@ -3,6 +3,9 @@ run-name: 'FoodRadar 02｜網站部署｜#${{ github.run_number }}'
 on:
   workflow_call:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/pages.yml']
 permissions:
   contents: read
   actions: read
@@ -14,6 +17,7 @@ concurrency:
 jobs:
   release:
     name: 單一資料庫及完整網站驗收成功後才上線
+    if: ${{ github.event_name != 'push' || contains(github.event.head_commit.message, 'FR_VERIFY_FUTURE_COMPACT') }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     environment:
@@ -30,8 +34,9 @@ jobs:
           python-version: '3.11'
       - name: 安裝現有資料庫程式
         run: pip install -r requirements.txt 'huggingface_hub>=0.30,<2' 'zstandard>=0.23,<1' 'msgpack>=1,<2'
-      - name: 先驗證關聯共用與60天原始歷史不變
+      - name: 驗證未來批次的跨店共用、容量控制與60天歷史
         run: |
+          python -m unittest discover -s tests -p 'test_compact_repack.py' -v
           python -m unittest discover -s tests -p 'test_relational_overlay_v9.py' -v
           python -m unittest discover -s tests -p 'test_hf_retention.py' -v
       - name: 從 HF 恢復已驗證資料庫（完全不發 UE 請求）
