@@ -64,7 +64,10 @@ class ExpiryTest(unittest.TestCase):
         state.part.shop[2].append(("20261128",SHOP,POLD,NEW,4000,"NONE",1,0,1,4000,4000,""))
         result=prune_expired_entities(state)
         self.assertEqual(result["removed_inactive_products"],1)
-        self.assertEqual(len(state.part.remaining[1]),2)
+        # The active store needs NO rewrite: both its SKUs are protected
+        # by current 60-day native price evidence.
+        self.assertIsNone(state.part.remaining)
+        self.assertIn(SHOP,state.lookup)
     def test_unknown_or_naive_timestamp_is_preserved(self):
         from datetime import datetime
         cutoff=datetime.fromisoformat(CUTOFF)
