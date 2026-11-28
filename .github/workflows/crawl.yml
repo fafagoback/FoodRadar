@@ -395,6 +395,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_compact_repack.py' -v
           python -m unittest discover -s tests -p 'test_storage_checkpoint_migration.py' -v
           python -m unittest discover -s tests -p 'test_price_retention.py' -v
+          python -m unittest discover -s tests -p 'test_storage_lifecycle.py' -v
       - name: 核對既存 HF Raw，絕不呼叫 UE
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

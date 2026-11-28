@@ -36,6 +36,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_storage_checkpoint_migration.py' -v
           python -m unittest discover -s tests -p 'test_relational_overlay_v9.py' -v
           python -m unittest discover -s tests -p 'test_hf_retention.py' -v
+          python -m unittest discover -s tests -p 'test_storage_lifecycle.py' -v
       - name: 從 HF 恢復已驗證資料庫（完全不發 UE 請求）
         run: python src/hf_retention.py restore
       - name: 驗證後續批次能接續舊 HF State，不會發生契約失配而重爬

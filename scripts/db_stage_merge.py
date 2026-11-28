@@ -156,6 +156,8 @@ def build(batch,source_run,source_count,folder,*,pool=None,apply=True):
             raise ValueError("FR/FRT DB history must retain exactly 60 days")
         from price_retention import prune_price_history
         prune_price_history(state)
+        from storage_lifecycle import prune_expired_entities
+        prune_expired_entities(state)
         state.refresh_weekly(batch)
         state.meta.update(raw_source=f"{folder_name}/",
                           raw_snapshot_count=str(completed_prefix))
