@@ -4,6 +4,9 @@ on:
   workflow_call:
   schedule:
     - cron: '0 19 * * *'
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fr-retention.yml']
   workflow_dispatch:
     inputs:
       dry_run:
@@ -20,7 +23,7 @@ concurrency:
 jobs:
   cleanup:
     name: 盤點並清理已無用途的歷史資料包
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name != 'push' || contains(github.event.head_commit.message, 'FR_PRUNE_COMPACT_DB_236')) }}
     concurrency:
       group: foodradar-database-publisher
       cancel-in-progress: false
